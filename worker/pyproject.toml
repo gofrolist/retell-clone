@@ -25,12 +25,14 @@ dev = [
 ]
 
 [tool.setuptools]
-# Flat module layout; the Docker image runs `python main.py start` from
+# Flat modules under src/; the Docker image runs `python main.py start` from
 # source, so installing the modules is only needed for `pip install .`.
+package-dir = { "" = "src" }
 py-modules = ["main", "config", "internal_api", "variables", "tools", "amd", "state", "metrics"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100

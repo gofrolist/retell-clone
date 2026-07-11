@@ -19,7 +19,7 @@ FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a279
 RUN useradd --system --create-home worker
 ENV PYTHONUNBUFFERED=1 PATH="/app/.venv/bin:$PATH"
 COPY --from=builder --chown=worker:worker /app/.venv /app/.venv
-COPY --chown=worker:worker *.py /app/
+COPY --chown=worker:worker src/ /app/
 
 USER worker
 WORKDIR /app
