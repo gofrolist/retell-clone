@@ -18,12 +18,26 @@ keyed by the workspace API key; tool calls send FLAT args (never `{"args":…}`)
 with `X-Caller-Secret`; inbound webhook failures degrade to the DID's default
 agent; `call_analysis` carries both `summary` and `call_summary`.
 
+## Layout
+
+App code lives under `src/` in every app. Python apps use Python 3.14, uv
+(uv.lock, PEP 735 `[dependency-groups]`), and the `uv_build` backend; package
+names match project names:
+- `backend/src/architeq_api/` — serve with `uvicorn architeq_api.main:app`
+- `worker/src/architeq_worker/` — run with `python -m architeq_worker.main`
+- `frontend/src/{app,components,lib}` — `@/*` resolves to `./src/*`; bun is
+  the package manager
+
 ## Commands
 
-- Backend: `cd backend && .venv/bin/python -m pytest tests/ -q` (create venv:
-  `cd backend && uv sync` — uv manages deps via uv.lock; Python 3.14 required)
-- Frontend: `cd frontend && bun run build` (dev: `bun run dev`; bun is the package manager)
+- Backend tests: `cd backend && uv run pytest` (first time: `uv sync`)
+- Worker tests: `cd worker && uv run --only-group dev pytest` (dev group only —
+  skips the heavy livekit-agents stack; pytest `pythonpath=["src"]` makes the
+  package importable without installing it)
+- Frontend: `cd frontend && bun run build` (dev: `bun run dev`)
 - Local stack: `docker compose up -d` then `make api` / `make worker` / `make web`
+- pre-commit hooks (gitleaks, ruff check+format, pytest, eslint) run on commit;
+  full sweep: `pre-commit run --all-files`
 
 ## Key docs
 
