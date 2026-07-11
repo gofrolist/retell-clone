@@ -21,7 +21,7 @@ ps:
 	docker compose ps
 
 api:
-	cd backend && uvicorn app.main:app --reload --port 8080
+	cd backend && uv run uvicorn app.main:app --reload --port 8080
 
 worker:
 	cd worker && python -m worker.main dev
@@ -30,4 +30,4 @@ web:
 	cd frontend && bun run dev
 
 test:
-	cd backend && pytest
+	cd backend && uv run pytest

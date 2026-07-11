@@ -15,13 +15,13 @@ jobs:
       run: { working-directory: backend }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with: { python-version: "3.14" }
-      - run: pip install -e ".[dev]"
+      - run: uv sync --locked
       - name: Contract + unit tests (with coverage gate)
-        run: python -m pytest tests/ -q --cov=app --cov-report=term-missing --cov-fail-under=80
+        run: uv run --no-sync python -m pytest tests/ -q --cov=app --cov-report=term-missing --cov-fail-under=80
       - name: Lint
-        run: ruff check app tests
+        run: uv run --no-sync ruff check app tests
 
   worker:
     runs-on: ubuntu-latest
@@ -29,11 +29,12 @@ jobs:
       run: { working-directory: worker }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with: { python-version: "3.14" }
-      - run: pip install httpx prometheus-client pytest pytest-asyncio pytest-cov
+      # dev group only: tests don't need the livekit-agents runtime stack
+      - run: uv sync --locked --only-group dev
       - name: Tests (contract-critical modules gated)
-        run: python -m pytest tests/ -q --cov=. --cov-report=term-missing
+        run: uv run --no-sync python -m pytest tests/ -q --cov=. --cov-report=term-missing
 
   frontend:
     runs-on: ubuntu-latest
