@@ -21,7 +21,7 @@ agent; `call_analysis` carries both `summary` and `call_summary`.
 ## Commands
 
 - Backend: `cd backend && .venv/bin/python -m pytest tests/ -q` (create venv:
-  `python3.14 -m venv .venv && .venv/bin/pip install -e ".[dev]"` — Python 3.14 required)
+  `cd backend && uv sync` — uv manages deps via uv.lock; Python 3.14 required)
 - Frontend: `cd frontend && bun run build` (dev: `bun run dev`; bun is the package manager)
 - Local stack: `docker compose up -d` then `make api` / `make worker` / `make web`
 
