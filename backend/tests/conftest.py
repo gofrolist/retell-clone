@@ -11,11 +11,14 @@ os.environ["ARCHITEQ_DASHBOARD_ALLOWED_EMAILS"] = '["admin@example.com"]'
 os.environ["ARCHITEQ_RATE_LIMIT_RPM"] = "0"
 os.environ.pop("ARCHITEQ_GOOGLE_API_KEY", None)
 
+import asyncio
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 import architeq_api.db as db_module
 from architeq_api.auth import hash_key
+from architeq_api.services import webhooks
 from architeq_api.main import app
 from architeq_api.models import Agent, ApiKey, Base, PhoneNumber, RetellLLM, Workspace
 
@@ -92,6 +95,11 @@ async def _fresh_db():
         )
         await session.commit()
     yield
+    # Drain fire-and-forget webhook/analysis tasks before tearing down: the
+    # in-memory SQLite engine shares one connection, so a task leaking into
+    # the next test could roll back that test's in-flight transaction.
+    while webhooks.background_tasks:
+        await asyncio.gather(*list(webhooks.background_tasks), return_exceptions=True)
     await engine.dispose()
 
 
