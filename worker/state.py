@@ -41,9 +41,7 @@ class CallState:
             self.items.append({"role": role, "content": content})
 
     def add_tool_invocation(self, name: str, arguments: str) -> None:
-        self.items.append(
-            {"role": "tool_call_invocation", "name": name, "arguments": arguments}
-        )
+        self.items.append({"role": "tool_call_invocation", "name": name, "arguments": arguments})
 
     def add_tool_result(self, name: str, content: str) -> None:
         self.items.append({"role": "tool_call_result", "name": name, "content": content})

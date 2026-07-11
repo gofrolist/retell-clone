@@ -70,9 +70,7 @@ def _build_sources(data: dict[str, Any]) -> list[dict[str, Any]]:
         sources.append({"type": "url", "source_id": new_source_id(), "url": url})
     for filename in data.get("knowledge_base_files") or []:
         # TODO: persist uploaded file content; we currently record metadata only.
-        sources.append(
-            {"type": "document", "source_id": new_source_id(), "filename": filename}
-        )
+        sources.append({"type": "document", "source_id": new_source_id(), "filename": filename})
     return sources
 
 

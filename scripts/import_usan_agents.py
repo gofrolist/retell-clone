@@ -84,7 +84,9 @@ def main() -> int:
     ap.add_argument("--companion-agent-id")
     ap.add_argument("--sales-agent-id")
     ap.add_argument("--betty-agent-id")
-    ap.add_argument("--webhook-url", help="agent-level call-events webhook (retell-call-ended)")
+    ap.add_argument(
+        "--webhook-url", help="agent-level call-events webhook (retell-call-ended)"
+    )
     ap.add_argument("--llm-model", default="gemini-2.5-flash")
     args = ap.parse_args()
 
@@ -140,10 +142,14 @@ def main() -> int:
             "/create-agent", json={k: v for k, v in agent_body.items() if v is not None}
         )
         agent.raise_for_status()
-        print(f"{role}: agent_id={agent.json()['agent_id']} llm_id={llm_id} tools={len(tools)}")
+        print(
+            f"{role}: agent_id={agent.json()['agent_id']} llm_id={llm_id} tools={len(tools)}"
+        )
 
-    print("\nNext: bind phone numbers (import-phone-number) and set the inbound "
-          "webhook URL to .../inbound-call-router — see docs/MIGRATION.md")
+    print(
+        "\nNext: bind phone numbers (import-phone-number) and set the inbound "
+        "webhook URL to .../inbound-call-router — see docs/MIGRATION.md"
+    )
     return 0
 
 

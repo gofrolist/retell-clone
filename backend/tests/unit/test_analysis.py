@@ -13,18 +13,14 @@ from app.services import analysis
 
 @pytest.fixture
 def with_api_key(monkeypatch):
-    monkeypatch.setattr(
-        analysis, "get_settings", lambda: Settings(google_api_key="fake-key")
-    )
+    monkeypatch.setattr(analysis, "get_settings", lambda: Settings(google_api_key="fake-key"))
 
 
 def _gemini_returning(payload: dict):
     client = SimpleNamespace(
         aio=SimpleNamespace(
             models=SimpleNamespace(
-                generate_content=AsyncMock(
-                    return_value=SimpleNamespace(text=json.dumps(payload))
-                )
+                generate_content=AsyncMock(return_value=SimpleNamespace(text=json.dumps(payload)))
             )
         )
     )
@@ -40,7 +36,9 @@ async def test_happy_path_normalizes_and_syncs_summary(with_api_key):
             "in_voicemail": False,
         }
     ):
-        result = await analysis.analyze_call("Agent: Hi\nUser: Hello", "outbound", 60000, "user_hangup")
+        result = await analysis.analyze_call(
+            "Agent: Hi\nUser: Hello", "outbound", 60000, "user_hangup"
+        )
     assert result["user_sentiment"] == "Positive"
     assert result["summary"] == result["call_summary"] == "User confirmed the appointment."
     assert result["call_successful"] is True

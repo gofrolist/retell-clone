@@ -20,9 +20,7 @@ def test_digest_matches_reference_implementation():
     api_key = "key_supersecret"
     ts = 1750000000000
     header = signature.sign(raw_body, api_key, timestamp_ms=ts)
-    expected = hmac.new(
-        api_key.encode(), f"{raw_body}{ts}".encode(), hashlib.sha256
-    ).hexdigest()
+    expected = hmac.new(api_key.encode(), f"{raw_body}{ts}".encode(), hashlib.sha256).hexdigest()
     assert header == f"v={ts},d={expected}"
 
 

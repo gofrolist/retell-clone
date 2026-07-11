@@ -180,9 +180,7 @@ async def finalize_call(
     if body.duration_ms:
         CALL_DURATION.observe(body.duration_ms / 1000)
 
-    webhooks.fire_and_forget(
-        _finalize_pipeline(call_id, body.in_voicemail)
-    )
+    webhooks.fire_and_forget(_finalize_pipeline(call_id, body.in_voicemail))
     return {"ok": True}
 
 

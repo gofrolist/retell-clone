@@ -10,16 +10,37 @@ from ..schemas import CreateAgentRequest, agent_to_dict
 router = APIRouter(tags=["agents"])
 
 _MUTABLE_FIELDS = {
-    "agent_name", "voice_id", "voice_model", "voice_temperature", "voice_speed",
-    "volume", "language", "responsiveness", "interruption_sensitivity",
-    "enable_backchannel", "backchannel_frequency", "backchannel_words",
-    "reminder_trigger_ms", "reminder_max_count", "ambient_sound",
-    "ambient_sound_volume", "webhook_url", "boosted_keywords",
-    "pronunciation_dictionary", "normalize_for_speech",
-    "end_call_after_silence_ms", "max_call_duration_ms", "voicemail_option",
-    "enable_voicemail_detection", "post_call_analysis_data",
-    "post_call_analysis_model", "begin_message_delay_ms", "stt_mode",
-    "denoising_mode", "opt_out_sensitive_data_storage", "response_engine",
+    "agent_name",
+    "voice_id",
+    "voice_model",
+    "voice_temperature",
+    "voice_speed",
+    "volume",
+    "language",
+    "responsiveness",
+    "interruption_sensitivity",
+    "enable_backchannel",
+    "backchannel_frequency",
+    "backchannel_words",
+    "reminder_trigger_ms",
+    "reminder_max_count",
+    "ambient_sound",
+    "ambient_sound_volume",
+    "webhook_url",
+    "boosted_keywords",
+    "pronunciation_dictionary",
+    "normalize_for_speech",
+    "end_call_after_silence_ms",
+    "max_call_duration_ms",
+    "voicemail_option",
+    "enable_voicemail_detection",
+    "post_call_analysis_data",
+    "post_call_analysis_model",
+    "begin_message_delay_ms",
+    "stt_mode",
+    "denoising_mode",
+    "opt_out_sensitive_data_storage",
+    "response_engine",
 }
 
 
@@ -30,9 +51,10 @@ async def create_agent(
     session: AsyncSession = Depends(get_session),
 ):
     data = body.model_dump(exclude_none=True, exclude={"agent_id"})
-    agent = Agent(workspace_id=api_key.workspace_id, **{
-        k: v for k, v in data.items() if k in _MUTABLE_FIELDS or k == "response_engine"
-    })
+    agent = Agent(
+        workspace_id=api_key.workspace_id,
+        **{k: v for k, v in data.items() if k in _MUTABLE_FIELDS or k == "response_engine"},
+    )
     if body.agent_id:  # import mode: preserve an existing Retell agent id
         if await session.get(Agent, body.agent_id) is not None:
             raise HTTPException(409, detail="agent_id already exists")

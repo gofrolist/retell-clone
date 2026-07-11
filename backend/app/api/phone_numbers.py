@@ -14,7 +14,10 @@ from ..schemas import (
 router = APIRouter(tags=["phone-numbers"])
 
 _MUTABLE_FIELDS = {
-    "nickname", "inbound_agent_id", "outbound_agent_id", "inbound_webhook_url",
+    "nickname",
+    "inbound_agent_id",
+    "outbound_agent_id",
+    "inbound_webhook_url",
     "inbound_webhook_secret_in_query",
 }
 

@@ -20,9 +20,7 @@ GOOGLE_CLAIMS = {
 
 @pytest.fixture
 def fake_google(monkeypatch):
-    monkeypatch.setattr(
-        auth_google, "verify_google_id_token", lambda token: dict(GOOGLE_CLAIMS)
-    )
+    monkeypatch.setattr(auth_google, "verify_google_id_token", lambda token: dict(GOOGLE_CLAIMS))
 
 
 async def test_login_issues_session_for_allowed_email(client, fake_google):

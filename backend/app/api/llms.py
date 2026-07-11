@@ -10,9 +10,16 @@ from ..schemas import CreateLLMRequest, llm_to_dict
 router = APIRouter(tags=["retell-llm"])
 
 _MUTABLE_FIELDS = {
-    "model", "model_temperature", "general_prompt", "general_tools", "states",
-    "starting_state", "begin_message", "start_speaker",
-    "default_dynamic_variables", "knowledge_base_ids",
+    "model",
+    "model_temperature",
+    "general_prompt",
+    "general_tools",
+    "states",
+    "starting_state",
+    "begin_message",
+    "start_speaker",
+    "default_dynamic_variables",
+    "knowledge_base_ids",
 }
 
 

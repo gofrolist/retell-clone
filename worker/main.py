@@ -121,9 +121,7 @@ def build_session(cfg: CallConfig) -> tuple[AgentSession, Any]:
     min_delay, max_delay = _endpointing_delays(cfg.agent.responsiveness)
     optional: dict[str, Any] = {
         "allow_interruptions": cfg.agent.interruption_sensitivity > 0,
-        "min_interruption_duration": _min_interruption_duration(
-            cfg.agent.interruption_sensitivity
-        ),
+        "min_interruption_duration": _min_interruption_duration(cfg.agent.interruption_sensitivity),
         # Closest option to end_call_after_silence_ms: the user is marked
         # "away" after this much silence and the worker hangs up (reason
         # "inactivity") from the user_state_changed handler.
@@ -169,9 +167,7 @@ class ArchiteqAgent(Agent):
 class CallRuntime:
     """Call-control surface handed to built-in tools (tools.CallControl)."""
 
-    def __init__(
-        self, ctx: JobContext, lkapi: api.LiveKitAPI, state: CallState
-    ) -> None:
+    def __init__(self, ctx: JobContext, lkapi: api.LiveKitAPI, state: CallState) -> None:
         self._ctx = ctx
         self._lkapi = lkapi
         self._state = state
@@ -181,9 +177,7 @@ class CallRuntime:
         self._state.set_reason_once(reason)
         self._state.ended_at_ms = self._state.ended_at_ms or now_ms()
         try:
-            await self._lkapi.room.delete_room(
-                api.DeleteRoomRequest(room=self._ctx.room.name)
-            )
+            await self._lkapi.room.delete_room(api.DeleteRoomRequest(room=self._ctx.room.name))
         except Exception as exc:  # noqa: BLE001 - room may already be gone
             logger.warning("delete_room failed: %s", exc)
 
@@ -211,9 +205,7 @@ def _is_sip_participant(p: rtc.RemoteParticipant) -> bool:
     return any(key.startswith("sip.") for key in p.attributes)
 
 
-async def _wait_for_sip_participant(
-    ctx: JobContext, timeout: float
-) -> rtc.RemoteParticipant:
+async def _wait_for_sip_participant(ctx: JobContext, timeout: float) -> rtc.RemoteParticipant:
     for p in ctx.room.remote_participants.values():
         if _is_sip_participant(p):
             return p
@@ -281,7 +273,7 @@ async def _load_call_config(
                 parsed = json.loads(raw)
                 if isinstance(parsed, dict):
                     meta.update(parsed)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 pass
     call_id = meta.get("call_id")
     if call_id:
@@ -419,9 +411,7 @@ async def _run_amd(
     message = amd.voicemail_message(cfg.agent.voicemail_option)
     if message:
         try:
-            await session.say(
-                resolve_template(message, variables), allow_interruptions=False
-            )
+            await session.say(resolve_template(message, variables), allow_interruptions=False)
         except Exception as exc:  # noqa: BLE001
             logger.warning("voicemail message playback failed: %s", exc)
     await runtime.end_call("machine_detected")
@@ -511,19 +501,15 @@ async def entrypoint(ctx: JobContext) -> None:
         # behavior is prompting for short verbal acknowledgments.
         instructions += (
             "\n\nWhile the user speaks, occasionally respond with brief verbal "
-            "acknowledgments (\"mm-hmm\", \"I see\") but never talk over them."
+            'acknowledgments ("mm-hmm", "I see") but never talk over them.'
         )
     begin_message = (
-        resolve_template(cfg.llm.begin_message, variables)
-        if cfg.llm.begin_message
-        else None
+        resolve_template(cfg.llm.begin_message, variables) if cfg.llm.begin_message else None
     )
 
     session, llm = build_session(cfg)
     amd_speech: list[str] = []
-    amd_window_open = {
-        "open": cfg.direction == "outbound" and cfg.agent.enable_voicemail_detection
-    }
+    amd_window_open = {"open": cfg.direction == "outbound" and cfg.agent.enable_voicemail_detection}
     _wire_session_events(session, state, runtime, amd_speech, amd_window_open)
 
     agent = ArchiteqAgent(

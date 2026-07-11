@@ -48,9 +48,7 @@ def chat_agent_to_dict(agent: Agent) -> dict[str, Any]:
 
 def _is_chat_agent(agent: Agent | None, workspace_id: str) -> bool:
     return (
-        agent is not None
-        and agent.workspace_id == workspace_id
-        and agent.voice_id == CHAT_VOICE_ID
+        agent is not None and agent.workspace_id == workspace_id and agent.voice_id == CHAT_VOICE_ID
     )
 
 
