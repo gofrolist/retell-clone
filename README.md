@@ -2,12 +2,12 @@
 
 Voice-AI phone agent platform, drop-in API-compatible with Retell AI.
 
-- **backend/** — FastAPI control plane: Retell-compatible `/v2` API, agents,
-  phone numbers, webhooks, post-call analysis.
-- **worker/** — LiveKit Agents voice worker: Cartesia STT/TTS, Gemini LLM,
-  Telnyx SIP telephony, custom-function tool calls.
-- **frontend/** — Architeq dashboard (Next.js), a rebranded clone of the
-  Retell dashboard.
+- **backend/** — FastAPI control plane (`src/architeq_api/`): Retell-compatible
+  `/v2` API, agents, phone numbers, webhooks, post-call analysis.
+- **worker/** — LiveKit Agents voice worker (`src/architeq_worker/`): Cartesia
+  STT/TTS, Gemini LLM, Telnyx SIP telephony, custom-function tool calls.
+- **frontend/** — Architeq dashboard (Next.js, code in `src/`), a rebranded
+  clone of the Retell dashboard.
 - **infra/** — Terraform (GCP/GKE) + Helm (services, LiveKit,
   kube-prometheus-stack).
 - **docs/** — [architecture](docs/ARCHITECTURE.md), Retell compatibility,
@@ -15,10 +15,18 @@ Voice-AI phone agent platform, drop-in API-compatible with Retell AI.
 
 ## Local development
 
+Toolchain: Python 3.14 + [uv](https://docs.astral.sh/uv/) for the Python apps,
+[bun](https://bun.sh/) for the frontend.
+
 ```bash
-docker compose up -d postgres redis livekit   # deps
-make api      # run FastAPI on :8080 (backend/)
-make worker   # run LiveKit agent worker (worker/)
+cd backend && uv sync && cd ..               # one-time: backend venv
+cd worker && uv sync && cd ..                # one-time: worker venv
+cd frontend && bun install && cd ..          # one-time: frontend deps
+pre-commit install                           # one-time: git hooks
+
+docker compose up -d postgres redis livekit  # deps
+make api      # run FastAPI on :8080 (uvicorn architeq_api.main:app)
+make worker   # run LiveKit agent worker (python -m architeq_worker.main)
 make web      # run dashboard on :3000 (frontend/)
 make test     # backend contract + unit tests
 ```
