@@ -1,0 +1,147 @@
+# Default values for the architeq umbrella chart.
+# Override per environment with -f values-<env>.yaml.
+
+global:
+  # Base domain; ingress hosts become api.<domain> and app.<domain>.
+  domain: architeq.example.com
+  # Artifact Registry prefix (terraform output `artifact_registry`).
+  imageRegistry: us-central1-docker.pkg.dev/PROJECT_ID/architeq
+  gcpProjectId: PROJECT_ID
+  imagePullPolicy: IfNotPresent
+
+# Shared, non-secret configuration (rendered into a ConfigMap).
+config:
+  # ws:// for in-cluster signalling; workers/api reach LiveKit via the
+  # cluster Service, the public wss://livekit.<domain> is for browsers.
+  livekitUrl: ws://livekit-server.livekit.svc.cluster.local:80
+  redisUrl: redis://REDIS_HOST:6379/0
+  recordingsGcsBucket: PROJECT_ID-architeq-recordings
+  logLevel: info
+  # Dashboard auth (Google Sign-In). Client id is public (also baked into the
+  # dashboard build as NEXT_PUBLIC_GOOGLE_CLIENT_ID); the allowlist gates
+  # who can log in. JSON-encoded lists, parsed by pydantic-settings.
+  googleOauthClientId: "CHANGE_ME.apps.googleusercontent.com"
+  dashboardAllowedEmails: '["you@example.com"]'
+  dashboardAllowedDomains: '[]'
+  # Browser origins allowed by CORS (the dashboard URL).
+  corsOrigins: '["https://app.DOMAIN"]'
+
+# Secret material. Rendered into an Opaque Secret when `secrets.create` is
+# true (values below are placeholders — supply real ones via a private
+# values file or CI). Set create=false and point existingSecret at a
+# secret synced by External Secrets Operator / GCP Secret Manager instead.
+secrets:
+  create: true
+  existingSecret: "" # used when create=false
+  values:
+    ARCHITEQ_DATABASE_URL: "postgresql+asyncpg://architeq:CHANGE_ME@DB_PRIVATE_IP:5432/architeq"
+    LIVEKIT_API_KEY: "CHANGE_ME"
+    LIVEKIT_API_SECRET: "CHANGE_ME"
+    GOOGLE_API_KEY: "CHANGE_ME"
+    CARTESIA_API_KEY: "CHANGE_ME"
+    # Shared token for worker -> api internal endpoints.
+    ARCHITEQ_INTERNAL_TOKEN: "CHANGE_ME"
+    # Shared secret sent as X-Caller-Secret on agent tool calls
+    # (= the consumer's RETELL_FUNCTION_SECRET).
+    ARCHITEQ_FUNCTION_SECRET: "CHANGE_ME"
+    # HS256 key for dashboard session JWTs (Google Sign-In).
+    ARCHITEQ_SESSION_SECRET: "CHANGE_ME"
+
+serviceAccounts:
+  # Workload Identity: KSA names must match the Terraform WI bindings.
+  api:
+    create: true
+    name: architeq-api
+    gsaEmail: architeq-api@PROJECT_ID.iam.gserviceaccount.com
+  worker:
+    create: true
+    name: architeq-worker
+    gsaEmail: architeq-worker@PROJECT_ID.iam.gserviceaccount.com
+
+ingress:
+  enabled: true
+  className: gce
+  # Name of the global static IP (terraform output `web_ip_name`).
+  staticIpName: architeq-web-ip
+  managedCertificate:
+    enabled: true
+
+# Prometheus Operator objects (requires kube-prometheus-stack CRDs).
+monitoring:
+  enabled: true
+  # Extra labels so the kube-prometheus-stack release selects these
+  # monitors (with serviceMonitorSelectorNilUsesHelmValues=false any
+  # namespace/label works; keep `release` for stricter setups).
+  labels:
+    release: monitoring
+
+api:
+  replicaCount: 2
+  image:
+    repository: architeq-api # appended to global.imageRegistry
+    tag: latest
+  containerPort: 8080
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  env: {} # extra plain env vars, name -> value
+
+worker:
+  replicaCount: 2
+  image:
+    repository: architeq-worker
+    tag: latest
+  metricsPort: 9090
+  # LiveKit agent name — must match the SIP dispatch rule.
+  agentName: architeq-agent
+  resources:
+    requests:
+      cpu: "2"
+      memory: 2Gi
+    limits:
+      cpu: "4"
+      memory: 4Gi
+  # Pin to the voice node pool (CPU-sensitive realtime audio).
+  nodeSelector:
+    workload: voice
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: voice
+      effect: NoSchedule
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 60
+    # Placeholder: scale on concurrent calls per worker once the custom
+    # metrics adapter (prometheus-adapter) exposes it.
+    customMetric:
+      enabled: false
+      name: architeq_worker_active_jobs
+      targetAverageValue: "8"
+  env: {}
+
+dashboard:
+  replicaCount: 2
+  image:
+    repository: architeq-dashboard
+    tag: latest
+  containerPort: 3000
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  env: {}

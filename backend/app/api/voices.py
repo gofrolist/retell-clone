@@ -1,0 +1,20 @@
+from fastapi import APIRouter, Depends, HTTPException
+
+from ..auth import require_api_key
+from ..models import ApiKey
+from ..voices import VOICES, VOICES_BY_ID
+
+router = APIRouter(tags=["voices"])
+
+
+@router.get("/list-voices")
+async def list_voices(api_key: ApiKey = Depends(require_api_key)):
+    return VOICES
+
+
+@router.get("/get-voice/{voice_id}")
+async def get_voice(voice_id: str, api_key: ApiKey = Depends(require_api_key)):
+    voice = VOICES_BY_ID.get(voice_id)
+    if voice is None:
+        raise HTTPException(404, detail="Voice not found")
+    return voice

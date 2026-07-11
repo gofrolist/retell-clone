@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  labels:
+    {{- include "architeq.labels" . | nindent 4 }}
+data:
+  ARCHITEQ_LIVEKIT_URL: {{ .Values.config.livekitUrl | quote }}
+  ARCHITEQ_REDIS_URL: {{ .Values.config.redisUrl | quote }}
+  RECORDINGS_GCS_BUCKET: {{ .Values.config.recordingsGcsBucket | quote }}
+  ARCHITEQ_LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  ARCHITEQ_PUBLIC_API_URL: "https://api.{{ .Values.global.domain }}"
+  ARCHITEQ_PUBLIC_APP_URL: "https://app.{{ .Values.global.domain }}"
+  ARCHITEQ_PUBLIC_LIVEKIT_URL: "wss://livekit.{{ .Values.global.domain }}"
+  # Dashboard auth + browser security
+  ARCHITEQ_GOOGLE_OAUTH_CLIENT_ID: {{ .Values.config.googleOauthClientId | quote }}
+  ARCHITEQ_DASHBOARD_ALLOWED_EMAILS: {{ .Values.config.dashboardAllowedEmails | quote }}
+  ARCHITEQ_DASHBOARD_ALLOWED_DOMAINS: {{ .Values.config.dashboardAllowedDomains | quote }}
+  ARCHITEQ_CORS_ORIGINS: {{ .Values.config.corsOrigins | default (printf "[\"https://app.%s\"]" .Values.global.domain) | quote }}

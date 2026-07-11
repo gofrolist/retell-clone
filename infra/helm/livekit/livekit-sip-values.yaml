@@ -1,0 +1,53 @@
+# Values for the LiveKit SIP bridge chart:
+#   helm install livekit-sip livekit/sip -n livekit -f livekit-sip-values.yaml
+#
+# livekit-sip terminates the Telnyx elastic SIP trunk and bridges PSTN
+# audio into LiveKit rooms. SIP trunks and dispatch rules themselves are
+# *data*, created via the `lk` CLI (see README.md), not chart values.
+
+replicaCount: 2
+
+config:
+  # Public wss URL of the LiveKit server (for the bridge to join rooms);
+  # in-cluster ws also works: ws://livekit-server.livekit.svc.cluster.local:80
+  ws_url: ws://livekit-server.livekit.svc.cluster.local:80
+
+  # Must match a key configured on the LiveKit server.
+  api_key: APIArchiteqKey
+  api_secret: "LIVEKIT_API_SECRET_CHANGE_ME"
+
+  redis:
+    address: REDIS_HOST:6379
+
+  sip_port: 5060
+  rtp_port:
+    start: 10000
+    end: 20000
+  use_external_ip: true
+  log_level: info
+
+# Expose SIP signalling on the reserved regional static IP as a UDP
+# LoadBalancer (terraform output `sip_ip`); Telnyx points its SIP
+# connection FQDN at sip.<domain> -> this IP.
+service:
+  type: LoadBalancer
+  loadBalancerIP: SIP_STATIC_IP # terraform output `sip_ip`
+  annotations:
+    cloud.google.com/l4-rbs: "enabled"
+
+nodeSelector:
+  workload: voice
+
+tolerations:
+  - key: dedicated
+    operator: Equal
+    value: voice
+    effect: NoSchedule
+
+resources:
+  requests:
+    cpu: "2"
+    memory: 2Gi
+  limits:
+    cpu: "4"
+    memory: 4Gi

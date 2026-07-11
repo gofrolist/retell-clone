@@ -1,0 +1,129 @@
+# Values for kube-prometheus-stack
+# (https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)
+#
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm install monitoring prometheus-community/kube-prometheus-stack \
+#     -n monitoring --create-namespace -f values.yaml
+#
+# Dashboards: create the ConfigMap from ./dashboards first —
+#   kubectl -n monitoring create configmap architeq-dashboards \
+#     --from-file=dashboards/ \
+#     --dry-run=client -o yaml | kubectl apply -f -
+
+fullnameOverride: monitoring
+
+prometheus:
+  prometheusSpec:
+    # Pick up ServiceMonitors/PodMonitors from any namespace and any
+    # release label (architeq + livekit charts create their own).
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+
+    retention: 15d
+    retentionSize: 45GB
+
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: standard-rwo
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 50Gi
+
+grafana:
+  # CHANGE ME (or better: set via --set-string grafana.adminPassword=... /
+  # an existing secret with grafana.admin.existingSecret).
+  adminPassword: CHANGE_ME_GRAFANA_ADMIN
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: architeq
+          orgId: 1
+          folder: Architeq
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/architeq
+
+  dashboardsConfigMaps:
+    architeq: architeq-dashboards
+
+  persistence:
+    enabled: true
+    size: 5Gi
+
+alertmanager:
+  alertmanagerSpec:
+    retention: 120h
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+# Trim node-level components' resource footprint.
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  # Node exporter must also run on tainted voice nodes.
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: voice
+      effect: NoSchedule
+
+# GKE manages the control plane; these scrapes always fail there.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+kubeEtcd:
+  enabled: false

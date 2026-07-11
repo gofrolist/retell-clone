@@ -1,0 +1,105 @@
+"""Per-call mutable state and the finalize payload builder
+(shape: docs/INTERNAL_API.md — POST /internal/calls/{call_id}/finalize).
+"""
+
+from __future__ import annotations
+
+import math
+import time
+from dataclasses import dataclass, field
+from typing import Any
+
+
+def now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _percentile(samples: list[float], pct: float) -> float:
+    xs = sorted(samples)
+    idx = max(0, min(len(xs) - 1, math.ceil(pct / 100.0 * len(xs)) - 1))
+    return xs[idx]
+
+
+@dataclass(slots=True)
+class CallState:
+    call_id: str = ""
+    direction: str = "outbound"
+    answered_at_ms: int | None = None
+    ended_at_ms: int | None = None
+    disconnection_reason: str | None = None
+    in_voicemail: bool | None = None
+    recording_url: str | None = None
+    finalized: bool = False
+    # Chronological items; role in {"agent","user"} for utterances, plus
+    # tool_call_invocation / tool_call_result entries.
+    items: list[dict[str, Any]] = field(default_factory=list)
+    # End-to-end latency samples (ms): llm ttft + tts ttfb per agent turn.
+    e2e_latency_ms: list[float] = field(default_factory=list)
+
+    def add_message(self, role: str, content: str) -> None:
+        if content:
+            self.items.append({"role": role, "content": content})
+
+    def add_tool_invocation(self, name: str, arguments: str) -> None:
+        self.items.append(
+            {"role": "tool_call_invocation", "name": name, "arguments": arguments}
+        )
+
+    def add_tool_result(self, name: str, content: str) -> None:
+        self.items.append({"role": "tool_call_result", "name": name, "content": content})
+
+    def set_reason_once(self, reason: str) -> None:
+        """First terminal reason wins (e.g. machine_detected beats the
+        agent_hangup that follows when the worker hangs up on voicemail)."""
+        if self.disconnection_reason is None:
+            self.disconnection_reason = reason
+
+    def transcript_object(self) -> list[dict[str, Any]]:
+        return [i for i in self.items if i.get("role") in ("agent", "user")]
+
+    def transcript_text(self) -> str:
+        # CONTRACT: "Agent: …" / "User: …" lines joined with "\n" — consumers
+        # parse this exact shape (docs/INTERNAL_API.md).
+        lines = []
+        for item in self.transcript_object():
+            speaker = "Agent" if item["role"] == "agent" else "User"
+            lines.append(f"{speaker}: {item['content']}")
+        return "\n".join(lines)
+
+    def _final_reason(self) -> str:
+        if self.disconnection_reason:
+            return self.disconnection_reason
+        # Answered calls that end without an explicit worker-side reason were
+        # ended by the remote party; unanswered outbound dials are no-answer.
+        return "user_hangup" if self.answered_at_ms else "dial_no_answer"
+
+    def build_finalize_payload(self) -> dict[str, Any]:
+        end_ms = self.ended_at_ms or now_ms()
+        reason = self._final_reason()
+        if reason.startswith("error"):
+            call_status = "error"
+        elif self.answered_at_ms:
+            call_status = "ended"
+        else:
+            call_status = "not_connected"
+        latency: dict[str, Any] | None = None
+        if self.e2e_latency_ms:
+            latency = {
+                "e2e": {
+                    "p50": round(_percentile(self.e2e_latency_ms, 50), 1),
+                    "p95": round(_percentile(self.e2e_latency_ms, 95), 1),
+                }
+            }
+        return {
+            "end_timestamp": end_ms,
+            # CONTRACT: duration_ms = answer→hangup talk time, NOT dial time.
+            "duration_ms": (end_ms - self.answered_at_ms) if self.answered_at_ms else 0,
+            "disconnection_reason": reason,
+            "call_status": call_status,
+            "transcript": self.transcript_text(),
+            "transcript_object": self.transcript_object(),
+            "transcript_with_tool_calls": list(self.items),
+            "recording_url": self.recording_url,
+            "in_voicemail": self.in_voicemail,
+            "latency": latency,
+        }

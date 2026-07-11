@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-dashboard
+  labels:
+    {{- include "architeq.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dashboard
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "architeq.selectorLabels" (dict "root" . "component" "dashboard") | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
