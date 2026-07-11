@@ -5,7 +5,7 @@
 
 services:
   postgres:
-    image: postgres:18
+    image: postgres:18@sha256:22c89fe0d0f507606260237fd55e51f6137f58b2d5bcf6152242b96d9fe8f9a4
     environment:
       POSTGRES_USER: architeq
       POSTGRES_PASSWORD: architeq
@@ -21,7 +21,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:8
+    image: redis:8@sha256:2838d5524559494f6f1cd66e97e76b200d64a633a8614200620755ed395daf32
     ports:
       - "6379:6379"
     healthcheck:
@@ -31,7 +31,7 @@ services:
       retries: 10
 
   livekit:
-    image: livekit/livekit-server:latest
+    image: livekit/livekit-server:v1.13.3@sha256:483b8b7b5b0654f91f1e8bdc7b46fcd37fd9911612ecf627f97e3185a89825bd
     # Dev mode: API key/secret pair is devkey/secret.
     command: --dev --bind 0.0.0.0
     ports:
