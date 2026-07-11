@@ -43,4 +43,4 @@ repos:
         entry: bash -c 'args=(); for f in "$@"; do args+=("${f#frontend/}"); done; cd frontend && bunx eslint --fix --report-unused-disable-directives --max-warnings 0 "${args[@]}"' --
         language: system
         types_or: [ts, tsx]
-        files: '^frontend/(app|components|lib)/.*\.(ts|tsx)$'
+        files: '^frontend/src/.*\.(ts|tsx)$'
