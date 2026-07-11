@@ -1,7 +1,7 @@
 import pytest
 
-from app import security
-from app.config import Settings
+from architeq_api import security
+from architeq_api.config import Settings
 
 
 @pytest.fixture

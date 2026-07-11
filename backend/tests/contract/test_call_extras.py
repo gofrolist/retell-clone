@@ -41,7 +41,7 @@ async def test_register_phone_call_does_not_dial(client, monkeypatch):
     async def _boom(call):  # custom telephony: our SIP stack must not dial
         raise AssertionError("register-phone-call must not start telephony")
 
-    monkeypatch.setattr("app.services.telephony.start_outbound_call", _boom)
+    monkeypatch.setattr("architeq_api.services.telephony.start_outbound_call", _boom)
     await _register_call(client)
 
 

@@ -21,7 +21,7 @@ ps:
 	docker compose ps
 
 api:
-	cd backend && uv run uvicorn app.main:app --reload --port 8080
+	cd backend && uv run uvicorn architeq_api.main:app --reload --port 8080
 
 worker:
 	cd worker && uv run python -m architeq_worker.main dev

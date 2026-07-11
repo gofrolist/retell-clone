@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.config import Settings
-from app.services import analysis
+from architeq_api.config import Settings
+from architeq_api.services import analysis
 
 
 @pytest.fixture
@@ -80,7 +80,7 @@ async def test_no_transcript_skips_model_and_keeps_machine_detected():
 
 async def test_seed_creates_workspace_and_demo(client):
     """seed() against the live test DB (also exercised by ops tooling)."""
-    from app.seed import seed
+    from architeq_api.seed import seed
 
     await seed(api_key="key_seeded_by_test_000000000000", workspace_name="Seeded", demo=True)
     resp = await client.get(
