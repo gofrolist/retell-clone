@@ -8,9 +8,9 @@ import respx
 from httpx import Response
 from sqlalchemy import update
 
-from app import signature
-from app.db import session_factory
-from app.models import Workspace
+from architeq_api import signature
+from architeq_api.db import session_factory
+from architeq_api.models import Workspace
 from tests.conftest import API_KEY, AUTH_HEADERS, FROM_NUMBER, INTERNAL_HEADERS, WORKSPACE_ID
 
 WEBHOOK_URL = "https://consumer.example/functions/v1/retell-call-ended"

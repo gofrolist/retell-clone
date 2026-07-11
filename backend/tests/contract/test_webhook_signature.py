@@ -7,7 +7,7 @@ import hmac
 import re
 import time
 
-from app import signature
+from architeq_api import signature
 
 
 def test_header_format():

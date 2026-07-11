@@ -19,7 +19,7 @@ email match or exact domain match only (no suffix tricks).
 ## SSRF protection
 
 Customer-supplied URLs (agent/workspace webhook URLs, phone-number inbound
-webhooks) are only fetched after `app/security.py:assert_url_safe` confirms
+webhooks) are only fetched after `architeq_api/security.py:assert_url_safe` confirms
 they are http(s) and resolve exclusively to public addresses — blocking
 loopback, RFC1918, link-local, and the GCP metadata server (169.254.169.254).
 Dev escape hatch: `ARCHITEQ_ALLOW_PRIVATE_WEBHOOKS=true`.

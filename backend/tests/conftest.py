@@ -14,10 +14,10 @@ os.environ.pop("ARCHITEQ_GOOGLE_API_KEY", None)
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-import app.db as db_module
-from app.auth import hash_key
-from app.main import app
-from app.models import Agent, ApiKey, Base, PhoneNumber, RetellLLM, Workspace
+import architeq_api.db as db_module
+from architeq_api.auth import hash_key
+from architeq_api.main import app
+from architeq_api.models import Agent, ApiKey, Base, PhoneNumber, RetellLLM, Workspace
 
 API_KEY = "key_test_0123456789abcdef0123456789abcdef"
 AGENT_ID = "agent_sales0000000000000000000001"
@@ -109,7 +109,7 @@ def _stub_telephony(monkeypatch):
     async def _noop(call):
         return None
 
-    monkeypatch.setattr("app.services.telephony.start_outbound_call", _noop)
+    monkeypatch.setattr("architeq_api.services.telephony.start_outbound_call", _noop)
 
 
 OTHER_API_KEY = "key_other_0123456789abcdef0123456789ab"

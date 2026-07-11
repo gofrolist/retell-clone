@@ -5,8 +5,8 @@ import time
 import jwt
 import pytest
 
-from app.api import auth_google
-from app.sessions import decode_session, issue_session
+from architeq_api.api import auth_google
+from architeq_api.sessions import decode_session, issue_session
 from tests.conftest import WORKSPACE_ID
 
 GOOGLE_CLAIMS = {
@@ -98,7 +98,7 @@ async def test_session_signed_with_wrong_secret_rejected(client):
 
 
 def test_email_allowlist_logic(monkeypatch):
-    from app.config import Settings
+    from architeq_api.config import Settings
 
     monkeypatch.setattr(
         auth_google,
@@ -119,8 +119,8 @@ def test_email_allowlist_logic(monkeypatch):
 
 
 def test_issue_session_requires_secret(monkeypatch):
-    from app import sessions
-    from app.config import Settings
+    from architeq_api import sessions
+    from architeq_api.config import Settings
 
     monkeypatch.setattr(sessions, "get_settings", lambda: Settings(session_secret=""))
     with pytest.raises(RuntimeError):
