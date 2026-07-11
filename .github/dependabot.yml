@@ -12,7 +12,8 @@ updates:
     schedule:
       interval: weekly
 
-  - package-ecosystem: npm
+  # Frontend uses bun (bun.lock), not npm
+  - package-ecosystem: bun
     directory: /frontend
     schedule:
       interval: weekly
@@ -21,6 +22,11 @@ updates:
     directories:
       - /backend
       - /worker
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker-compose
+    directory: /
     schedule:
       interval: weekly
 
