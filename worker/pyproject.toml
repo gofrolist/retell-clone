@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Architeq voice worker — LiveKit Agents pipeline (Cartesia STT/TTS + Gemini)"
 requires-python = ">=3.14"
 dependencies = [
-    "livekit-agents[cartesia,google]>=1.2,<2.0",
+    "livekit-agents[cartesia,google]>=1.6.5,<2.0",
     "httpx>=0.27",
     "prometheus-client>=0.20",
 ]
