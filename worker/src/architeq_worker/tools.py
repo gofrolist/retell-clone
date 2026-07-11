@@ -18,9 +18,9 @@ from typing import Any, Mapping, Protocol
 
 import httpx
 
-import metrics
-from state import CallState
-from variables import resolve_deep, resolve_template
+from architeq_worker import metrics
+from architeq_worker.state import CallState
+from architeq_worker.variables import resolve_deep, resolve_template
 
 logger = logging.getLogger("architeq-worker.tools")
 

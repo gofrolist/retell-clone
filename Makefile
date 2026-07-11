@@ -24,7 +24,7 @@ api:
 	cd backend && uv run uvicorn app.main:app --reload --port 8080
 
 worker:
-	cd worker && uv run python src/main.py dev
+	cd worker && uv run python -m architeq_worker.main dev
 
 web:
 	cd frontend && bun run dev

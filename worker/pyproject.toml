@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=83.0.0"]
-build-backend = "setuptools.build_meta"
+requires = ["uv_build>=0.11.28,<0.12.0"]
+build-backend = "uv_build"
 
 [project]
 name = "architeq-worker"
@@ -24,14 +24,10 @@ dev = [
     "prometheus-client>=0.20",
 ]
 
-[tool.setuptools]
-# Flat modules under src/; the Docker image runs `python main.py start` from
-# source, so installing the modules is only needed for `pip install .`.
-package-dir = { "" = "src" }
-py-modules = ["main", "config", "internal_api", "variables", "tools", "amd", "state", "metrics"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# CI installs only the dev group (no project), so tests import the package
+# straight from src/.
 pythonpath = ["src"]
 
 [tool.ruff]

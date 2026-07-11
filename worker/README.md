@@ -65,10 +65,10 @@ free. For exact aggregates use prometheus_client multiprocess mode (TODO).
 ## Development
 
 ```bash
-uv sync                          # installs runtime deps + dev group
-uv run python src/main.py dev    # local dev against LIVEKIT_URL
-uv run python src/main.py start  # production mode
-uv run pytest                    # unit tests (variables + tool-bridge contract)
+uv sync                                    # installs runtime deps + dev group
+uv run python -m architeq_worker.main dev  # local dev against LIVEKIT_URL
+uv run python -m architeq_worker.main start
+uv run pytest                              # unit tests (variables + tool-bridge contract)
 ```
 
 ## Docker

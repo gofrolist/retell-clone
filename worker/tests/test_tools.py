@@ -8,8 +8,8 @@ import json
 
 import httpx
 
-from state import CallState
-from tools import execute_custom_tool, safe_execute_custom_tool
+from architeq_worker.state import CallState
+from architeq_worker.tools import execute_custom_tool, safe_execute_custom_tool
 
 
 def _client(handler) -> httpx.AsyncClient:
