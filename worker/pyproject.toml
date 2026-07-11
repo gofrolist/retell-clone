@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "architeq-worker"
+version = "0.1.0"
+description = "Architeq voice worker — LiveKit Agents pipeline (Cartesia STT/TTS + Gemini)"
+requires-python = ">=3.14"
+dependencies = [
+    "livekit-agents[cartesia,google]>=1.2,<2.0",
+    "httpx>=0.27",
+    "prometheus-client>=0.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.setuptools]
+# Flat module layout; the Docker image runs `python main.py start` from
+# source, so installing the modules is only needed for `pip install .`.
+py-modules = ["main", "config", "internal_api", "variables", "tools", "amd", "state", "metrics"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

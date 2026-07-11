@@ -1,0 +1,10 @@
+apiVersion: v2
+name: architeq
+description: Architeq voice-AI platform — api (FastAPI control plane), worker (LiveKit Agents), dashboard (Next.js)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - voice
+  - livekit
+  - retell

@@ -1,0 +1,67 @@
+# Values for the official LiveKit server chart:
+#   helm repo add livekit https://helm.livekit.io
+#   helm install livekit-server livekit/livekit-server -n livekit -f livekit-server-values.yaml
+#
+# Strategy on GKE: hostNetwork-style port exposure for RTC media (UDP
+# 50000-60000 straight on node IPs — matches the terraform firewall rule
+# targeting the `voice-pool` node tag), plus a LoadBalancer Service for
+# wss:// signalling pinned to the reserved static IP.
+
+replicaCount: 2
+
+livekit:
+  port: 7880
+  log_level: info
+
+  rtc:
+    tcp_port: 7881
+    port_range_start: 50000
+    port_range_end: 60000
+    # Nodes advertise their external IPs for ICE.
+    use_external_ip: true
+
+  # Multi-node routing requires Redis (Memorystore).
+  # REDIS_HOST placeholder: terraform output `redis_host`.
+  redis:
+    address: REDIS_HOST:6379
+
+  # API keys shared with architeq-api / worker / livekit-sip.
+  # Generate once: `openssl rand -hex 16` (key) / `openssl rand -hex 32` (secret),
+  # keep in sync with the architeq chart's LIVEKIT_API_KEY/SECRET.
+  keys:
+    APIArchiteqKey: "LIVEKIT_API_SECRET_CHANGE_ME"
+
+  # TLS terminates at the LoadBalancer/Ingress layer or via turn/domain
+  # config; for GKE the simplest is wss:// via the LB below + cert on a
+  # proxy, or enable the chart's built-in turn+tls with a cert secret.
+
+loadBalancer:
+  # GKE external LB for signalling (wss://livekit.<domain>).
+  type: gke-managed-cert
+  staticIpName: architeq-livekit-ip # terraform output `web_ip_name` sibling: <cluster>-livekit-ip
+  servicePort: 443
+  clusterIssuer: ""
+
+# Pin LiveKit to the voice node pool.
+nodeSelector:
+  workload: voice
+
+tolerations:
+  - key: dedicated
+    operator: Equal
+    value: voice
+    effect: NoSchedule
+
+resources:
+  requests:
+    cpu: "4"
+    memory: 4Gi
+  limits:
+    cpu: "6"
+    memory: 8Gi
+
+# Prometheus metrics (scraped by kube-prometheus-stack).
+serviceMonitor:
+  create: true
+  labels:
+    release: monitoring

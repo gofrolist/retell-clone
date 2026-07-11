@@ -1,0 +1,49 @@
+# Local development dependencies for Architeq.
+# App processes (api / worker / dashboard) run on the host via `make api`,
+# `make worker`, `make web` for fast reload; this file provides the backing
+# services only.
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: architeq
+      POSTGRES_PASSWORD: architeq
+      POSTGRES_DB: architeq
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U architeq -d architeq"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  livekit:
+    image: livekit/livekit-server:latest
+    # Dev mode: API key/secret pair is devkey/secret.
+    command: --dev --bind 0.0.0.0
+    ports:
+      - "7880:7880"      # ws signalling
+      - "7881:7881"      # ICE/TCP
+      - "7882:7882/udp"  # media (dev mode single UDP port)
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # livekit-sip is intentionally not run locally — telephony testing
+  # happens against the GKE deployment (needs a public IP for Telnyx).
+
+volumes:
+  pgdata:
