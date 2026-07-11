@@ -21,7 +21,7 @@ jobs:
       - name: Contract + unit tests (with coverage gate)
         run: uv run --no-sync python -m pytest tests/ -q --cov=app --cov-report=term-missing --cov-fail-under=80
       - name: Lint
-        run: uv run --no-sync ruff check app tests
+        run: uv run --no-sync ruff check src tests
 
   worker:
     runs-on: ubuntu-latest

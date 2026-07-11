@@ -19,7 +19,7 @@ names; extra fields may be present (allowed by the compatibility policy).
 | **Concurrency** | `GET /get-concurrency` | Full (static limits until billing exists) |
 | **Webhooks (outbound)** | `call_started`, `call_ended`, `call_analyzed` + inbound `call_inbound` routing webhook | Full incl. `x-retell-signature` |
 
-Dashboard-only endpoints (Architeq additions, `backend/app/api/dashboard.py`;
+Dashboard-only endpoints (Architeq additions, `backend/src/app/api/dashboard.py`;
 Retell serves these from its private dashboard API): `GET /analytics/calls`,
 contacts CRUD (`/list-contacts`, `/create-contact`, `/update-contact/{id}`,
 `/delete-contact/{id}`), alerts CRUD, QA-cohort CRUD, API-key management
