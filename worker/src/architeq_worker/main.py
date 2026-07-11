@@ -34,13 +34,13 @@ import httpx
 from livekit import api, rtc
 from livekit.agents import Agent, AgentSession, JobContext, cli
 
-import amd
-import metrics
-from config import CallConfig
-from internal_api import InternalAPI, InternalAPIError
-from state import CallState, now_ms
-from tools import build_tools
-from variables import resolve_template
+from architeq_worker import amd
+from architeq_worker import metrics
+from architeq_worker.config import CallConfig
+from architeq_worker.internal_api import InternalAPI, InternalAPIError
+from architeq_worker.state import CallState, now_ms
+from architeq_worker.tools import build_tools
+from architeq_worker.variables import resolve_template
 
 logger = logging.getLogger("architeq-worker")
 

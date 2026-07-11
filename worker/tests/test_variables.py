@@ -1,4 +1,4 @@
-from variables import resolve_deep, resolve_template
+from architeq_worker.variables import resolve_deep, resolve_template
 
 
 def test_basic_substitution() -> None:

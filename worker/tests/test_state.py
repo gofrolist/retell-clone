@@ -1,6 +1,6 @@
 """CallState / finalize payload — the worker side of the finalize contract."""
 
-from state import CallState
+from architeq_worker.state import CallState
 
 
 def _answered_state() -> CallState:
