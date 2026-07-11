@@ -23,9 +23,7 @@ async def test_create_batch_call_dials_each_task(client):
     body = resp.json()
     assert body["batch_call_id"].startswith("bc_")
 
-    calls = (
-        await client.post("/v2/list-calls", headers=AUTH_HEADERS, json={})
-    ).json()
+    calls = (await client.post("/v2/list-calls", headers=AUTH_HEADERS, json={})).json()
     assert len(calls) == 2
     by_to = {c["to_number"]: c for c in calls}
     assert set(by_to) == {"+12137774445", "+12137774446"}

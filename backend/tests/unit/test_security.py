@@ -7,9 +7,7 @@ from app.config import Settings
 @pytest.fixture
 def strict_settings(monkeypatch):
     """SSRF checks on (conftest sets ARCHITEQ_ALLOW_PRIVATE_WEBHOOKS=true)."""
-    monkeypatch.setattr(
-        security, "get_settings", lambda: Settings(allow_private_webhooks=False)
-    )
+    monkeypatch.setattr(security, "get_settings", lambda: Settings(allow_private_webhooks=False))
 
 
 class TestAssertUrlSafe:
@@ -42,9 +40,7 @@ class TestAssertUrlSafe:
         security.assert_url_safe("https://8.8.8.8/webhook")
 
     def test_dev_escape_hatch_allows_everything(self, monkeypatch):
-        monkeypatch.setattr(
-            security, "get_settings", lambda: Settings(allow_private_webhooks=True)
-        )
+        monkeypatch.setattr(security, "get_settings", lambda: Settings(allow_private_webhooks=True))
         security.assert_url_safe("http://127.0.0.1/x")
 
 

@@ -82,9 +82,7 @@ async def test_create_web_call_returns_access_token(client):
 
 async def test_get_call_keeps_web_call_shape(client):
     created = (
-        await client.post(
-            "/v2/create-web-call", headers=AUTH_HEADERS, json={"agent_id": AGENT_ID}
-        )
+        await client.post("/v2/create-web-call", headers=AUTH_HEADERS, json={"agent_id": AGENT_ID})
     ).json()
     got = await client.get(f"/v2/get-call/{created['call_id']}", headers=AUTH_HEADERS)
     assert got.status_code == 200
@@ -144,9 +142,7 @@ async def test_delete_call_returns_204_and_removes_call(client):
 
 async def test_delete_call_scoped_to_workspace(client, other_workspace):
     call = await _register_call(client)
-    resp = await client.delete(
-        f"/v2/delete-call/{call['call_id']}", headers=OTHER_AUTH_HEADERS
-    )
+    resp = await client.delete(f"/v2/delete-call/{call['call_id']}", headers=OTHER_AUTH_HEADERS)
     assert resp.status_code == 404
 
 
@@ -155,9 +151,7 @@ async def test_delete_call_scoped_to_workspace(client, other_workspace):
 
 async def test_rerun_call_analysis_returns_201_with_analysis(client):
     call = await _register_call(client)
-    resp = await client.put(
-        f"/rerun-call-analysis/{call['call_id']}", headers=AUTH_HEADERS
-    )
+    resp = await client.put(f"/rerun-call-analysis/{call['call_id']}", headers=AUTH_HEADERS)
     assert resp.status_code == 201
     body = resp.json()
     assert body["call_id"] == call["call_id"]

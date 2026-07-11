@@ -33,9 +33,7 @@ def _coerce_dynamic_variables(raw: dict | None) -> dict[str, str]:
     return {str(k): str(v) for k, v in (raw or {}).items()}
 
 
-async def _get_workspace_agent(
-    session: AsyncSession, workspace_id: str, agent_id: str
-) -> Agent:
+async def _get_workspace_agent(session: AsyncSession, workspace_id: str, agent_id: str) -> Agent:
     agent = await session.get(Agent, agent_id)
     if agent is None or agent.workspace_id != workspace_id:
         raise HTTPException(422, detail=f"agent {agent_id} not found")
@@ -161,7 +159,9 @@ async def list_calls(
             else:
                 q = q.where(Call.created_at_ms < anchor.created_at_ms)
 
-    order = Call.created_at_ms.asc() if body.sort_order == "ascending" else Call.created_at_ms.desc()
+    order = (
+        Call.created_at_ms.asc() if body.sort_order == "ascending" else Call.created_at_ms.desc()
+    )
     rows = (await session.scalars(q.order_by(order).limit(body.limit))).all()
     return [serialize_call(c) for c in rows]
 
@@ -186,9 +186,7 @@ async def register_phone_call(
         from_number=body.from_number,
         to_number=body.to_number,
         metadata_=body.metadata,
-        retell_llm_dynamic_variables=_coerce_dynamic_variables(
-            body.retell_llm_dynamic_variables
-        ),
+        retell_llm_dynamic_variables=_coerce_dynamic_variables(body.retell_llm_dynamic_variables),
     )
     session.add(call)
     await session.commit()
@@ -213,9 +211,7 @@ async def create_web_call(
         call_status="registered",
         direction="inbound",  # not exposed for web calls; column is non-null
         metadata_=body.metadata,
-        retell_llm_dynamic_variables=_coerce_dynamic_variables(
-            body.retell_llm_dynamic_variables
-        ),
+        retell_llm_dynamic_variables=_coerce_dynamic_variables(body.retell_llm_dynamic_variables),
     )
     call.livekit_room = telephony.room_name(call)
     call.access_token = _web_call_access_token(call)

@@ -61,9 +61,7 @@ async def test_create_knowledge_base_requires_name(client):
 
 async def test_get_and_list_knowledge_bases(client):
     kb = await _create_kb(client)
-    got = await client.get(
-        f"/get-knowledge-base/{kb['knowledge_base_id']}", headers=AUTH_HEADERS
-    )
+    got = await client.get(f"/get-knowledge-base/{kb['knowledge_base_id']}", headers=AUTH_HEADERS)
     assert got.status_code == 200
     assert got.json()["knowledge_base_id"] == kb["knowledge_base_id"]
 
@@ -98,9 +96,9 @@ async def test_add_and_delete_knowledge_base_sources(client):
         f"/delete-knowledge-base-source/{kb_id}/source/{victim}", headers=AUTH_HEADERS
     )
     assert deleted.status_code == 204
-    remaining = (
-        await client.get(f"/get-knowledge-base/{kb_id}", headers=AUTH_HEADERS)
-    ).json()["knowledge_base_sources"]
+    remaining = (await client.get(f"/get-knowledge-base/{kb_id}", headers=AUTH_HEADERS)).json()[
+        "knowledge_base_sources"
+    ]
     assert victim not in {s["source_id"] for s in remaining}
     assert len(remaining) == 2
 
@@ -116,14 +114,10 @@ async def test_delete_knowledge_base(client):
         f"/delete-knowledge-base/{kb['knowledge_base_id']}", headers=AUTH_HEADERS
     )
     assert resp.status_code == 204
-    got = await client.get(
-        f"/get-knowledge-base/{kb['knowledge_base_id']}", headers=AUTH_HEADERS
-    )
+    got = await client.get(f"/get-knowledge-base/{kb['knowledge_base_id']}", headers=AUTH_HEADERS)
     assert got.status_code == 404
 
 
 async def test_knowledge_base_requires_auth(client):
-    resp = await client.post(
-        "/create-knowledge-base", json={"knowledge_base_name": "KB"}
-    )
+    resp = await client.post("/create-knowledge-base", json={"knowledge_base_name": "KB"})
     assert resp.status_code == 401

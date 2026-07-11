@@ -13,6 +13,23 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
+  {
+    rules: {
+      // The dashboard fetches data client-side in effects (setLoading + async
+      // load); restructuring around this rule is not worth it for now.
+      "react-hooks/set-state-in-effect": "off",
+      // Underscore prefix marks intentionally unused bindings
+      // (e.g. destructure-to-omit).
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          ignoreRestSiblings: true,
+        },
+      ],
+    },
+  },
 ]);
 
 export default eslintConfig;

@@ -1,0 +1,46 @@
+# Hooks run at commit time only.
+default_stages: [pre-commit]
+
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: end-of-file-fixer
+        exclude: '\.tsbuildinfo$'
+      - id: trailing-whitespace
+      - id: check-merge-conflict
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.21
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: pytest-backend
+        name: pytest (backend)
+        entry: bash -c 'cd backend && uv run python -m pytest tests -q --tb=line'
+        language: system
+        pass_filenames: false
+        files: '^backend/.*\.py$'
+
+      - id: pytest-worker
+        name: pytest (worker)
+        entry: bash -c 'cd worker && uv run --only-group dev python -m pytest tests -q --tb=line'
+        language: system
+        pass_filenames: false
+        files: '^worker/.*\.py$'
+
+      - id: eslint
+        name: eslint
+        entry: bash -c 'args=(); for f in "$@"; do args+=("${f#frontend/}"); done; cd frontend && bunx eslint --fix --report-unused-disable-directives --max-warnings 0 "${args[@]}"' --
+        language: system
+        types_or: [ts, tsx]
+        files: '^frontend/(app|components|lib)/.*\.(ts|tsx)$'

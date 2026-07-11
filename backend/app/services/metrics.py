@@ -19,6 +19,4 @@ INBOUND_RESOLUTIONS = Counter(
     "Inbound webhook routing results",
     ["outcome"],  # webhook_ok | webhook_failed_fallback | no_webhook
 )
-ANALYSIS_RUNS = Counter(
-    "architeq_analysis_runs_total", "Post-call analysis runs", ["outcome"]
-)
+ANALYSIS_RUNS = Counter("architeq_analysis_runs_total", "Post-call analysis runs", ["outcome"])

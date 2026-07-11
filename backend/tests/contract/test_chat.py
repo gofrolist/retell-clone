@@ -27,9 +27,7 @@ async def test_create_chat(client):
 
 
 async def test_create_chat_unknown_agent_is_non_2xx(client):
-    resp = await client.post(
-        "/create-chat", headers=AUTH_HEADERS, json={"agent_id": "agent_nope"}
-    )
+    resp = await client.post("/create-chat", headers=AUTH_HEADERS, json={"agent_id": "agent_nope"})
     assert resp.status_code == 422
 
 

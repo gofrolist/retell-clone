@@ -126,9 +126,7 @@ def _make_http_tool(
     return function_tool(handler, raw_schema=schema)
 
 
-def _make_end_call_tool(
-    entry: dict[str, Any], *, control: CallControl, state: CallState
-) -> Any:
+def _make_end_call_tool(entry: dict[str, Any], *, control: CallControl, state: CallState) -> Any:
     from livekit.agents import RunContext, function_tool
 
     name = entry.get("name") or "end_call"
@@ -229,9 +227,7 @@ def build_tools(
             tools.append(_make_end_call_tool(entry, control=control, state=state))
         elif tool_type == "transfer_call":
             tools.append(
-                _make_transfer_call_tool(
-                    entry, control=control, variables=variables, state=state
-                )
+                _make_transfer_call_tool(entry, control=control, variables=variables, state=state)
             )
         elif entry.get("url"):
             tools.append(

@@ -2,10 +2,7 @@ from variables import resolve_deep, resolve_template
 
 
 def test_basic_substitution() -> None:
-    assert (
-        resolve_template("Hello {{first_name}}!", {"first_name": "John"})
-        == "Hello John!"
-    )
+    assert resolve_template("Hello {{first_name}}!", {"first_name": "John"}) == "Hello John!"
 
 
 def test_multiple_and_repeated_keys() -> None:
@@ -27,10 +24,7 @@ def test_whitespace_inside_braces() -> None:
 def test_arbitrary_keys_not_renamed() -> None:
     # ARCHITECTURE.md rule 5: arbitrary string keys, no renaming/dropping.
     variables = {"weird key.with-chars": "v", "is_day_1": "true"}
-    assert (
-        resolve_template("{{weird key.with-chars}}/{{is_day_1}}", variables)
-        == "v/true"
-    )
+    assert resolve_template("{{weird key.with-chars}}/{{is_day_1}}", variables) == "v/true"
 
 
 def test_non_string_value_stringified() -> None:

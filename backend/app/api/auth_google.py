@@ -64,9 +64,7 @@ def verify_google_id_token(token: str) -> dict:
 
 
 @router.post("/google")
-async def google_login(
-    body: GoogleLoginRequest, session: AsyncSession = Depends(get_session)
-):
+async def google_login(body: GoogleLoginRequest, session: AsyncSession = Depends(get_session)):
     claims = verify_google_id_token(body.id_token)
     email = claims.get("email", "")
     if not _email_allowed(email):

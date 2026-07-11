@@ -46,9 +46,7 @@ class InternalAPI:
             raise InternalAPIError(f"config fetch for {call_id} -> {resp.status_code}")
         return resp.json()
 
-    async def resolve_inbound(
-        self, from_number: str, to_number: str, room: str
-    ) -> dict[str, Any]:
+    async def resolve_inbound(self, from_number: str, to_number: str, room: str) -> dict[str, Any]:
         resp = await self._http.post(
             f"{self._base_url}/internal/inbound/resolve",
             json={"from_number": from_number, "to_number": to_number, "room": room},

@@ -93,9 +93,7 @@ class TestPhoneNumbers:
         listed = await client.get("/list-phone-numbers", headers=AUTH_HEADERS)
         assert any(p["phone_number"] == "+14155550123" for p in listed.json())
 
-        deleted = await client.delete(
-            "/delete-phone-number/+14155550123", headers=AUTH_HEADERS
-        )
+        deleted = await client.delete("/delete-phone-number/+14155550123", headers=AUTH_HEADERS)
         assert deleted.status_code == 204
 
     async def test_duplicate_number_conflicts(self, client):
@@ -114,9 +112,7 @@ class TestPhoneNumbers:
     async def test_other_workspace_isolation(self, client, other_workspace):
         from tests.conftest import FROM_NUMBER
 
-        resp = await client.get(
-            f"/get-phone-number/{FROM_NUMBER}", headers=OTHER_AUTH_HEADERS
-        )
+        resp = await client.get(f"/get-phone-number/{FROM_NUMBER}", headers=OTHER_AUTH_HEADERS)
         assert resp.status_code == 404
 
 
@@ -152,9 +148,7 @@ class TestAgents:
 
         deleted = await client.delete(f"/delete-agent/{agent_id}", headers=AUTH_HEADERS)
         assert deleted.status_code == 204
-        assert (
-            await client.get(f"/get-agent/{agent_id}", headers=AUTH_HEADERS)
-        ).status_code == 404
+        assert (await client.get(f"/get-agent/{agent_id}", headers=AUTH_HEADERS)).status_code == 404
 
     async def test_agent_id_preserved_on_import_and_conflicts(self, client):
         body = {
