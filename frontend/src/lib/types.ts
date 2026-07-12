@@ -10,7 +10,6 @@ export interface Agent {
   voice_name: string;
   voice_avatar?: string; // emoji/initial used for the round avatar
   language: string;
-  llm_model: string;
   phone_number?: string | null;
   version: number;
   last_modification_timestamp: number; // ms epoch

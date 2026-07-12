@@ -7,6 +7,7 @@ import { RadioRow } from "@/components/ui/RadioRow";
 import Select from "@/components/ui/Select";
 import { api } from "@/lib/api";
 import type { Alert } from "@/lib/types";
+import { withValue } from "@/lib/utils";
 import { Plus, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -29,13 +30,6 @@ const METRIC_OPTIONS = [
   { value: "duration", label: "Average Duration" },
   { value: "latency", label: "Average Latency" },
 ];
-
-/** Ensure a select can render a stored value that isn't in the preset list. */
-function withValue(options: { value: string; label: string }[], value: string) {
-  return options.some((o) => o.value === value)
-    ? options
-    : [{ value, label: value }, ...options];
-}
 
 export default function CreateAlertModal({
   open,

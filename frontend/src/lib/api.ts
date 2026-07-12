@@ -286,7 +286,6 @@ export function uiAgentFromRaw(a: RawAgent, phones: RawPhoneNumber[] = []): Agen
     voice_name: voiceName,
     voice_avatar: voiceName.charAt(0).toUpperCase(),
     language: a.language,
-    llm_model: "",
     phone_number: phone?.phone_number ?? null,
     version: a.version,
     last_modification_timestamp: a.last_modification_timestamp,

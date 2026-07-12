@@ -17,6 +17,7 @@ import TranscriptionSection from "@/components/editor/sections/TranscriptionSect
 import WebhookSection from "@/components/editor/sections/WebhookSection";
 import Accordion from "@/components/ui/Accordion";
 import { api, type RawAgent, type RawLlm } from "@/lib/api";
+import { DEFAULT_POST_CALL_ANALYSIS_MODEL } from "@/lib/models";
 import {
   AudioLines,
   Captions,
@@ -251,7 +252,7 @@ export default function AgentEditorPage({
           </Accordion>
           <Accordion icon={LineChart} title="Post-Call Data Extraction">
             <PostCallSection
-              model={str(view.post_call_analysis_model, "gemini-2.5-flash")}
+              model={str(view.post_call_analysis_model, DEFAULT_POST_CALL_ANALYSIS_MODEL)}
               onModel={(v) => setAgentField("post_call_analysis_model", v)}
             />
           </Accordion>

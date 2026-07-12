@@ -4,6 +4,7 @@ import { VoiceAvatar } from "@/components/agents/AgentsTable";
 import Select from "@/components/ui/Select";
 import { voiceNameFromId } from "@/lib/api";
 import { LLM_MODELS } from "@/lib/models";
+import { withValue } from "@/lib/utils";
 import { BookOpen, Clock4, Settings2, Sparkles } from "lucide-react";
 
 const LANGUAGES: { value: string; label: string; flag: string }[] = [
@@ -31,24 +32,19 @@ export default function SelectorRow({
   onLanguage: (v: string) => void;
   voices: { voice_id: string; voice_name: string }[];
 }) {
-  const knownModels = LLM_MODELS.map((m) => ({ value: m.id, label: m.label }));
-  const modelOptions =
-    model && !LLM_MODELS.some((m) => m.id === model)
-      ? [{ value: model, label: model }, ...knownModels]
-      : knownModels;
+  const modelOptions = withValue(
+    LLM_MODELS.map((m) => ({ value: m.id, label: m.label })),
+    model,
+  );
 
-  const voiceOptions = (
-    voices.some((v) => v.voice_id === voiceId)
-      ? voices
-      : [{ voice_id: voiceId, voice_name: voiceNameFromId(voiceId) }, ...voices]
-  ).map((v) => ({ value: v.voice_id, label: v.voice_name }));
+  const voiceOptions = withValue(
+    voices.map((v) => ({ value: v.voice_id, label: v.voice_name })),
+    voiceId,
+    voiceNameFromId(voiceId),
+  );
   const voiceName = voices.find((v) => v.voice_id === voiceId)?.voice_name ?? voiceNameFromId(voiceId);
 
-  const languageOptions: { value: string; label: string }[] = LANGUAGES.some(
-    (l) => l.value === language,
-  )
-    ? LANGUAGES
-    : [{ value: language, label: language }, ...LANGUAGES];
+  const languageOptions = withValue(LANGUAGES, language);
   const flag = LANGUAGES.find((l) => l.value === language)?.flag ?? "🌐";
 
   return (
