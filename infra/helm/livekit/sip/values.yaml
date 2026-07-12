@@ -11,7 +11,7 @@ image:
 # Rendered verbatim into the SIP_CONFIG_BODY secret (plus health/metrics
 # ports below). See https://github.com/livekit/sip for the schema.
 config:
-  ws_url: ws://livekit-server.livekit.svc.cluster.local:80
+  ws_url: ws://livekit-server.livekit.svc.cluster.local:443
   api_key: ""
   api_secret: ""
   redis:

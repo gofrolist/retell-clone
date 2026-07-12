@@ -9,8 +9,8 @@ replicaCount: 2
 
 config:
   # Public wss URL of the LiveKit server (for the bridge to join rooms);
-  # in-cluster ws also works: ws://livekit-server.livekit.svc.cluster.local:80
-  ws_url: ws://livekit-server.livekit.svc.cluster.local:80
+  # in-cluster ws also works: ws://livekit-server.livekit.svc.cluster.local:443
+  ws_url: ws://livekit-server.livekit.svc.cluster.local:443
 
   # Must match a key configured on the LiveKit server.
   api_key: APIArchiteqKey
