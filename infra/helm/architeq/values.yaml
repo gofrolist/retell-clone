@@ -2,7 +2,7 @@
 # Override per environment with -f values-<env>.yaml.
 
 global:
-  # Base domain; ingress hosts become api.<domain> and app.<domain>.
+  # Base domain; ingress hosts become api.<domain> and dashboard.<domain>.
   domain: architeq.example.com
   # Artifact Registry prefix (terraform output `artifact_registry`).
   imageRegistry: us-central1-docker.pkg.dev/PROJECT_ID/architeq
@@ -25,7 +25,7 @@ config:
   dashboardAllowedEmails: '["you@example.com"]'
   dashboardAllowedDomains: '[]'
   # Browser origins allowed by CORS (the dashboard URL).
-  corsOrigins: '["https://app.DOMAIN"]'
+  corsOrigins: '["https://dashboard.DOMAIN"]'
 
 # Secret material. Rendered into an Opaque Secret when `secrets.create` is
 # true (values below are placeholders — supply real ones via a private

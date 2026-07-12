@@ -1,5 +1,5 @@
 # Static IPs and DNS.
-#   web_ip     — global, for the GCE HTTPS ingress (api.<domain>, app.<domain>)
+#   web_ip     — global, for the GCE HTTPS ingress (api.<domain>, dashboard.<domain>)
 #   livekit_ip — global, for the LiveKit signalling GCE Ingress + managed cert
 #                (the chart's loadBalancer.type gke-managed-cert renders an
 #                Ingress, and global HTTP(S) LBs only bind global addresses)
@@ -39,10 +39,10 @@ locals {
 
   # subdomain -> address, shared by both DNS backends.
   dns_records = {
-    api     = google_compute_global_address.web.address
-    app     = google_compute_global_address.web.address
-    livekit = google_compute_global_address.livekit.address
-    sip     = google_compute_address.sip.address
+    api       = google_compute_global_address.web.address
+    dashboard = google_compute_global_address.web.address
+    livekit   = google_compute_global_address.livekit.address
+    sip       = google_compute_address.sip.address
   }
 }
 
