@@ -169,6 +169,27 @@ export interface RawLlm {
         execution_message_description?: string;
         transfer_destination?: { type?: string; number?: string; [key: string]: unknown };
         number?: string;
+        delay_ms?: number;
+        cal_api_key?: string;
+        event_type_id?: number | string;
+        timezone?: string;
+        sms_content?: {
+          type?: string;
+          content?: string;
+          prompt?: string;
+          template?: string;
+          [key: string]: unknown;
+        };
+        variables?: {
+          name?: string;
+          type?: string;
+          description?: string;
+          choices?: string[];
+          required?: boolean;
+          [key: string]: unknown;
+        }[];
+        agent_id?: string;
+        post_call_analysis_setting?: string;
         [key: string]: unknown;
       }[]
     | null;

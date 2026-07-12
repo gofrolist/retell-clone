@@ -8,18 +8,36 @@ import type { RawLlm } from "@/lib/api";
 import { cn, isE164 } from "@/lib/utils";
 import { useClickOutside } from "@/lib/useClickOutside";
 import {
+  ArrowLeftRight,
+  CalendarCheck,
+  CalendarSearch,
+  Hash,
+  MessageSquareText,
   Pencil,
   PhoneForwarded,
   PhoneOff,
   Plus,
   Trash2,
+  Variable,
   Wrench,
   type LucideIcon,
 } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 
 type Tool = NonNullable<RawLlm["general_tools"]>[number];
-type ToolKind = "end_call" | "transfer_call" | "custom";
+type ToolVariable = NonNullable<Tool["variables"]>[number];
+const TOOL_KINDS = [
+  "end_call",
+  "transfer_call",
+  "custom",
+  "press_digit",
+  "check_availability_cal",
+  "book_appointment_cal",
+  "send_sms",
+  "extract_dynamic_variable",
+  "agent_swap",
+] as const;
+type ToolKind = (typeof TOOL_KINDS)[number];
 
 const NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 const METHOD_OPTIONS = ["GET", "POST", "PUT", "PATCH", "DELETE"].map((m) => ({
@@ -201,13 +219,8 @@ function TransferForm({
   const save = () => {
     const trimmedName = name.trim();
     const trimmedNumber = number.trim();
-    if (!trimmedName) return setError("Name is required");
-    if (!NAME_RE.test(trimmedName)) {
-      return setError("Name may only contain letters, digits, _ and - (max 64 chars)");
-    }
-    if (takenNames.includes(trimmedName)) {
-      return setError("A function with this name already exists");
-    }
+    const nameErr = nameError(trimmedName, takenNames);
+    if (nameErr) return setError(nameErr);
     if (!isE164(trimmedNumber)) {
       return setError("Destination must be an E.164 phone number, e.g. +14155550123");
     }
@@ -292,13 +305,8 @@ function CustomForm({
   const save = () => {
     const trimmedName = name.trim();
     const trimmedUrl = url.trim();
-    if (!trimmedName) return setError("Name is required");
-    if (!NAME_RE.test(trimmedName)) {
-      return setError("Name may only contain letters, digits, _ and - (max 64 chars)");
-    }
-    if (takenNames.includes(trimmedName)) {
-      return setError("A function with this name already exists");
-    }
+    const nameErr = nameError(trimmedName, takenNames);
+    if (nameErr) return setError(nameErr);
     if (!trimmedUrl) return setError("URL is required");
     const timeoutMs = Number(timeoutStr);
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 600000) {
@@ -440,6 +448,525 @@ function CustomForm({
   );
 }
 
+/** Shared name check for all typed forms; returns an error string or null. */
+function nameError(name: string, takenNames: string[]): string | null {
+  if (!name) return "Name is required";
+  if (!NAME_RE.test(name)) {
+    return "Name may only contain letters, digits, _ and - (max 64 chars)";
+  }
+  if (takenNames.includes(name)) return "A function with this name already exists";
+  return null;
+}
+
+function NameDescriptionFields({
+  name,
+  setName,
+  namePlaceholder,
+  description,
+  setDescription,
+  descriptionPlaceholder,
+}: {
+  name: string;
+  setName: (v: string) => void;
+  namePlaceholder: string;
+  description: string;
+  setDescription: (v: string) => void;
+  descriptionPlaceholder: string;
+}) {
+  return (
+    <>
+      <Field label="Name">
+        <TextInput
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder={namePlaceholder}
+          maxLength={64}
+          autoFocus
+        />
+      </Field>
+      <Field label="Description">
+        <textarea
+          rows={2}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder={descriptionPlaceholder}
+          className={TEXTAREA}
+        />
+      </Field>
+    </>
+  );
+}
+
+function PressDigitForm({
+  initial,
+  takenNames,
+  onSave,
+  onCancel,
+}: {
+  initial?: Tool;
+  takenNames: string[];
+  onSave: (tool: Tool) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(initial?.name ?? "press_digit");
+  const [description, setDescription] = useState(initial?.description ?? "");
+  const [delayStr, setDelayStr] = useState(String(initial?.delay_ms ?? 1000));
+  const [error, setError] = useState<string | null>(null);
+
+  const save = () => {
+    const trimmedName = name.trim();
+    const nameErr = nameError(trimmedName, takenNames);
+    if (nameErr) return setError(nameErr);
+    const delayMs = Number(delayStr);
+    if (!Number.isInteger(delayMs) || delayMs < 0 || delayMs > 5000) {
+      return setError("Delay must be between 0 and 5000 ms");
+    }
+    onSave({
+      ...initial,
+      type: "press_digit",
+      name: trimmedName,
+      description: description.trim(),
+      delay_ms: delayMs,
+    });
+  };
+
+  return (
+    <FormShell
+      error={error}
+      saveLabel={initial ? "Save" : "Add function"}
+      onSave={save}
+      onCancel={onCancel}
+    >
+      <NameDescriptionFields
+        name={name}
+        setName={setName}
+        namePlaceholder="press_digit"
+        description={description}
+        setDescription={setDescription}
+        descriptionPlaceholder="Navigate IVR menus by pressing keypad digits."
+      />
+      <Field
+        label="Delay (ms)"
+        hint="Pause before pressing, so slow IVR menus finish speaking. 0 – 5000."
+      >
+        <TextInput
+          type="number"
+          min={0}
+          max={5000}
+          value={delayStr}
+          onChange={(e) => setDelayStr(e.target.value)}
+        />
+      </Field>
+    </FormShell>
+  );
+}
+
+function CalendarForm({
+  kind,
+  initial,
+  takenNames,
+  onSave,
+  onCancel,
+}: {
+  kind: "check_availability_cal" | "book_appointment_cal";
+  initial?: Tool;
+  takenNames: string[];
+  onSave: (tool: Tool) => void;
+  onCancel: () => void;
+}) {
+  const defaultName =
+    kind === "check_availability_cal" ? "check_availability" : "book_appointment";
+  const [name, setName] = useState(initial?.name ?? defaultName);
+  const [description, setDescription] = useState(initial?.description ?? "");
+  const [apiKey, setApiKey] = useState(initial?.cal_api_key ?? "");
+  const [eventTypeId, setEventTypeId] = useState(String(initial?.event_type_id ?? ""));
+  const [timezone, setTimezone] = useState(initial?.timezone ?? "");
+  const [error, setError] = useState<string | null>(null);
+
+  const save = () => {
+    const trimmedName = name.trim();
+    const nameErr = nameError(trimmedName, takenNames);
+    if (nameErr) return setError(nameErr);
+    if (!apiKey.trim()) return setError("Cal.com API key is required");
+    const trimmedEventType = eventTypeId.trim();
+    if (!trimmedEventType) return setError("Event type ID is required");
+    const tool: Tool = {
+      ...initial,
+      type: kind,
+      name: trimmedName,
+      description: description.trim(),
+      cal_api_key: apiKey.trim(),
+      // Keep numeric IDs numeric on the wire; {{var}} references stay strings.
+      event_type_id: /^\d+$/.test(trimmedEventType)
+        ? Number(trimmedEventType)
+        : trimmedEventType,
+    };
+    delete tool.timezone;
+    if (timezone.trim()) tool.timezone = timezone.trim();
+    onSave(tool);
+  };
+
+  return (
+    <FormShell
+      error={error}
+      saveLabel={initial ? "Save" : "Add function"}
+      onSave={save}
+      onCancel={onCancel}
+    >
+      <NameDescriptionFields
+        name={name}
+        setName={setName}
+        namePlaceholder={defaultName}
+        description={description}
+        setDescription={setDescription}
+        descriptionPlaceholder={
+          kind === "check_availability_cal"
+            ? "When should the agent check the calendar?"
+            : "When should the agent book the appointment?"
+        }
+      />
+      <Field label="Cal.com API key">
+        <TextInput
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          placeholder="cal_live_..."
+        />
+      </Field>
+      <Field label="Event type ID" hint="Numeric Cal.com event type ID, or a {{variable}}.">
+        <TextInput
+          value={eventTypeId}
+          onChange={(e) => setEventTypeId(e.target.value)}
+          placeholder="e.g. 12345"
+        />
+      </Field>
+      <Field label="Timezone" hint="IANA timezone, e.g. America/Los_Angeles. Optional.">
+        <TextInput
+          value={timezone}
+          onChange={(e) => setTimezone(e.target.value)}
+          placeholder="UTC"
+        />
+      </Field>
+    </FormShell>
+  );
+}
+
+function SendSmsForm({
+  initial,
+  takenNames,
+  onSave,
+  onCancel,
+}: {
+  initial?: Tool;
+  takenNames: string[];
+  onSave: (tool: Tool) => void;
+  onCancel: () => void;
+}) {
+  const initialContent = initial?.sms_content;
+  // Absent type means predefined on the Retell wire; template is a distinct
+  // variant we must not silently rewrite.
+  const initialMode =
+    initialContent?.type === "template"
+      ? "template"
+      : initialContent?.type === "predefined" || (!initialContent?.type && initialContent?.content)
+        ? "predefined"
+        : "inferred";
+  const [name, setName] = useState(initial?.name ?? "send_sms");
+  const [description, setDescription] = useState(initial?.description ?? "");
+  const [mode, setMode] = useState(initialMode);
+  const [content, setContent] = useState(
+    initialContent?.content ?? initialContent?.prompt ?? "",
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  const save = () => {
+    const trimmedName = name.trim();
+    const nameErr = nameError(trimmedName, takenNames);
+    if (nameErr) return setError(nameErr);
+    if (mode === "predefined" && !content.trim()) {
+      return setError("Message content is required for a fixed message");
+    }
+    // Spread the original sms_content so unknown Retell fields survive an
+    // edit; the template variant is kept verbatim.
+    const smsContent =
+      mode === "template"
+        ? { ...initialContent }
+        : mode === "predefined"
+          ? { ...initialContent, type: "predefined", content: content.trim() }
+          : { ...initialContent, type: "inferred", prompt: content.trim() };
+    onSave({
+      ...initial,
+      type: "send_sms",
+      name: trimmedName,
+      description: description.trim(),
+      sms_content: smsContent,
+    });
+  };
+
+  return (
+    <FormShell
+      error={error}
+      saveLabel={initial ? "Save" : "Add function"}
+      onSave={save}
+      onCancel={onCancel}
+    >
+      <NameDescriptionFields
+        name={name}
+        setName={setName}
+        namePlaceholder="send_sms"
+        description={description}
+        setDescription={setDescription}
+        descriptionPlaceholder="When should the agent text the caller?"
+      />
+      <Field label="Message content">
+        <Select
+          value={mode}
+          onChange={setMode}
+          className="w-full"
+          options={[
+            { value: "inferred", label: "Generated from prompt" },
+            { value: "predefined", label: "Fixed message" },
+            ...(initialMode === "template"
+              ? [{ value: "template", label: `Template (${initialContent?.template ?? "…"})` }]
+              : []),
+          ]}
+        />
+      </Field>
+      {mode !== "template" && (
+        <Field
+          label={mode === "predefined" ? "Message" : "Prompt"}
+          hint={
+            mode === "predefined"
+              ? "Sent verbatim; {{variables}} are resolved."
+              : "The agent writes the SMS from this prompt and the conversation."
+          }
+        >
+          <textarea
+            rows={3}
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            placeholder={
+              mode === "predefined"
+                ? "Hi {{name}}, here is our address: …"
+                : "Text the caller a summary of the appointment we booked."
+            }
+            className={TEXTAREA}
+          />
+        </Field>
+      )}
+    </FormShell>
+  );
+}
+
+const VARIABLE_TYPE_OPTIONS = ["string", "enum", "boolean", "number"].map((t) => ({
+  value: t,
+  label: t,
+}));
+
+function ExtractVariablesForm({
+  initial,
+  takenNames,
+  onSave,
+  onCancel,
+}: {
+  initial?: Tool;
+  takenNames: string[];
+  onSave: (tool: Tool) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(initial?.name ?? "extract_user_info");
+  const [description, setDescription] = useState(initial?.description ?? "");
+  const [variables, setVariables] = useState<ToolVariable[]>(
+    (initial?.variables ?? []).map((v) => ({ ...v })),
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  const patchVar = (i: number, patch: Partial<ToolVariable>) =>
+    setVariables(variables.map((v, idx) => (idx === i ? { ...v, ...patch } : v)));
+
+  const save = () => {
+    const trimmedName = name.trim();
+    const nameErr = nameError(trimmedName, takenNames);
+    if (nameErr) return setError(nameErr);
+    const cleaned: ToolVariable[] = [];
+    for (const v of variables) {
+      const varName = (v.name ?? "").trim();
+      if (!varName) continue;
+      if (!NAME_RE.test(varName)) {
+        return setError(`Variable name "${varName}" may only contain letters, digits, _ and -`);
+      }
+      const type = v.type ?? "string";
+      // Spread the original spec so unknown Retell fields (examples,
+      // conditional_prompt, …) survive an edit.
+      const spec: ToolVariable = {
+        ...v,
+        name: varName,
+        type,
+        description: (v.description ?? "").trim(),
+      };
+      if (type === "enum") {
+        const choices = (v.choices ?? []).map((c) => c.trim()).filter(Boolean);
+        if (choices.length === 0) {
+          return setError(`Variable "${varName}" needs at least one choice`);
+        }
+        spec.choices = choices;
+      } else {
+        delete spec.choices;
+      }
+      if (v.required) spec.required = true;
+      else delete spec.required;
+      cleaned.push(spec);
+    }
+    if (cleaned.length === 0) return setError("Add at least one variable");
+    onSave({
+      ...initial,
+      type: "extract_dynamic_variable",
+      name: trimmedName,
+      description: description.trim(),
+      variables: cleaned,
+    });
+  };
+
+  return (
+    <FormShell
+      error={error}
+      saveLabel={initial ? "Save" : "Add function"}
+      onSave={save}
+      onCancel={onCancel}
+    >
+      <NameDescriptionFields
+        name={name}
+        setName={setName}
+        namePlaceholder="extract_user_info"
+        description={description}
+        setDescription={setDescription}
+        descriptionPlaceholder="Extract these details as soon as the caller mentions them."
+      />
+      <Field label="Variables">
+        <div className="space-y-2">
+          {variables.map((v, i) => (
+            <div key={i} className="space-y-1.5 rounded-lg border border-line bg-white p-2">
+              <div className="flex items-center gap-1.5">
+                <TextInput
+                  value={v.name ?? ""}
+                  onChange={(e) => patchVar(i, { name: e.target.value })}
+                  placeholder="variable_name"
+                />
+                <Select
+                  value={v.type ?? "string"}
+                  onChange={(type) => patchVar(i, { type })}
+                  className="w-28 shrink-0"
+                  options={VARIABLE_TYPE_OPTIONS}
+                />
+                <button
+                  onClick={() => setVariables(variables.filter((_, idx) => idx !== i))}
+                  className="rounded p-1 text-faint hover:bg-app hover:text-bad cursor-pointer"
+                  aria-label="Delete variable"
+                >
+                  <Trash2 className="size-3.5" />
+                </button>
+              </div>
+              <TextInput
+                value={v.description ?? ""}
+                onChange={(e) => patchVar(i, { description: e.target.value })}
+                placeholder="What is this variable?"
+              />
+              {(v.type ?? "string") === "enum" && (
+                <TextInput
+                  value={(v.choices ?? []).join(", ")}
+                  onChange={(e) => patchVar(i, { choices: e.target.value.split(",") })}
+                  placeholder="Choices, comma separated"
+                />
+              )}
+              <ToggleRow
+                label="Required"
+                checked={Boolean(v.required)}
+                onChange={(required) => patchVar(i, { required })}
+              />
+            </div>
+          ))}
+          <button
+            onClick={() => setVariables([...variables, { name: "", type: "string" }])}
+            className="inline-flex items-center gap-1 text-[13px] font-medium text-accent-deep hover:underline cursor-pointer"
+          >
+            <Plus className="size-3.5" /> Add variable
+          </button>
+        </div>
+      </Field>
+    </FormShell>
+  );
+}
+
+function AgentSwapForm({
+  initial,
+  takenNames,
+  onSave,
+  onCancel,
+}: {
+  initial?: Tool;
+  takenNames: string[];
+  onSave: (tool: Tool) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(initial?.name ?? "agent_swap");
+  const [description, setDescription] = useState(initial?.description ?? "");
+  const [agentId, setAgentId] = useState(initial?.agent_id ?? "");
+  const [analysisSetting, setAnalysisSetting] = useState(
+    initial?.post_call_analysis_setting ?? "both_agents",
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  const save = () => {
+    const trimmedName = name.trim();
+    const nameErr = nameError(trimmedName, takenNames);
+    if (nameErr) return setError(nameErr);
+    if (!agentId.trim()) return setError("Destination agent ID is required");
+    onSave({
+      ...initial,
+      type: "agent_swap",
+      name: trimmedName,
+      description: description.trim(),
+      agent_id: agentId.trim(),
+      post_call_analysis_setting: analysisSetting,
+    });
+  };
+
+  return (
+    <FormShell
+      error={error}
+      saveLabel={initial ? "Save" : "Add function"}
+      onSave={save}
+      onCancel={onCancel}
+    >
+      <NameDescriptionFields
+        name={name}
+        setName={setName}
+        namePlaceholder="agent_swap"
+        description={description}
+        setDescription={setDescription}
+        descriptionPlaceholder="When should the call be handed to the other agent?"
+      />
+      <Field label="Destination agent ID">
+        <TextInput
+          value={agentId}
+          onChange={(e) => setAgentId(e.target.value)}
+          placeholder="agent_..."
+        />
+      </Field>
+      <Field label="Post-call analysis">
+        <Select
+          value={analysisSetting}
+          onChange={setAnalysisSetting}
+          className="w-full"
+          options={[
+            { value: "both_agents", label: "Both agents" },
+            { value: "only_destination_agent", label: "Only destination agent" },
+          ]}
+        />
+      </Field>
+    </FormShell>
+  );
+}
+
 function AddMenu({
   hasEndCall,
   onPick,
@@ -455,9 +982,19 @@ function AddMenu({
   );
 
   const items: { kind: ToolKind; label: string; icon: LucideIcon; disabled?: boolean }[] = [
+    { kind: "custom", label: "Custom Function", icon: Wrench },
     { kind: "end_call", label: "End Call", icon: PhoneOff, disabled: hasEndCall },
     { kind: "transfer_call", label: "Call Transfer", icon: PhoneForwarded },
-    { kind: "custom", label: "Custom Function", icon: Wrench },
+    { kind: "agent_swap", label: "Agent Swap", icon: ArrowLeftRight },
+    { kind: "press_digit", label: "Press Digit (IVR Navigation)", icon: Hash },
+    {
+      kind: "check_availability_cal",
+      label: "Check Calendar Availability (Cal.com)",
+      icon: CalendarSearch,
+    },
+    { kind: "book_appointment_cal", label: "Book on the Calendar (Cal.com)", icon: CalendarCheck },
+    { kind: "send_sms", label: "Send SMS", icon: MessageSquareText },
+    { kind: "extract_dynamic_variable", label: "Extract Dynamic Variables", icon: Variable },
   ];
 
   return (
@@ -469,7 +1006,7 @@ function AddMenu({
         <Plus className="size-3.5" /> Add
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-20 mt-1 w-48 rounded-lg border border-line bg-white p-1 shadow-lg">
+        <div className="absolute left-0 top-full z-20 mt-1 w-72 rounded-lg border border-line bg-white p-1 shadow-lg">
           {items.map((item) => (
             <button
               key={item.kind}
@@ -533,9 +1070,7 @@ export default function FunctionsSection({
   };
 
   const kindOf = (t: Tool): ToolKind | null =>
-    t.type === "end_call" || t.type === "transfer_call" || t.type === "custom"
-      ? t.type
-      : null;
+    TOOL_KINDS.includes(t.type as ToolKind) ? (t.type as ToolKind) : null;
 
   const editing = form?.index != null ? tools[form.index] : undefined;
 
@@ -612,6 +1147,52 @@ export default function FunctionsSection({
       {form?.kind === "custom" && (
         <CustomForm
           key={`custom-${form.index ?? "new"}`}
+          initial={editing}
+          takenNames={takenNames}
+          onSave={saveTool}
+          onCancel={() => setForm(null)}
+        />
+      )}
+      {form?.kind === "press_digit" && (
+        <PressDigitForm
+          key={`press-${form.index ?? "new"}`}
+          initial={editing}
+          takenNames={takenNames}
+          onSave={saveTool}
+          onCancel={() => setForm(null)}
+        />
+      )}
+      {(form?.kind === "check_availability_cal" || form?.kind === "book_appointment_cal") && (
+        <CalendarForm
+          key={`cal-${form.kind}-${form.index ?? "new"}`}
+          kind={form.kind}
+          initial={editing}
+          takenNames={takenNames}
+          onSave={saveTool}
+          onCancel={() => setForm(null)}
+        />
+      )}
+      {form?.kind === "send_sms" && (
+        <SendSmsForm
+          key={`sms-${form.index ?? "new"}`}
+          initial={editing}
+          takenNames={takenNames}
+          onSave={saveTool}
+          onCancel={() => setForm(null)}
+        />
+      )}
+      {form?.kind === "extract_dynamic_variable" && (
+        <ExtractVariablesForm
+          key={`extract-${form.index ?? "new"}`}
+          initial={editing}
+          takenNames={takenNames}
+          onSave={saveTool}
+          onCancel={() => setForm(null)}
+        />
+      )}
+      {form?.kind === "agent_swap" && (
+        <AgentSwapForm
+          key={`swap-${form.index ?? "new"}`}
           initial={editing}
           takenNames={takenNames}
           onSave={saveTool}

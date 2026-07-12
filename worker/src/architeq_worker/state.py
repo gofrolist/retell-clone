@@ -34,6 +34,9 @@ class CallState:
     items: list[dict[str, Any]] = field(default_factory=list)
     # End-to-end latency samples (ms): llm ttft + tts ttfb per agent turn.
     e2e_latency_ms: list[float] = field(default_factory=list)
+    # Variables captured by extract_dynamic_variable tools during the call
+    # (Retell surfaces these as call.collected_dynamic_variables).
+    collected_dynamic_variables: dict[str, str] = field(default_factory=dict)
 
     def add_message(self, role: str, content: str) -> None:
         if content:
@@ -99,4 +102,5 @@ class CallState:
             "recording_url": self.recording_url,
             "in_voicemail": self.in_voicemail,
             "latency": latency,
+            "collected_dynamic_variables": self.collected_dynamic_variables or None,
         }
