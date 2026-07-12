@@ -1,7 +1,8 @@
-# LiveKit server + SIP on GKE
+# LiveKit server + SIP + egress on GKE
 
-Self-hosted LiveKit server (media/rooms) and livekit-sip (Telnyx PSTN
-bridge), both pinned to the `voice` node pool.
+Self-hosted LiveKit server (media/rooms), livekit-sip (Telnyx PSTN
+bridge) and livekit-egress (call recording), all pinned to the `voice`
+node pool.
 
 Placeholders to replace before installing (from `terraform output`):
 
@@ -11,6 +12,7 @@ Placeholders to replace before installing (from `terraform output`):
 | `SIP_STATIC_IP` | `terraform output sip_ip` |
 | `LIVEKIT_DOMAIN` | `livekit.<domain>` (values + livekit-managed-cert.yaml) |
 | `LIVEKIT_API_SECRET_CHANGE_ME` | generate: `openssl rand -hex 32` |
+| `PROJECT_ID` | GCP project id (egress-values.yaml WI annotation) |
 
 The API key name is `APIArchiteqKey`; key + secret must be identical in
 `livekit-server-values.yaml`, `livekit-sip-values.yaml`, and the architeq
@@ -34,10 +36,21 @@ helm install livekit-server livekit/livekit-server \
 # ingress) — ./sip is this repo's own minimal chart.
 helm install livekit-sip ./sip \
   -n livekit -f livekit-sip-values.yaml
+
+# Call recording. The KSA name/namespace (livekit/livekit-egress) must
+# match terraform's Workload Identity binding — recordings upload to the
+# GCS bucket via WI, no key file.
+helm install egress livekit/egress \
+  -n livekit -f egress-values.yaml
 ```
 
 Verify: `kubectl -n livekit get pods,svc` — the sip Service must show the
 reserved static IP as EXTERNAL-IP.
+
+Recording smoke test: place a call, then
+`gsutil ls gs://<project>-architeq-recordings/calls/` should show a fresh
+`call_<id>.ogg` and the call's `recording_url` should play from the
+dashboard Call History drawer.
 
 ## SIP trunks + dispatch rule (lk CLI)
 

@@ -19,7 +19,7 @@ resource "google_storage_bucket" "recordings" {
   }
 
   cors {
-    origin          = ["https://app.${var.domain}", "http://localhost:3000"]
+    origin          = ["https://dashboard.${var.domain}", "http://localhost:3000"]
     method          = ["GET", "HEAD"]
     response_header = ["Content-Type", "Content-Range", "Range"]
     max_age_seconds = 3600

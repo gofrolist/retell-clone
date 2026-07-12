@@ -16,6 +16,7 @@ from ..services import inbound as inbound_svc
 from ..services import webhooks
 from ..services.analysis import analyze_call
 from ..services.metrics import CALL_DURATION, CALLS_ONGOING, CALLS_TOTAL
+from ..services.recordings import sign_recording_url
 
 log = logging.getLogger(__name__)
 router = APIRouter(
@@ -177,7 +178,8 @@ async def finalize_call(
     if body.transcript_with_tool_calls is not None:
         call.transcript_with_tool_calls = body.transcript_with_tool_calls
     if body.recording_url is not None:
-        call.recording_url = body.recording_url
+        # The bucket is private — store a signed URL, not the raw object URL.
+        call.recording_url = await sign_recording_url(body.recording_url)
     if body.latency is not None:
         call.latency = body.latency
     await session.commit()
