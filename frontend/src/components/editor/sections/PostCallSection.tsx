@@ -3,6 +3,7 @@
 import { Field } from "@/components/ui/Field";
 import Select from "@/components/ui/Select";
 import { GripVertical } from "lucide-react";
+import { POST_CALL_ANALYSIS_MODELS } from "@/lib/models";
 
 // These reflect the analysis fields the backend actually produces on
 // call_analysis (summary, call_successful, user_sentiment).
@@ -12,12 +13,6 @@ const ROWS = [
   { name: "User Sentiment", type: "enum" },
 ];
 
-const MODEL_OPTIONS = [
-  { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-  { value: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
-  { value: "gpt-4o-mini", label: "GPT-4o mini" },
-];
-
 export default function PostCallSection({
   model,
   onModel,
@@ -25,9 +20,10 @@ export default function PostCallSection({
   model: string;
   onModel: (v: string) => void;
 }) {
-  const options = MODEL_OPTIONS.some((o) => o.value === model)
-    ? MODEL_OPTIONS
-    : [{ value: model, label: model }, ...MODEL_OPTIONS];
+  const knownModels = POST_CALL_ANALYSIS_MODELS.map((m) => ({ value: m.id, label: m.label }));
+  const options = POST_CALL_ANALYSIS_MODELS.some((m) => m.id === model)
+    ? knownModels
+    : [{ value: model, label: model }, ...knownModels];
   return (
     <div className="space-y-4">
       <div className="divide-y divide-line rounded-lg border border-line bg-white">
