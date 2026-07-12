@@ -6,6 +6,9 @@ __pycache__/
 .ruff_cache/
 .env
 .env.prod
+# Operator-only prod config & secrets (helm values, trunks, cutover runbook).
+# Lives in-repo for convenience but is never committed; see infra/README.md.
+infra/private/
 node_modules/
 .next/
 out/

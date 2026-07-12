@@ -10,7 +10,25 @@ infra/
     architeq/           umbrella chart: api, worker, dashboard
     livekit/            values for livekit-server + livekit-sip charts
     monitoring/         kube-prometheus-stack values + Grafana dashboards
+  private/              operator-only prod config & secrets — GITIGNORED
 ```
+
+## `infra/private/` — operator secrets (gitignored, never committed)
+
+Real deployment values live in `infra/private/`, which `.gitignore` excludes
+entirely. `prod.env` is the single operator secrets file — every credential
+lives there and nowhere else. Alongside it: the generated `architeq-prod.yaml`
+(Helm secrets override), LiveKit server/SIP/egress values, SIP trunk JSONs
+(Telnyx credentials), the `CUTOVER.md` runbook, and `gen-architeq-prod.sh`,
+which regenerates `architeq-prod.yaml` from `prod.env` + terraform outputs +
+Secret Manager after a `terraform apply`.
+
+Because these files are gitignored they are NOT versioned or backed up by
+git: `git clean -fdx` will delete them, and a fresh clone will not have them.
+Keep an off-machine backup of `prod.env` — the values the generator derives
+from Secret Manager and terraform state are recoverable, the ones in
+`prod.env` are not. `.dockerignore` in each app excludes `.env*` so env files
+can never leak into a docker build context.
 
 Prereqs: `gcloud`, `terraform >= 1.7`, `helm`, `kubectl`,
 `lk` (livekit-cli), a GCP project with billing, and a registrable domain.
@@ -135,10 +153,11 @@ docker push $REGISTRY/architeq-dashboard:v0.1.0
 
 ## 7. Deploy Architeq
 
-Create a private values override (never commit real secrets):
+Create a private values override in `infra/private/` (gitignored — never
+commit real secrets), or generate it with `infra/private/gen-architeq-prod.sh`:
 
 ```yaml
-# architeq-prod.yaml
+# infra/private/architeq-prod.yaml
 global:
   domain: <DOMAIN>
   imageRegistry: <artifact_registry output>
@@ -171,7 +190,7 @@ dashboard:
 
 ```bash
 kubectl create namespace architeq   # must match Terraform WI bindings
-helm install architeq infra/helm/architeq -n architeq -f architeq-prod.yaml
+helm install architeq infra/helm/architeq -n architeq -f infra/private/architeq-prod.yaml
 ```
 
 ## 8. DNS / TLS
