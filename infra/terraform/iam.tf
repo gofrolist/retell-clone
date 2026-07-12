@@ -18,6 +18,14 @@ resource "google_project_iam_member" "api_cloudsql" {
   member  = "serviceAccount:${google_service_account.api.email}"
 }
 
+# Worker calls Gemini through Vertex AI with ADC (Workload Identity) — no
+# LLM API key. aiplatform.user covers endpoints.predict on publisher models.
+resource "google_project_iam_member" "worker_vertex" {
+  project = var.project_id
+  role    = "roles/aiplatform.user"
+  member  = "serviceAccount:${google_service_account.worker.email}"
+}
+
 resource "google_project_iam_member" "api_secrets" {
   project = var.project_id
   role    = "roles/secretmanager.secretAccessor"
