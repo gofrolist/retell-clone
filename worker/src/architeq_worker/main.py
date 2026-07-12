@@ -42,6 +42,7 @@ from architeq_worker.internal_api import InternalAPI, InternalAPIError
 from architeq_worker.state import CallState, now_ms
 from architeq_worker.tools import build_tools
 from architeq_worker.variables import resolve_template
+from architeq_worker.voices import resolve_cartesia_voice
 
 logger = logging.getLogger("architeq-worker")
 
@@ -87,11 +88,6 @@ _SIP_ANSWERED_STATUSES = {"active", "automation"}
 
 def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
-
-
-def _cartesia_voice(voice_id: str) -> str:
-    # Retell voice ids may carry a provider prefix ("cartesia-<uuid>").
-    return voice_id.removeprefix("cartesia-")
 
 
 def _cartesia_speed(voice_speed: float) -> float:
@@ -142,7 +138,7 @@ def build_session(cfg: CallConfig) -> tuple[AgentSession, Any]:
     )
     tts = cartesia.TTS(
         model=CARTESIA_TTS_MODEL,
-        voice=_cartesia_voice(cfg.agent.voice_id),
+        voice=resolve_cartesia_voice(cfg.agent.voice_id),
         speed=_cartesia_speed(cfg.agent.voice_speed),
     )
 
