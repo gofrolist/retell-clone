@@ -489,9 +489,16 @@ async def entrypoint(ctx: JobContext) -> None:
         except asyncio.TimeoutError:
             participant = None
 
-    answered = participant is not None and await _wait_for_answer(
-        ctx, participant, timeout=DIAL_TIMEOUT_S
-    )
+    # Inbound: the caller is already on the line, and livekit-sip only
+    # answers (callStatus ringing -> active) once the agent session
+    # subscribes to the caller's track — waiting for "active" here would
+    # deadlock both sides until the dial timeout. Only outbound dials wait.
+    if cfg.direction == "inbound":
+        answered = participant is not None
+    else:
+        answered = participant is not None and await _wait_for_answer(
+            ctx, participant, timeout=DIAL_TIMEOUT_S
+        )
     if not answered:
         # TODO: distinguish dial_busy / dial_failed once livekit-sip exposes a
         # disconnect-cause attribute; until then unanswered dials are
