@@ -28,6 +28,7 @@ import inspect
 import json
 import logging
 import os
+from collections.abc import Awaitable, Callable, Mapping
 from functools import lru_cache
 from typing import Any
 
@@ -40,7 +41,7 @@ from architeq_worker import metrics
 from architeq_worker.config import CallConfig
 from architeq_worker.internal_api import InternalAPI, InternalAPIError
 from architeq_worker.state import CallState, now_ms
-from architeq_worker.tools import build_tools
+from architeq_worker.tools import DTMF_CODES, build_tools
 from architeq_worker.variables import resolve_template
 from architeq_worker.voices import resolve_cartesia_voice
 
@@ -198,6 +199,24 @@ class CallRuntime:
         self._lkapi = lkapi
         self._state = state
         self.sip_participant_identity: str | None = None
+        # Installed after the session starts (needs the live agent/session).
+        self._agent_swap: Callable[[str, Mapping[str, Any]], Awaitable[str]] | None = None
+
+    def set_agent_swap(self, handler: Callable[[str, Mapping[str, Any]], Awaitable[str]]) -> None:
+        self._agent_swap = handler
+
+    async def press_digit(self, digits: str) -> None:
+        # DTMF rides the SIP leg; 0.3s between events mirrors telephony pacing.
+        lp = self._ctx.room.local_participant
+        for i, digit in enumerate(digits):
+            if i:
+                await asyncio.sleep(0.3)
+            await lp.publish_dtmf(code=DTMF_CODES[digit.upper()], digit=digit)
+
+    async def agent_swap(self, agent_id: str, entry: Mapping[str, Any]) -> str:
+        if self._agent_swap is None:
+            return json.dumps({"error": "agent swap not available on this call"})
+        return await self._agent_swap(agent_id, entry)
 
     async def end_call(self, reason: str = "agent_hangup") -> None:
         self._state.set_reason_once(reason)
@@ -555,6 +574,44 @@ async def entrypoint(ctx: JobContext) -> None:
         begin_message=begin_message,
         start_speaker=cfg.llm.start_speaker,
     )
+
+    async def _do_agent_swap(agent_id: str, entry: Mapping[str, Any]) -> str:
+        """agent_swap tool: re-point the live session at another agent's config.
+
+        The call record stays the same (Retell keeps one call across swaps);
+        prompt, tools and — unless keep_current_voice — the TTS voice switch
+        to the destination agent. keep_current_language is implicit: the STT
+        pipeline is fixed for the session.
+        """
+        swap_raw = await api_client.get_agent_config(agent_id)
+        swap_cfg = CallConfig.from_dict({**cfg.raw, **swap_raw})
+        new_instructions = resolve_template(swap_cfg.llm.general_prompt, variables)
+        new_tools = build_tools(
+            swap_cfg.llm.general_tools,
+            http=tool_http,
+            function_secret=cfg.function_secret,
+            variables=variables,
+            control=runtime,
+            state=state,
+            call_info=cfg.tool_call_object(),
+        )
+        await agent.update_instructions(new_instructions)
+        await agent.update_tools(new_tools)
+        if not entry.get("keep_current_voice"):
+            tts = getattr(agent, "tts", None) or getattr(session, "tts", None)
+            update = getattr(tts, "update_options", None)
+            if update is not None:
+                try:
+                    update(
+                        voice=resolve_cartesia_voice(swap_cfg.agent.voice_id),
+                        speed=_cartesia_speed(swap_cfg.agent.voice_speed),
+                    )
+                except Exception:  # noqa: BLE001 - voice switch is best-effort
+                    logger.warning("agent_swap voice switch failed", exc_info=True)
+        logger.info("agent swap: call %s now running agent %s", cfg.call_id, agent_id)
+        return json.dumps({"result": f"now acting as agent {agent_id}"})
+
+    runtime.set_agent_swap(_do_agent_swap)
 
     async def _post_call_started() -> None:
         # Best-effort: a slow/failed call_started webhook must never delay the

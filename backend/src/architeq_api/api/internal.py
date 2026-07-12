@@ -62,6 +62,21 @@ async def get_call_config(call_id: str, session: AsyncSession = Depends(get_sess
     return await _call_config(call, session)
 
 
+@router.get("/agents/{agent_id}/config")
+async def get_agent_config(agent_id: str, session: AsyncSession = Depends(get_session)):
+    """Destination config for the agent_swap tool: the worker re-points the
+    live session at this agent's prompt/tools/voice mid-call."""
+    agent = await session.get(Agent, agent_id)
+    if agent is None:
+        raise HTTPException(404, detail="Agent not found")
+    llm_id = (agent.response_engine or {}).get("llm_id")
+    llm = await session.get(RetellLLM, llm_id) if llm_id else None
+    return {
+        "agent": agent_to_dict(agent),
+        "llm": llm_to_dict(llm) if llm is not None else None,
+    }
+
+
 class InboundResolveRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     from_number: str

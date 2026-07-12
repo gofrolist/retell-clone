@@ -67,9 +67,17 @@ Terminal update; idempotent (second call is a no-op).
   "transcript_object": [...], "transcript_with_tool_calls": [...],
   "recording_url": "https://…" | null,
   "in_voicemail": true | false | null,   // worker-side AMD verdict, if any
-  "latency": { "e2e": {"p50": …, "p95": …} } | null
+  "latency": { "e2e": {"p50": …, "p95": …} } | null,
+  "collected_dynamic_variables": {"plan": "pro"} | null  // extract_dynamic_variable
+      // output; accepted (extra=allow) but not yet persisted on the call row
 }
 ```
+
+### `GET /internal/agents/{agent_id}/config`
+Destination config for the `agent_swap` tool. Returns
+`{"agent": {…}, "llm": {…} | null}` (same shapes as in the call config);
+the worker re-points the live session at this agent's prompt, tools and
+voice mid-call. `404` for unknown agents.
 
 On finalize the control plane: persists, fires `call_ended` (signed), runs
 Gemini post-call analysis (summary/call_summary, user_sentiment,

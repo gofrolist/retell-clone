@@ -47,6 +47,26 @@ _ALLOWED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 MAX_TOOL_RESPONSE_BYTES = 256 * 1024
 _E164_RE = re.compile(r"^\+[1-9]\d{1,14}$")
 
+# RFC 4733 DTMF event codes (LiveKit publish_dtmf takes the numeric code).
+DTMF_CODES: dict[str, int] = {
+    **{str(d): d for d in range(10)},
+    "*": 10,
+    "#": 11,
+    "A": 12,
+    "B": 13,
+    "C": 14,
+    "D": 15,
+}
+PRESS_DIGIT_DEFAULT_DELAY_S = 1.0
+PRESS_DIGIT_MAX_DELAY_S = 5.0
+
+CAL_API_BASE = "https://api.cal.com/v2"
+# Cal.com pins endpoint behavior with a cal-api-version header per resource.
+CAL_SLOTS_API_VERSION = "2024-09-04"
+CAL_BOOKINGS_API_VERSION = "2024-08-13"
+
+TELNYX_MESSAGES_URL = "https://api.telnyx.com/v2/messages"
+
 
 class UnsafeToolUrlError(ValueError):
     pass
@@ -97,6 +117,10 @@ class CallControl(Protocol):
     async def end_call(self, reason: str = "agent_hangup") -> None: ...
 
     async def transfer_call(self, number: str) -> str: ...
+
+    async def press_digit(self, digits: str) -> None: ...
+
+    async def agent_swap(self, agent_id: str, entry: Mapping[str, Any]) -> str: ...
 
 
 def tool_timeout_s(entry: Mapping[str, Any]) -> float:
@@ -410,6 +434,440 @@ def _make_transfer_call_tool(
     return function_tool(handler, raw_schema=schema)
 
 
+def press_digit_delay_s(entry: Mapping[str, Any]) -> float:
+    """Retell press_digit delay_ms (0..5000, default 1000) in seconds."""
+    raw = entry.get("delay_ms")
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool) or raw < 0:
+        return PRESS_DIGIT_DEFAULT_DELAY_S
+    return min(raw / 1000.0, PRESS_DIGIT_MAX_DELAY_S)
+
+
+def extract_variable_parameters(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """JSON schema for an extract_dynamic_variable tool's arguments.
+
+    Retell variable specs ({name, type: string|enum|boolean|number,
+    description, choices?, required?}) map 1:1 onto schema properties; the
+    model fills them and the handler copies the values into the live
+    dynamic-variables mapping.
+    """
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    for spec in entry.get("variables") or []:
+        if not isinstance(spec, Mapping):
+            continue
+        var_name = str(spec.get("name") or "").strip()
+        if not var_name:
+            continue
+        var_type = spec.get("type")
+        prop: dict[str, Any] = {"description": str(spec.get("description") or "")}
+        if var_type == "enum":
+            prop["type"] = "string"
+            choices = [str(c) for c in (spec.get("choices") or []) if str(c)]
+            if choices:
+                prop["enum"] = choices
+        elif var_type in ("boolean", "number"):
+            prop["type"] = var_type
+        else:
+            prop["type"] = "string"
+        if isinstance(spec.get("examples"), list) and spec["examples"]:
+            prop["description"] = (
+                prop["description"] + f" Examples: {', '.join(str(e) for e in spec['examples'])}"
+            ).strip()
+        properties[var_name] = prop
+        if spec.get("required"):
+            required.append(var_name)
+    return {"type": "object", "properties": properties, "required": required}
+
+
+def variable_to_string(value: Any) -> str:
+    """Dynamic variables are strings on the Retell wire (booleans lowercase)."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def cal_event_type_id(entry: Mapping[str, Any], variables: Mapping[str, Any]) -> int | None:
+    """event_type_id may be a number or a ``{{var}}`` resolved at call time."""
+    raw = entry.get("event_type_id")
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return int(raw)
+    if isinstance(raw, str):
+        resolved = resolve_template(raw, variables).strip()
+        if resolved.isdigit():
+            return int(resolved)
+    return None
+
+
+def cal_timezone(entry: Mapping[str, Any], variables: Mapping[str, Any]) -> str:
+    raw = entry.get("timezone")
+    if isinstance(raw, str) and raw.strip():
+        return resolve_template(raw, variables).strip()
+    return "UTC"
+
+
+def sms_numbers(call_info: Mapping[str, Any] | None, direction_hint: str = "") -> tuple[str, str]:
+    """(agent_number, user_number) for the live call.
+
+    Inbound: the user dialed us — user is from_number; outbound the reverse.
+    """
+    info = call_info or {}
+    direction = str(info.get("direction") or direction_hint or "outbound")
+    from_number = str(info.get("from_number") or "")
+    to_number = str(info.get("to_number") or "")
+    if direction == "inbound":
+        return to_number, from_number
+    return from_number, to_number
+
+
+def sms_static_content(entry: Mapping[str, Any], variables: Mapping[str, Any]) -> str | None:
+    """The fixed SMS text for sms_content.type=predefined, else None.
+
+    Inferred/template content comes from the model as a ``message`` argument
+    (the content prompt is surfaced through the argument description).
+    """
+    content = entry.get("sms_content")
+    if isinstance(content, Mapping) and content.get("type", "predefined") == "predefined":
+        text = str(content.get("content") or "")
+        if text:
+            return resolve_template(text, variables)
+    return None
+
+
+async def _respond_json(resp: httpx.Response) -> str:
+    if len(resp.content) > MAX_TOOL_RESPONSE_BYTES:
+        raise ValueError(f"tool response too large ({len(resp.content)} bytes)")
+    return resp.text
+
+
+def _tool_error(name: str, exc: Exception) -> str:
+    metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="error").inc()
+    # Exception *type* only — httpx errors stringify URLs that may carry keys.
+    reason = type(exc).__name__
+    logger.warning("tool %s failed: %s", name, reason)
+    return json.dumps({"error": f"tool call {name} failed: {reason}"})
+
+
+def _make_press_digit_tool(entry: dict[str, Any], *, control: CallControl, state: CallState) -> Any:
+    from livekit.agents import RunContext, function_tool
+
+    name = entry.get("name") or "press_digit"
+    delay_s = press_digit_delay_s(entry)
+    schema = {
+        "type": "function",
+        "name": name,
+        "description": entry.get("description")
+        or "Press digits on the phone keypad (DTMF), e.g. to navigate an IVR menu.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "digit": {
+                    "type": "string",
+                    "description": "The digit(s) to press: 0-9, * or #.",
+                }
+            },
+            "required": ["digit"],
+        },
+    }
+
+    async def handler(raw_arguments: dict[str, object], context: RunContext) -> str:
+        digits = str(raw_arguments.get("digit") or "")
+        state.add_tool_invocation(name, json.dumps({"digit": digits}))
+        if not digits or any(d.upper() not in DTMF_CODES for d in digits):
+            result = json.dumps({"error": "invalid digit; allowed: 0-9, *, #"})
+            metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="error").inc()
+        else:
+            try:
+                # IVR menus speak slowly; the configured delay lets the menu
+                # finish before we key in.
+                await asyncio.sleep(delay_s)
+                await control.press_digit(digits)
+                metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="success").inc()
+                result = json.dumps({"result": f"pressed {digits}"})
+            except Exception as exc:  # noqa: BLE001
+                result = _tool_error(name, exc)
+        state.add_tool_result(name, result)
+        return result
+
+    return function_tool(handler, raw_schema=schema)
+
+
+def _make_extract_dynamic_variable_tool(
+    entry: dict[str, Any], *, variables: Mapping[str, Any], state: CallState
+) -> Any:
+    from livekit.agents import RunContext, function_tool
+
+    name = entry.get("name") or "extract_dynamic_variable"
+    parameters = extract_variable_parameters(entry)
+    schema = {
+        "type": "function",
+        "name": name,
+        "description": entry.get("description")
+        or "Extract variables from the conversation as soon as they are known.",
+        "parameters": parameters,
+    }
+    known = set(parameters["properties"])
+
+    async def handler(raw_arguments: dict[str, object], context: RunContext) -> str:
+        extracted = {
+            key: variable_to_string(value)
+            for key, value in raw_arguments.items()
+            if key in known and value is not None
+        }
+        state.add_tool_invocation(name, json.dumps(extracted))
+        if isinstance(variables, dict):
+            # Same mapping the session resolves {{var}} against — extracted
+            # values are immediately usable in prompts and tool configs.
+            variables.update(extracted)
+        state.collected_dynamic_variables.update(extracted)
+        metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="success").inc()
+        result = json.dumps({"result": "variables extracted", "extracted": extracted})
+        state.add_tool_result(name, result)
+        return result
+
+    return function_tool(handler, raw_schema=schema)
+
+
+def _make_check_availability_cal_tool(
+    entry: dict[str, Any],
+    *,
+    http: httpx.AsyncClient,
+    variables: Mapping[str, Any],
+    state: CallState,
+) -> Any:
+    from livekit.agents import RunContext, function_tool
+
+    name = entry.get("name") or "check_availability_cal"
+    schema = {
+        "type": "function",
+        "name": name,
+        "description": resolve_template(entry.get("description") or "", variables)
+        or "Check available appointment slots on the calendar.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "start_date": {
+                    "type": "string",
+                    "description": "First date to check, YYYY-MM-DD.",
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": "Last date to check, YYYY-MM-DD. Defaults to one week"
+                    " after start_date.",
+                },
+            },
+            "required": ["start_date"],
+        },
+    }
+
+    async def handler(raw_arguments: dict[str, object], context: RunContext) -> str:
+        state.add_tool_invocation(name, json.dumps(dict(raw_arguments), default=str))
+        event_type = cal_event_type_id(entry, variables)
+        api_key = resolve_template(str(entry.get("cal_api_key") or ""), variables)
+        if event_type is None or not api_key:
+            result = json.dumps({"error": "calendar tool is not configured"})
+            metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="error").inc()
+        else:
+            start = str(raw_arguments.get("start_date") or "")
+            end = str(raw_arguments.get("end_date") or "") or start
+            try:
+                resp = await http.get(
+                    f"{CAL_API_BASE}/slots",
+                    params={
+                        "eventTypeId": event_type,
+                        "start": start,
+                        "end": end,
+                        "timeZone": cal_timezone(entry, variables),
+                    },
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "cal-api-version": CAL_SLOTS_API_VERSION,
+                    },
+                    timeout=tool_timeout_s(entry),
+                )
+                resp.raise_for_status()
+                result = await _respond_json(resp)
+                metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="success").inc()
+            except Exception as exc:  # noqa: BLE001
+                result = _tool_error(name, exc)
+        state.add_tool_result(name, result)
+        return result
+
+    return function_tool(handler, raw_schema=schema)
+
+
+def _make_book_appointment_cal_tool(
+    entry: dict[str, Any],
+    *,
+    http: httpx.AsyncClient,
+    variables: Mapping[str, Any],
+    state: CallState,
+) -> Any:
+    from livekit.agents import RunContext, function_tool
+
+    name = entry.get("name") or "book_appointment_cal"
+    schema = {
+        "type": "function",
+        "name": name,
+        "description": resolve_template(entry.get("description") or "", variables)
+        or "Book an appointment on the calendar. Check availability first.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "start_time": {
+                    "type": "string",
+                    "description": "Appointment start in ISO 8601 UTC, e.g. 2026-07-14T15:00:00Z.",
+                },
+                "name": {"type": "string", "description": "Attendee full name."},
+                "email": {"type": "string", "description": "Attendee email address."},
+                "phone": {
+                    "type": "string",
+                    "description": "Attendee phone number in E.164 format (optional).",
+                },
+            },
+            "required": ["start_time", "name", "email"],
+        },
+    }
+
+    async def handler(raw_arguments: dict[str, object], context: RunContext) -> str:
+        state.add_tool_invocation(name, json.dumps(dict(raw_arguments), default=str))
+        event_type = cal_event_type_id(entry, variables)
+        api_key = resolve_template(str(entry.get("cal_api_key") or ""), variables)
+        if event_type is None or not api_key:
+            result = json.dumps({"error": "calendar tool is not configured"})
+            metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="error").inc()
+        else:
+            attendee: dict[str, Any] = {
+                "name": str(raw_arguments.get("name") or ""),
+                "email": str(raw_arguments.get("email") or ""),
+                "timeZone": cal_timezone(entry, variables),
+            }
+            phone = str(raw_arguments.get("phone") or "")
+            if phone:
+                attendee["phoneNumber"] = phone
+            try:
+                resp = await http.post(
+                    f"{CAL_API_BASE}/bookings",
+                    json={
+                        "eventTypeId": event_type,
+                        "start": str(raw_arguments.get("start_time") or ""),
+                        "attendee": attendee,
+                    },
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "cal-api-version": CAL_BOOKINGS_API_VERSION,
+                    },
+                    timeout=tool_timeout_s(entry),
+                )
+                resp.raise_for_status()
+                result = await _respond_json(resp)
+                metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="success").inc()
+            except Exception as exc:  # noqa: BLE001
+                result = _tool_error(name, exc)
+        state.add_tool_result(name, result)
+        return result
+
+    return function_tool(handler, raw_schema=schema)
+
+
+def _make_send_sms_tool(
+    entry: dict[str, Any],
+    *,
+    http: httpx.AsyncClient,
+    variables: Mapping[str, Any],
+    call_info: Mapping[str, Any] | None,
+    state: CallState,
+) -> Any:
+    from livekit.agents import RunContext, function_tool
+
+    name = entry.get("name") or "send_sms"
+    static_text = sms_static_content(entry, variables)
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    if static_text is None:
+        content = entry.get("sms_content") or {}
+        prompt = str(content.get("prompt") or "") if isinstance(content, Mapping) else ""
+        properties["message"] = {
+            "type": "string",
+            "description": prompt or "The SMS text to send to the user.",
+        }
+        required = ["message"]
+    schema = {
+        "type": "function",
+        "name": name,
+        "description": resolve_template(entry.get("description") or "", variables)
+        or "Send an SMS text message to the user on this call.",
+        "parameters": {"type": "object", "properties": properties, "required": required},
+    }
+
+    async def handler(raw_arguments: dict[str, object], context: RunContext) -> str:
+        text = static_text or str(raw_arguments.get("message") or "")
+        agent_number, user_number = sms_numbers(call_info)
+        state.add_tool_invocation(name, json.dumps({"to": user_number, "message": text}))
+        api_key = os.environ.get("TELNYX_API_KEY", "")
+        if not api_key:
+            result = json.dumps({"error": "SMS is not configured"})
+            metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="error").inc()
+        elif not (_E164_RE.match(agent_number or "") and _E164_RE.match(user_number or "")):
+            # Web calls have no phone numbers to text between.
+            result = json.dumps({"error": "SMS requires a phone call with E.164 numbers"})
+            metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="error").inc()
+        elif not text:
+            result = json.dumps({"error": "empty SMS message"})
+            metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="error").inc()
+        else:
+            body = {"from": agent_number, "to": user_number, "text": text}
+            profile_id = os.environ.get("TELNYX_MESSAGING_PROFILE_ID")
+            if profile_id:
+                body["messaging_profile_id"] = profile_id
+            try:
+                resp = await http.post(
+                    TELNYX_MESSAGES_URL,
+                    json=body,
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    timeout=tool_timeout_s(entry),
+                )
+                resp.raise_for_status()
+                metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="success").inc()
+                result = json.dumps({"result": f"SMS sent to {user_number}"})
+            except Exception as exc:  # noqa: BLE001
+                result = _tool_error(name, exc)
+        state.add_tool_result(name, result)
+        return result
+
+    return function_tool(handler, raw_schema=schema)
+
+
+def _make_agent_swap_tool(entry: dict[str, Any], *, control: CallControl, state: CallState) -> Any:
+    from livekit.agents import RunContext, function_tool
+
+    name = entry.get("name") or "agent_swap"
+    agent_id = str(entry.get("agent_id") or "")
+    schema = {
+        "type": "function",
+        "name": name,
+        "description": entry.get("description") or "Hand the conversation over to another agent.",
+        "parameters": {"type": "object", "properties": {}},
+    }
+
+    async def handler(raw_arguments: dict[str, object], context: RunContext) -> str:
+        state.add_tool_invocation(name, json.dumps({"agent_id": agent_id}))
+        if not agent_id:
+            result = json.dumps({"error": "no agent_id configured for agent swap"})
+            metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="error").inc()
+        else:
+            try:
+                result = await control.agent_swap(agent_id, entry)
+                metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="success").inc()
+            except Exception as exc:  # noqa: BLE001
+                result = _tool_error(name, exc)
+        state.add_tool_result(name, result)
+        return result
+
+    return function_tool(handler, raw_schema=schema)
+
+
 def build_tools(
     general_tools: list[dict[str, Any]],
     *,
@@ -437,6 +895,30 @@ def build_tools(
             tools.append(
                 _make_transfer_call_tool(entry, control=control, variables=variables, state=state)
             )
+        elif tool_type == "press_digit":
+            tools.append(_make_press_digit_tool(entry, control=control, state=state))
+        elif tool_type == "extract_dynamic_variable":
+            tools.append(
+                _make_extract_dynamic_variable_tool(entry, variables=variables, state=state)
+            )
+        elif tool_type == "check_availability_cal":
+            tools.append(
+                _make_check_availability_cal_tool(
+                    entry, http=http, variables=variables, state=state
+                )
+            )
+        elif tool_type == "book_appointment_cal":
+            tools.append(
+                _make_book_appointment_cal_tool(entry, http=http, variables=variables, state=state)
+            )
+        elif tool_type == "send_sms":
+            tools.append(
+                _make_send_sms_tool(
+                    entry, http=http, variables=variables, call_info=call_info, state=state
+                )
+            )
+        elif tool_type == "agent_swap":
+            tools.append(_make_agent_swap_tool(entry, control=control, state=state))
         elif entry.get("url"):
             tools.append(
                 _make_http_tool(
