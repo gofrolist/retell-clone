@@ -6,6 +6,7 @@ resource "google_project_service" "services" {
     "sqladmin.googleapis.com",
     "servicenetworking.googleapis.com",
     "redis.googleapis.com",
+    "aiplatform.googleapis.com", # Vertex AI (worker Gemini via Workload Identity)
     "artifactregistry.googleapis.com",
     "secretmanager.googleapis.com",
     "dns.googleapis.com",
