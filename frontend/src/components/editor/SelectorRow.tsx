@@ -3,17 +3,8 @@
 import { VoiceAvatar } from "@/components/agents/AgentsTable";
 import Select from "@/components/ui/Select";
 import { voiceNameFromId } from "@/lib/api";
+import { LLM_MODELS } from "@/lib/models";
 import { BookOpen, Clock4, Settings2, Sparkles } from "lucide-react";
-
-// Retell-compatible engine model ids the backend stores as-is (the worker
-// maps non-Gemini names to its default Gemini model).
-const MODEL_LABELS: Record<string, string> = {
-  "gemini-2.5-flash": "Gemini 2.5 Flash",
-  "gemini-2.5-flash-lite": "Gemini 2.5 Flash Lite",
-  "gpt-4o": "GPT-4o",
-  "gpt-4o-mini": "GPT-4o mini",
-  "claude-3.7-sonnet": "Claude 3.7 Sonnet",
-};
 
 const LANGUAGES: { value: string; label: string; flag: string }[] = [
   { value: "en-US", label: "English (US)", flag: "🇺🇸" },
@@ -40,9 +31,11 @@ export default function SelectorRow({
   onLanguage: (v: string) => void;
   voices: { voice_id: string; voice_name: string }[];
 }) {
-  const modelIds = Object.keys(MODEL_LABELS);
-  if (model && !modelIds.includes(model)) modelIds.unshift(model);
-  const modelOptions = modelIds.map((m) => ({ value: m, label: MODEL_LABELS[m] ?? m }));
+  const knownModels = LLM_MODELS.map((m) => ({ value: m.id, label: m.label }));
+  const modelOptions =
+    model && !LLM_MODELS.some((m) => m.id === model)
+      ? [{ value: model, label: model }, ...knownModels]
+      : knownModels;
 
   const voiceOptions = (
     voices.some((v) => v.voice_id === voiceId)
