@@ -77,18 +77,30 @@ export default function LoginPage() {
           router.replace("/agents");
           return;
         }
+        // The backend puts the actionable reason in `detail` — e.g. a 503
+        // can be "Google Sign-In is not configured" OR "No workspace
+        // provisioned yet (run architeq_api.seed)". Prefer it over guessing
+        // from the status code.
+        let detail = "";
+        try {
+          detail = String(((await res.json()) as { detail?: unknown }).detail ?? "");
+        } catch {
+          // non-JSON error body — fall through to status-based messages
+        }
         if (res.status === 403) {
           setError(
-            "This Google account is not allowed to access Architeq. Ask a workspace admin to add your email to the allowlist.",
+            detail ||
+              "This Google account is not allowed to access Architeq. Ask a workspace admin to add your email to the allowlist.",
           );
         } else if (res.status === 401) {
           setError("Google rejected the sign-in token. Please try again.");
         } else if (res.status === 503) {
           setError(
-            "Sign-in is not configured on the backend (503). Set the Google auth settings on the API server, or use the API-key dev mode.",
+            detail ||
+              "Sign-in is not configured on the backend (503). Set the Google auth settings on the API server, or use the API-key dev mode.",
           );
         } else {
-          setError(`Sign-in failed (${res.status} ${res.statusText}).`);
+          setError(detail || `Sign-in failed (${res.status} ${res.statusText}).`);
         }
       } catch {
         setError(
