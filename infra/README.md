@@ -80,9 +80,10 @@ helm repo add livekit https://helm.livekit.io
 helm repo update
 
 kubectl create namespace livekit
+kubectl -n livekit apply -f infra/helm/livekit/livekit-managed-cert.yaml
 helm install livekit-server livekit/livekit-server \
   -n livekit -f infra/helm/livekit/livekit-server-values.yaml
-helm install livekit-sip livekit/sip \
+helm install livekit-sip infra/helm/livekit/sip \
   -n livekit -f infra/helm/livekit/livekit-sip-values.yaml
 ```
 

@@ -1,7 +1,9 @@
 # Static IPs and DNS.
-#   web_ip  — global, for the GCE HTTPS ingress (api.<domain>, app.<domain>)
-#   sip_ip  — regional, for the livekit-sip UDP LoadBalancer Service
-# livekit.<domain> points at the LiveKit signalling LoadBalancer (regional).
+#   web_ip     — global, for the GCE HTTPS ingress (api.<domain>, app.<domain>)
+#   livekit_ip — global, for the LiveKit signalling GCE Ingress + managed cert
+#                (the chart's loadBalancer.type gke-managed-cert renders an
+#                Ingress, and global HTTP(S) LBs only bind global addresses)
+#   sip_ip     — regional, for the livekit-sip UDP LoadBalancer Service
 
 resource "google_compute_global_address" "web" {
   name = "${var.cluster_name}-web-ip"
@@ -9,9 +11,8 @@ resource "google_compute_global_address" "web" {
   depends_on = [google_project_service.services]
 }
 
-resource "google_compute_address" "livekit" {
-  name   = "${var.cluster_name}-livekit-ip"
-  region = var.region
+resource "google_compute_global_address" "livekit" {
+  name = "${var.cluster_name}-livekit-ip"
 
   depends_on = [google_project_service.services]
 }
@@ -40,7 +41,7 @@ locals {
   dns_records = {
     api     = google_compute_global_address.web.address
     app     = google_compute_global_address.web.address
-    livekit = google_compute_address.livekit.address
+    livekit = google_compute_global_address.livekit.address
     sip     = google_compute_address.sip.address
   }
 }

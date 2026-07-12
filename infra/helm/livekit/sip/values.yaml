@@ -1,0 +1,41 @@
+# Defaults for the in-repo livekit-sip chart. Production values live in
+# ../livekit-sip-values.yaml (with a private, secret-filled copy).
+
+replicaCount: 2
+
+image:
+  repository: livekit/sip
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Rendered verbatim into the SIP_CONFIG_BODY secret (plus health/metrics
+# ports below). See https://github.com/livekit/sip for the schema.
+config:
+  ws_url: ws://livekit-server.livekit.svc.cluster.local:80
+  api_key: ""
+  api_secret: ""
+  redis:
+    address: ""
+  sip_port: 5060
+  rtp_port:
+    start: 10000
+    end: 20000
+  use_external_ip: true
+  log_level: info
+
+# hostNetwork: these bind on the node — keep them off common ports
+# (8080/9090 are already taken by node agents).
+healthPort: 8189
+prometheusPort: 9889
+
+# RTP media flows directly to node IPs (matches the terraform firewall rule
+# on the voice pool), so the pod runs with hostNetwork. Signalling (UDP
+# 5060) additionally comes in via the LoadBalancer Service below.
+service:
+  type: LoadBalancer
+  loadBalancerIP: ""
+  annotations: {}
+
+nodeSelector: {}
+tolerations: []
+resources: {}
