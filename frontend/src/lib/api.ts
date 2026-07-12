@@ -272,7 +272,9 @@ export function uiCallFromRaw(c: RawCall): Call {
     direction: c.direction ?? "outbound",
     from_number: c.from_number ?? "",
     to_number: c.to_number ?? "",
-    start_timestamp: c.start_timestamp ?? 0,
+    // Never-connected calls have no start_timestamp; fall back to the end
+    // (finalize) time so Call History shows when the attempt happened.
+    start_timestamp: c.start_timestamp ?? c.end_timestamp ?? 0,
     end_timestamp: c.end_timestamp ?? 0,
     duration_ms: c.duration_ms ?? 0,
     cost: c.call_cost?.combined_cost ?? 0,

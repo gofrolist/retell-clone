@@ -16,6 +16,12 @@ updates:
     directory: /frontend
     schedule:
       interval: weekly
+    ignore:
+      # eslint-config-next's eslint-plugin-react cannot load under ESLint 10
+      # (context.getFilename removal). Unignore once eslint-config-next
+      # declares ESLint 10 support.
+      - dependency-name: eslint
+        versions: [">=10"]
 
   - package-ecosystem: docker
     directories:

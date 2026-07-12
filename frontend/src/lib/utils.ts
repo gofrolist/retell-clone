@@ -15,6 +15,9 @@ export function formatDurationLong(ms: number): string {
 }
 
 export function formatCallTime(ts: number): string {
+  // 0 stands in for "never happened" (e.g. start of a call that never
+  // connected) — render a placeholder instead of the Unix epoch.
+  if (!ts) return "—";
   const d = new Date(ts);
   return (
     d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) +

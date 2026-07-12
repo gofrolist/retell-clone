@@ -167,7 +167,7 @@ export default function CallDrawer({
                 </span>
               </MetaItem>
               <MetaItem label="Duration">
-                {formatCallTime(c.start_timestamp).split("·")[1]} -{" "}
+                {formatCallTime(c.start_timestamp).split("·")[1] ?? "—"} -{" "}
                 {formatDuration(c.duration_ms)}{" "}
                 <span className="text-sub">({formatDurationLong(c.duration_ms)})</span>
               </MetaItem>
