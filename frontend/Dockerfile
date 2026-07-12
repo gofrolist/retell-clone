@@ -37,8 +37,9 @@ ENV NODE_ENV=production \
     PORT=3000 \
     HOSTNAME=0.0.0.0
 
-# Run as the non-root "node" user shipped in the official node image.
-USER node
+# Run as the non-root "node" user (uid 1000) shipped in the official node
+# image — numeric form so Kubernetes runAsNonRoot can verify it.
+USER 1000:1000
 
 # Copy only the standalone bundle: server.js + traced node_modules, then the
 # static assets and public files the minimal server does not copy itself.
