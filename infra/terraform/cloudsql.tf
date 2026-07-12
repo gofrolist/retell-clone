@@ -9,6 +9,9 @@ resource "google_sql_database_instance" "postgres" {
   deletion_protection = var.db_deletion_protection
 
   settings {
+    # db-custom-* tiers only exist in the ENTERPRISE edition; without this the
+    # API defaults new instances to ENTERPRISE_PLUS and rejects the tier.
+    edition           = "ENTERPRISE"
     tier              = var.db_tier
     availability_type = var.db_availability_type
     disk_type         = "PD_SSD"
