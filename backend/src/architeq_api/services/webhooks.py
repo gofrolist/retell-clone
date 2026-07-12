@@ -104,8 +104,7 @@ async def send_event(session: AsyncSession, call: Call, event: str) -> None:
 
 
 # Strong references so pending tasks can't be garbage-collected mid-flight;
-# also lets tests drain them (a leaked task's session touching the shared
-# in-memory SQLite connection can abort a later test's transaction).
+# also lets tests drain them between cases.
 background_tasks: set[asyncio.Task[Any]] = set()
 
 
