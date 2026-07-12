@@ -26,7 +26,9 @@ Good news discovered during mapping (see `docs/RETELL_INTEGRATION_MAP.md`):
    kube-prometheus-stack).
 2. Seed a workspace **reusing the consumer's exact API key** so the Bearer
    token and the webhook-HMAC key both keep working:
-   `python -m app.seed --api-key "$RETELL_API_KEY" --workspace-name USAN`
+   `python -m architeq_api.seed --api-key "$RETELL_API_KEY" --workspace-name USAN`
+   (already-provisioned deployment: add `--workspace-id ws_...` to attach the
+   key to the existing workspace instead of creating a new one)
 3. Import agents **preserving existing agent ids** (so `RETELL_*_AGENT_ID`
    env vars stay untouched):
    ```bash
