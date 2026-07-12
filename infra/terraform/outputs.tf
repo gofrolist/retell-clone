@@ -52,8 +52,8 @@ output "web_ip_name" {
 }
 
 output "livekit_ip" {
-  description = "Regional static IP for the LiveKit signalling LoadBalancer."
-  value       = google_compute_address.livekit.address
+  description = "Global static IP for the LiveKit signalling GCE Ingress (managed cert)."
+  value       = google_compute_global_address.livekit.address
 }
 
 output "sip_ip" {

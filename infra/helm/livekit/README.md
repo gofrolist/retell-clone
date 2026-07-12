@@ -9,6 +9,7 @@ Placeholders to replace before installing (from `terraform output`):
 |---|---|
 | `REDIS_HOST` | `terraform output redis_host` |
 | `SIP_STATIC_IP` | `terraform output sip_ip` |
+| `LIVEKIT_DOMAIN` | `livekit.<domain>` (values + livekit-managed-cert.yaml) |
 | `LIVEKIT_API_SECRET_CHANGE_ME` | generate: `openssl rand -hex 32` |
 
 The API key name is `APIArchiteqKey`; key + secret must be identical in
@@ -23,10 +24,15 @@ helm repo update
 
 kubectl create namespace livekit
 
+# TLS for the signalling Ingress (chart references it, does not create it)
+kubectl -n livekit apply -f livekit-managed-cert.yaml
+
 helm install livekit-server livekit/livekit-server \
   -n livekit -f livekit-server-values.yaml
 
-helm install livekit-sip livekit/sip \
+# LiveKit publishes no SIP chart (helm.livekit.io has only server/egress/
+# ingress) — ./sip is this repo's own minimal chart.
+helm install livekit-sip ./sip \
   -n livekit -f livekit-sip-values.yaml
 ```
 

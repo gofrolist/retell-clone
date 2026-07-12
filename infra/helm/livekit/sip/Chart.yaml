@@ -1,0 +1,10 @@
+apiVersion: v2
+name: livekit-sip
+description: >-
+  Minimal in-repo chart for livekit-sip (Telnyx PSTN bridge). LiveKit does
+  not publish a SIP chart to helm.livekit.io (only livekit-server, egress,
+  ingress), so this repo carries its own. Values schema matches
+  ../livekit-sip-values.yaml.
+type: application
+version: 0.1.0
+appVersion: "1.0"

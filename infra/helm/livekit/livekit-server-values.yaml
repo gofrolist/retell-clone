@@ -36,11 +36,17 @@ livekit:
   # proxy, or enable the chart's built-in turn+tls with a cert secret.
 
 loadBalancer:
-  # GKE external LB for signalling (wss://livekit.<domain>).
+  # GKE external LB for signalling (wss://livekit.<domain>): NodePort +
+  # GCE Ingress on the global static IP, TLS via a ManagedCertificate
+  # (kubectl apply livekit-managed-cert.yaml — the chart only references it
+  # by name). Ingress rules are generated from tls[].hosts.
   type: gke-managed-cert
-  staticIpName: architeq-livekit-ip # terraform output `web_ip_name` sibling: <cluster>-livekit-ip
+  staticIpName: architeq-livekit-ip # global; terraform output `livekit_ip`
+  certificateName: livekit-server-cert
   servicePort: 443
-  clusterIssuer: ""
+  tls:
+    - hosts:
+        - LIVEKIT_DOMAIN # livekit.<domain>
 
 # Pin LiveKit to the voice node pool.
 nodeSelector:

@@ -1,0 +1,11 @@
+# GKE ManagedCertificate for the LiveKit signalling Ingress. The
+# livekit-server chart references it by name (loadBalancer.certificateName)
+# but does not create it. Replace LIVEKIT_DOMAIN (livekit.<domain>) and:
+#   kubectl -n livekit apply -f livekit-managed-cert.yaml
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: livekit-server-cert
+spec:
+  domains:
+    - LIVEKIT_DOMAIN
