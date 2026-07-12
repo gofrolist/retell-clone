@@ -35,6 +35,12 @@ from architeq_worker.variables import resolve_deep, resolve_template
 logger = logging.getLogger("architeq-worker.tools")
 
 TOOL_TIMEOUT_S = 10.0
+# Retell allows 1s..10min for a custom tool's timeout_ms. When the tool does
+# not set one we keep our stricter 10s default (a stalled endpoint stalls a
+# live phone call); an explicit Retell-style timeout_ms wins, clamped.
+TOOL_TIMEOUT_MIN_S = 1.0
+TOOL_TIMEOUT_MAX_S = 600.0
+_ALLOWED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 # Cap the tool response body we buffer and feed back to the LLM: a buggy or
 # hostile endpoint returning tens of MB would stall the live call and blow up
 # token cost. 256 KiB is far more than any real tool result.
@@ -93,6 +99,49 @@ class CallControl(Protocol):
     async def transfer_call(self, number: str) -> str: ...
 
 
+def tool_timeout_s(entry: Mapping[str, Any]) -> float:
+    """Per-tool timeout: Retell timeout_ms clamped to 1s..600s, else 10s."""
+    raw = entry.get("timeout_ms")
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool) or raw <= 0:
+        return TOOL_TIMEOUT_S
+    return min(max(raw / 1000.0, TOOL_TIMEOUT_MIN_S), TOOL_TIMEOUT_MAX_S)
+
+
+def extract_response_variables(
+    response_text: str, response_variables: Mapping[str, str]
+) -> dict[str, str]:
+    """Retell response_variables: {"var": "data.user.name"} JSON-path lookups.
+
+    Dot-separated path segments; integer segments index into lists. Missing
+    paths and non-JSON responses are skipped silently (Retell does the same —
+    the variable just stays unset).
+    """
+    out: dict[str, str] = {}
+    if not response_variables:
+        return out
+    try:
+        payload = json.loads(response_text)
+    except json.JSONDecodeError, ValueError:
+        return out
+    for var, path in response_variables.items():
+        node: Any = payload
+        for segment in str(path).split("."):
+            if isinstance(node, dict) and segment in node:
+                node = node[segment]
+            elif isinstance(node, list) and segment.lstrip("-").isdigit():
+                try:
+                    node = node[int(segment)]
+                except IndexError:
+                    node = None
+                    break
+            else:
+                node = None
+                break
+        if node is not None and not isinstance(node, (dict, list)):
+            out[str(var)] = str(node)
+    return out
+
+
 async def execute_custom_tool(
     http: httpx.AsyncClient,
     *,
@@ -102,8 +151,19 @@ async def execute_custom_tool(
     variables: Mapping[str, Any],
     call_info: Mapping[str, Any] | None = None,
     timeout: float = TOOL_TIMEOUT_S,
+    method: str = "POST",
+    headers: Mapping[str, Any] | None = None,
+    query_params: Mapping[str, Any] | None = None,
+    name: str = "custom_tool",
+    wrap_args: bool = False,
 ) -> str:
-    """POST flat args to a customer tool endpoint; return the response body.
+    """Send the tool request to a customer endpoint; return the response body.
+
+    Body shape (docs/ARCHITECTURE.md rule 4): FLAT args + the ``call`` object,
+    no ``{"args": ...}`` wrapper — Retell's "Payload: args only" mode, which is
+    what the consumer's endpoints expect. Tools that explicitly declare
+    ``args_at_root: false`` get Retell's wrapped ``{name, call, args}`` shape
+    instead (``wrap_args=True``).
 
     Raises on transport errors / non-2xx — callers wrap into an
     ``{"error": ...}`` tool result for the model.
@@ -111,16 +171,33 @@ async def execute_custom_tool(
     await assert_tool_url_safe(url)
     # Resolve {{var}} in string argument values (nested included).
     resolved = {key: resolve_deep(value, variables) for key, value in args.items()}
+    body: dict[str, Any]
+    if wrap_args:
+        body = {"name": name, "args": resolved}
+    else:
+        body = resolved
     if call_info is not None:
-        # Retell parity: the call object rides alongside the flat args so
-        # consumer fallback chains (call.call_id, call.from_number, …) work.
-        resolved["call"] = dict(call_info)
-    resp = await http.post(
-        url,
-        json=resolved,  # CONTRACT: flat body, no "args" wrapper
-        headers={"X-Caller-Secret": function_secret},
-        timeout=timeout,
-    )
+        # Retell parity: the call object rides alongside the args so consumer
+        # fallback chains (call.call_id, call.from_number, …) work.
+        body["call"] = dict(call_info)
+    send_headers = {str(k): resolve_template(str(v), variables) for k, v in (headers or {}).items()}
+    # The shared secret is the auth contract — a tool config must not be able
+    # to drop or spoof it, so it is applied after the custom headers.
+    send_headers["X-Caller-Secret"] = function_secret
+    params = {
+        str(k): resolve_template(str(v), variables) for k, v in (query_params or {}).items()
+    } or None
+    verb = method.upper() if isinstance(method, str) and method else "POST"
+    if verb not in _ALLOWED_METHODS:
+        verb = "POST"
+    request_kwargs: dict[str, Any] = {
+        "headers": send_headers,
+        "params": params,
+        "timeout": timeout,
+    }
+    if verb not in ("GET", "DELETE"):
+        request_kwargs["json"] = body
+    resp = await http.request(verb, url, **request_kwargs)
     resp.raise_for_status()
     if len(resp.content) > MAX_TOOL_RESPONSE_BYTES:
         raise ValueError(f"tool response too large ({len(resp.content)} bytes)")
@@ -137,7 +214,9 @@ async def safe_execute_custom_tool(
     variables: Mapping[str, Any],
     call_info: Mapping[str, Any] | None = None,
     state: CallState | None = None,
+    entry: Mapping[str, Any] | None = None,
 ) -> str:
+    entry = entry or {}
     if state is not None:
         state.add_tool_invocation(name, json.dumps(dict(args)))
     try:
@@ -148,8 +227,22 @@ async def safe_execute_custom_tool(
             function_secret=function_secret,
             variables=variables,
             call_info=call_info,
+            timeout=tool_timeout_s(entry),
+            method=entry.get("method") or "POST",
+            headers=entry.get("headers"),
+            query_params=entry.get("query_params"),
+            name=name,
+            # Retell wraps as {name, call, args} unless args_at_root is set;
+            # our default is the flat shape the consumer contract froze, so
+            # only an EXPLICIT args_at_root=false opts into the wrapper.
+            wrap_args=entry.get("args_at_root") is False,
         )
         metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="success").inc()
+        captured = extract_response_variables(result, entry.get("response_variables") or {})
+        if captured and isinstance(variables, dict):
+            # Later {{var}} references (tool args, transfer destinations)
+            # resolve against the same mapping the session was built with.
+            variables.update(captured)
     except Exception as exc:  # timeout, transport, non-2xx — model sees the error
         metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="error").inc()
         # Log/return the exception *type* only: httpx errors stringify the full
@@ -189,8 +282,26 @@ def _make_http_tool(
         ),
     }
 
-    async def handler(raw_arguments: dict[str, object], context: RunContext) -> str:
-        return await safe_execute_custom_tool(
+    speak_during = bool(entry.get("speak_during_execution"))
+    execution_message = entry.get("execution_message_description") or ""
+    # execution_message_type "prompt" would have the LLM phrase the filler
+    # itself; we approximate both modes with a spoken sentence (static text
+    # when provided, else a generic one) — good enough to keep the caller
+    # from hearing dead air during a slow tool.
+    filler = (
+        resolve_template(execution_message, variables)
+        if entry.get("execution_message_type") == "static_text" and execution_message
+        else "One moment, let me check that."
+    )
+    speak_after = entry.get("speak_after_execution")
+
+    async def handler(raw_arguments: dict[str, object], context: RunContext) -> str | None:
+        if speak_during:
+            try:
+                context.session.say(filler, add_to_chat_ctx=False)
+            except Exception:  # noqa: BLE001 - filler speech must never break the tool
+                logger.debug("speak_during_execution failed for %s", name, exc_info=True)
+        result = await safe_execute_custom_tool(
             http,
             name=name,
             url=url,
@@ -199,7 +310,18 @@ def _make_http_tool(
             variables=variables,
             call_info=call_info,
             state=state,
+            entry=entry,
         )
+        if speak_after is False:
+            # Retell: speak_after_execution=false → the agent does not respond
+            # to the tool result. StopResponse is livekit's mechanism for that.
+            try:
+                from livekit.agents.llm import StopResponse
+
+                raise StopResponse()
+            except ImportError:
+                logger.debug("StopResponse unavailable; returning result for %s", name)
+        return result
 
     return function_tool(handler, raw_schema=schema)
 
