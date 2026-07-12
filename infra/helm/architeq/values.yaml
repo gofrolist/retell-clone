@@ -13,7 +13,8 @@ global:
 config:
   # ws:// for in-cluster signalling; workers/api reach LiveKit via the
   # cluster Service, the public wss://livekit.<domain> is for browsers.
-  livekitUrl: ws://livekit-server.livekit.svc.cluster.local:80
+  # Port must match the livekit-server chart's loadBalancer.servicePort (443).
+  livekitUrl: ws://livekit-server.livekit.svc.cluster.local:443
   redisUrl: redis://REDIS_HOST:6379/0
   recordingsGcsBucket: PROJECT_ID-architeq-recordings
   logLevel: info
