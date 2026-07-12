@@ -36,7 +36,7 @@ class Settings(BaseSettings):
 
     # Google GenAI (Gemini) for post-call analysis
     google_api_key: str = Field("", validation_alias=_shared("GOOGLE_API_KEY"))
-    analysis_model: str = "gemini-2.5-flash"
+    analysis_model: str = "gemini-3.1-flash-lite"
 
     # Webhook delivery
     webhook_timeout_seconds: float = 10.0

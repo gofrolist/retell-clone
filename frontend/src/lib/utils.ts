@@ -42,6 +42,20 @@ export function truncateId(id: string, head = 12): string {
   return id.length > head + 2 ? `${id.slice(0, head)}…` : id;
 }
 
+/**
+ * Ensure a select can render a stored value that isn't in the preset list by
+ * prepending it (shown as `label`, defaulting to the raw value). Empty values
+ * return the preset list untouched so no blank option is rendered.
+ */
+export function withValue(
+  options: { value: string; label: string }[],
+  value: string,
+  label: string = value,
+): { value: string; label: string }[] {
+  if (!value || options.some((o) => o.value === value)) return options;
+  return [{ value, label }, ...options];
+}
+
 const E164 = /^\+[1-9]\d{6,14}$/;
 
 /** True if `v` is a valid E.164 phone number (e.g. "+14155550123"). */
