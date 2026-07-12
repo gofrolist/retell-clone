@@ -1,6 +1,22 @@
+# ruff: noqa: E402 — env vars must be set before architeq_api imports
+import atexit
 import os
+import tempfile
 
-os.environ["ARCHITEQ_DATABASE_URL"] = "sqlite+aiosqlite://"
+# File-backed SQLite (not :memory:) so every session gets its own connection,
+# like production Postgres. In-memory SQLite forces one shared connection
+# (StaticPool), where a background task's session close() issues ROLLBACK on
+# that connection and can wipe a request's flushed-but-uncommitted UPDATE —
+# seen on CI as finalize returning 200 with the transcript silently lost.
+_db_file = tempfile.NamedTemporaryFile(prefix="architeq-test-", suffix=".sqlite", delete=False)
+_db_file.close()
+atexit.register(
+    lambda: [
+        os.path.exists(p) and os.remove(p)
+        for p in (_db_file.name, _db_file.name + "-wal", _db_file.name + "-shm")
+    ]
+)
+os.environ["ARCHITEQ_DATABASE_URL"] = f"sqlite+aiosqlite:///{_db_file.name}"
 os.environ["ARCHITEQ_INTERNAL_TOKEN"] = "test-internal-token"
 os.environ["ARCHITEQ_FUNCTION_SECRET"] = "test-function-secret"
 # Webhook targets in tests are fake hosts intercepted by respx — skip the
@@ -11,11 +27,15 @@ os.environ["ARCHITEQ_DASHBOARD_ALLOWED_EMAILS"] = '["admin@example.com"]'
 os.environ["ARCHITEQ_RATE_LIMIT_RPM"] = "0"
 os.environ.pop("ARCHITEQ_GOOGLE_API_KEY", None)
 
+import asyncio
+
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event
 
 import architeq_api.db as db_module
 from architeq_api.auth import hash_key
+from architeq_api.services import webhooks
 from architeq_api.main import app
 from architeq_api.models import Agent, ApiKey, Base, PhoneNumber, RetellLLM, Workspace
 
@@ -32,11 +52,20 @@ AUTH_HEADERS = {"Authorization": f"Bearer {API_KEY}"}
 
 @pytest.fixture(autouse=True)
 async def _fresh_db():
-    # Reset the lazily-created engine so each test gets a clean in-memory DB.
+    # Fresh engine + empty schema per test (the DB file persists across tests).
     db_module._engine = None
     db_module._session_factory = None
     engine = db_module.get_engine()
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _fast_sqlite(dbapi_conn, _record):
+        # No durability needed in tests; WAL lets readers and the background
+        # webhook/analysis tasks' writers coexist without lock errors.
+        dbapi_conn.execute("PRAGMA journal_mode=WAL")
+        dbapi_conn.execute("PRAGMA synchronous=OFF")
+
     async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
     async with db_module.session_factory()() as session:
         session.add(Workspace(id=WORKSPACE_ID, name="Test", webhook_url=None))
@@ -92,6 +121,10 @@ async def _fresh_db():
         )
         await session.commit()
     yield
+    # Drain fire-and-forget webhook/analysis tasks before tearing down, so a
+    # leaked task can't run against the next test's freshly reset schema.
+    while webhooks.background_tasks:
+        await asyncio.gather(*list(webhooks.background_tasks), return_exceptions=True)
     await engine.dispose()
 
 

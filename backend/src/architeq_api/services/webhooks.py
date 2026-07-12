@@ -103,8 +103,18 @@ async def send_event(session: AsyncSession, call: Call, event: str) -> None:
     await session.commit()
 
 
+# Strong references so pending tasks can't be garbage-collected mid-flight;
+# also lets tests drain them between cases.
+background_tasks: set[asyncio.Task[Any]] = set()
+
+
 def fire_and_forget(coro: Any) -> None:
     task = asyncio.create_task(coro)
-    task.add_done_callback(
-        lambda t: t.exception() and log.error("webhook task error", exc_info=t.exception())
-    )
+    background_tasks.add(task)
+
+    def _log_failure(t: asyncio.Task[Any]) -> None:
+        background_tasks.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            log.error("webhook task error", exc_info=t.exception())
+
+    task.add_done_callback(_log_failure)
