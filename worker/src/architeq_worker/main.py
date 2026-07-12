@@ -622,7 +622,8 @@ async def entrypoint(ctx: JobContext) -> None:
 
 
 def _run() -> None:
-    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+    # Deploy configs pass lowercase levels ("info"); logging wants uppercase.
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
     metrics.ensure_server()
     try:
         # livekit-agents ≥1.3: AgentServer with explicit-dispatch agent name.
