@@ -20,6 +20,7 @@ dependencies = [
     "alembic>=1.13",
     "google-auth>=2.30",
     "PyJWT>=2.8",
+    "google-cloud-storage>=3.12.1",
 ]
 
 [dependency-groups]
