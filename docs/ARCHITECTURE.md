@@ -73,12 +73,19 @@ LiveKit Agents worker; one job per call.
 - Joins the LiveKit room for the call; runs the Cartesia-STT → Gemini →
   Cartesia-TTS pipeline with barge-in/interruption handling.
 - Resolves `{{variable}}` templates from `retell_llm_dynamic_variables` in the
-  prompt, begin message, and tool definitions before use.
+  prompt, begin message, and tool definitions before use. Call-scoped system
+  variables `{{call.call_id}}`, `{{call.direction}}`, `{{call.from_number}}`,
+  `{{call.to_number}}` resolve too (Retell parity — consumer tool specs pass
+  `{{call.call_id}}` as `retell_call_id`).
 - **Custom function tools**: executes agent tool declarations
   (`name/description/url/method/parameters`) by POSTing the **flat** argument
   object (never wrapped in `args`) with header `X-Caller-Secret: <function_secret>`,
   resolving `{{var}}` in argument values, and feeding the JSON response back
-  to the model as the tool result.
+  to the model as the tool result. A Retell-shaped `call` object
+  (`call_id, direction, from_number, to_number, retell_llm_dynamic_variables,
+  metadata`) rides alongside the flat args — consumer handlers fall back to
+  `call.call_id` / `call.from_number` / `call.retell_llm_dynamic_variables.phone`
+  when the model omits them.
 - **AMD / voicemail**: Telnyx AMD result (via SIP headers / LiveKit SIP
   attributes) combined with a Gemini-based greeting classifier; on detection
   sets `disconnection_reason=machine_detected` and `call_analysis.in_voicemail=true`.
@@ -124,9 +131,12 @@ contract test suite in `backend/tests/contract/`:
 3. `call_ended` semantics: `duration_ms` = talk time in ms; voicemail is
    signaled via `call_analysis.in_voicemail=true` **and/or**
    `disconnection_reason="machine_detected"`.
-4. Tool calls send **flat** JSON args — never `{"args": {...}}`.
+4. Tool calls send **flat** JSON args — never `{"args": {...}}` — plus a
+   top-level `call` object (additive, matches Retell).
 5. All `retell_llm_dynamic_variables` (arbitrary string keys/values) reach the
-   agent as `{{key}}` template values — no renaming, no dropping.
+   agent as `{{key}}` template values — no renaming, no dropping. Call-scoped
+   `{{call.*}}` system variables are additionally available and win over
+   same-named user variables.
 6. Inbound router response is read as
    `{"call_inbound": {"override_agent_id", "dynamic_variables"}}`; failure
    degrades to default agent, never drops the call.

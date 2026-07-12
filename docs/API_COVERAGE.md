@@ -16,7 +16,7 @@ names; extra fields may be present (allowed by the compatibility policy).
 | **Voice** | `GET /list-voices`, `GET /get-voice/{id}` | Full (Cartesia catalog) |
 | **Chat** | `POST /create-chat`, `GET /get-chat/{id}`, `GET /list-chat`, `POST /v3/list-chats`, `POST /create-chat-completion`, `PATCH /end-chat/{id}` | Full (completions via Gemini) |
 | **Chat agent** | `POST /create-chat-agent`, `GET /get-chat-agent/{id}`, `GET /list-chat-agents`, `PATCH /update-chat-agent/{id}`, `DELETE /delete-chat-agent/{id}` | Full |
-| **Concurrency** | `GET /get-concurrency` | Full (static limits until billing exists) |
+| **Concurrency** | `GET /get-concurrency` | Full (static limit of 20 until billing exists; `create-phone-call` returns 429 "Concurrency limit reached" when live calls — registered+ongoing — hit the limit) |
 | **Webhooks (outbound)** | `call_started`, `call_ended`, `call_analyzed` + inbound `call_inbound` routing webhook | Full incl. `x-retell-signature` |
 
 Dashboard-only endpoints (Architeq additions, `backend/src/architeq_api/api/dashboard.py`;

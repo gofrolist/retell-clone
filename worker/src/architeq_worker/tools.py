@@ -42,6 +42,7 @@ async def execute_custom_tool(
     args: Mapping[str, Any],
     function_secret: str,
     variables: Mapping[str, Any],
+    call_info: Mapping[str, Any] | None = None,
     timeout: float = TOOL_TIMEOUT_S,
 ) -> str:
     """POST flat args to a customer tool endpoint; return the response body.
@@ -51,6 +52,10 @@ async def execute_custom_tool(
     """
     # Resolve {{var}} in string argument values (nested included).
     resolved = {key: resolve_deep(value, variables) for key, value in args.items()}
+    if call_info is not None:
+        # Retell parity: the call object rides alongside the flat args so
+        # consumer fallback chains (call.call_id, call.from_number, …) work.
+        resolved["call"] = dict(call_info)
     resp = await http.post(
         url,
         json=resolved,  # CONTRACT: flat body, no "args" wrapper
@@ -69,13 +74,19 @@ async def safe_execute_custom_tool(
     args: Mapping[str, Any],
     function_secret: str,
     variables: Mapping[str, Any],
+    call_info: Mapping[str, Any] | None = None,
     state: CallState | None = None,
 ) -> str:
     if state is not None:
         state.add_tool_invocation(name, json.dumps(dict(args)))
     try:
         result = await execute_custom_tool(
-            http, url=url, args=args, function_secret=function_secret, variables=variables
+            http,
+            url=url,
+            args=args,
+            function_secret=function_secret,
+            variables=variables,
+            call_info=call_info,
         )
         metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="success").inc()
     except Exception as exc:  # timeout, transport, non-2xx — model sees the error
@@ -93,6 +104,7 @@ def _make_http_tool(
     http: httpx.AsyncClient,
     function_secret: str,
     variables: Mapping[str, Any],
+    call_info: Mapping[str, Any] | None,
     state: CallState,
 ) -> Any:
     # Lazy import so the pure HTTP contract above is unit-testable without
@@ -120,6 +132,7 @@ def _make_http_tool(
             args=raw_arguments,
             function_secret=function_secret,
             variables=variables,
+            call_info=call_info,
             state=state,
         )
 
@@ -211,6 +224,7 @@ def build_tools(
     variables: Mapping[str, Any],
     control: CallControl,
     state: CallState,
+    call_info: Mapping[str, Any] | None = None,
 ) -> list[Any]:
     """Convert llm.general_tools declarations into livekit function tools.
 
@@ -236,6 +250,7 @@ def build_tools(
                     http=http,
                     function_secret=function_secret,
                     variables=variables,
+                    call_info=call_info,
                     state=state,
                 )
             )

@@ -27,7 +27,10 @@ the `calls` table) → zero CRM changes needed.
   Body: `from_number, to_number, override_agent_id,
   retell_llm_dynamic_variables{string:string}, metadata?`.
   All callers read only `call_id` from the response; non-2xx = call not placed
-  (lead marked `retell_error`).
+  (lead marked `retell_error`). Exception: `run-test-scenario` treats HTTP 429
+  / body matching `/concurrency limit|429/i` as "busy, re-queue" — Architeq
+  returns `429 {"detail":"Concurrency limit reached (20)"}` when live
+  (registered+ongoing) workspace calls hit the limit.
 - `GET /v2/get-call/{call_id}` — callers and fields read:
   - evaluate-test → `transcript, duration_ms, call_status`
   - schedule-callback, send-family-sms, create-trial →
@@ -69,8 +72,14 @@ positive/happy → positive; negative/sad/concern → concerning; else neutral.
 `{name, description, url, method:"POST", parameters:{type:"object",properties,required}}`.
 Execution contract:
 - POST to `url`, body = **flat** args object (never `{"args":{...}}`),
-  header `X-Caller-Secret: <RETELL_FUNCTION_SECRET>`.
+  header `X-Caller-Secret: <RETELL_FUNCTION_SECRET>`. A top-level `call`
+  object (`call_id, direction, from_number, to_number,
+  retell_llm_dynamic_variables, metadata`) rides alongside — handlers use it
+  as fallback (`call.call_id`, `call.from_number`,
+  `call.retell_llm_dynamic_variables.phone`).
 - Resolve `{{var}}` (dynamic variables) inside argument values before sending.
+  Includes call-scoped `{{call.call_id}}` etc. — `log_outcome` and
+  `log_churn_reason` specs REQUIRE `retell_call_id={{call.call_id}}`.
 - Feed the JSON response back to the model as the tool result.
 - `kb_lookup` is a Retell built-in KB tool (no URL) → Architeq knowledge-base
   retrieval feature.
