@@ -12,9 +12,15 @@ Surface 3):
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import json
 import logging
+import os
+import re
+import socket
 from typing import Any, Mapping, Protocol
+from urllib.parse import urlparse
 
 import httpx
 
@@ -25,6 +31,54 @@ from architeq_worker.variables import resolve_deep, resolve_template
 logger = logging.getLogger("architeq-worker.tools")
 
 TOOL_TIMEOUT_S = 10.0
+# Cap the tool response body we buffer and feed back to the LLM: a buggy or
+# hostile endpoint returning tens of MB would stall the live call and blow up
+# token cost. 256 KiB is far more than any real tool result.
+MAX_TOOL_RESPONSE_BYTES = 256 * 1024
+_E164_RE = re.compile(r"^\+[1-9]\d{1,14}$")
+
+
+class UnsafeToolUrlError(ValueError):
+    pass
+
+
+def _is_public_ip(ip_str: str) -> bool:
+    ip = ipaddress.ip_address(ip_str)
+    return not (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+async def assert_tool_url_safe(url: str) -> None:
+    """Reject custom-tool URLs that resolve to non-public addresses (SSRF).
+
+    Mirrors the backend webhook guard so a tenant can't point a tool at the
+    pod network, Cloud SQL, or the metadata server (169.254.169.254). Bypassed
+    by ``ARCHITEQ_ALLOW_PRIVATE_WEBHOOKS`` for local/dev, same as the backend.
+    DNS is resolved on the loop's executor so it never blocks a live call.
+    """
+    if os.environ.get("ARCHITEQ_ALLOW_PRIVATE_WEBHOOKS", "").lower() in ("1", "true", "yes"):
+        return
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise UnsafeToolUrlError(f"unsupported scheme {parsed.scheme!r}")
+    host = parsed.hostname
+    if not host:
+        raise UnsafeToolUrlError("missing host")
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(host, parsed.port or 443, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise UnsafeToolUrlError(f"cannot resolve {host}") from exc
+    for info in infos:
+        addr = info[4][0]
+        if not _is_public_ip(addr):
+            raise UnsafeToolUrlError(f"{host} resolves to non-public address {addr}")
 
 
 class CallControl(Protocol):
@@ -50,6 +104,7 @@ async def execute_custom_tool(
     Raises on transport errors / non-2xx — callers wrap into an
     ``{"error": ...}`` tool result for the model.
     """
+    await assert_tool_url_safe(url)
     # Resolve {{var}} in string argument values (nested included).
     resolved = {key: resolve_deep(value, variables) for key, value in args.items()}
     if call_info is not None:
@@ -63,6 +118,8 @@ async def execute_custom_tool(
         timeout=timeout,
     )
     resp.raise_for_status()
+    if len(resp.content) > MAX_TOOL_RESPONSE_BYTES:
+        raise ValueError(f"tool response too large ({len(resp.content)} bytes)")
     return resp.text
 
 
@@ -91,8 +148,12 @@ async def safe_execute_custom_tool(
         metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="success").inc()
     except Exception as exc:  # timeout, transport, non-2xx — model sees the error
         metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="error").inc()
-        logger.warning("tool %s failed: %s", name, exc)
-        result = json.dumps({"error": f"tool call {name} failed: {exc}"})
+        # Log/return the exception *type* only: httpx errors stringify the full
+        # URL, which can carry auth tokens in the query string (and would then
+        # land in logs and the persisted transcript).
+        reason = type(exc).__name__
+        logger.warning("tool %s failed: %s", name, reason)
+        result = json.dumps({"error": f"tool call {name} failed: {reason}"})
     if state is not None:
         state.add_tool_result(name, result)
     return result
@@ -203,6 +264,13 @@ def _make_transfer_call_tool(
         if not number:
             metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="error").inc()
             return json.dumps({"error": "no transfer destination configured"})
+        if not _E164_RE.match(number):
+            # The destination may come from LLM output steered by untrusted
+            # caller speech — reject anything not strict E.164 so a social-
+            # engineered call can't dial premium-rate/international numbers.
+            metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="error").inc()
+            logger.warning("transfer rejected: destination is not E.164")
+            return json.dumps({"error": "invalid transfer destination"})
         try:
             result = await control.transfer_call(number)
             metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="success").inc()

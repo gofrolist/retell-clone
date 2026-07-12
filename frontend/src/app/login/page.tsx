@@ -6,12 +6,13 @@
 // never shows the sidebar and is never route-guarded.
 
 import Logo from "@/components/shell/Logo";
+import { API_BASE } from "@/lib/api";
 import { getValidSession, saveSession } from "@/lib/auth";
 import { useRouter } from "next/navigation";
 import Script from "next/script";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
+const API = API_BASE;
 const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
 
 interface GisCredentialResponse {

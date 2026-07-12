@@ -38,3 +38,10 @@ export function formatCost(cost: number): string {
 export function truncateId(id: string, head = 12): string {
   return id.length > head + 2 ? `${id.slice(0, head)}…` : id;
 }
+
+const E164 = /^\+[1-9]\d{6,14}$/;
+
+/** True if `v` is a valid E.164 phone number (e.g. "+14155550123"). */
+export function isE164(v: string): boolean {
+  return E164.test(v);
+}

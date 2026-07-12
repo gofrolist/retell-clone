@@ -6,10 +6,9 @@ import Modal from "@/components/ui/Modal";
 import Select from "@/components/ui/Select";
 import { api, ApiError } from "@/lib/api";
 import type { Agent } from "@/lib/types";
+import { isE164 } from "@/lib/utils";
 import { Info } from "lucide-react";
 import { useState } from "react";
-
-const E164 = /^\+[1-9]\d{6,14}$/;
 
 /**
  * Number purchase has no backend API yet — this is an honest "connect a
@@ -48,7 +47,7 @@ export default function BuyNumberModal({
 
   async function submit() {
     const e164 = number.trim();
-    if (!E164.test(e164)) {
+    if (!isE164(e164)) {
       setError("Enter a valid E.164 number, e.g. +14155550123");
       return;
     }

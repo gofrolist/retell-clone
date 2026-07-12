@@ -4,7 +4,7 @@ from architeq_worker.state import CallState
 
 
 def _answered_state() -> CallState:
-    s = CallState(call_id="call_x", direction="outbound")
+    s = CallState(call_id="call_x")
     s.answered_at_ms = 1_750_000_000_000
     s.ended_at_ms = 1_750_000_134_000
     return s

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import require_api_key
@@ -72,20 +72,24 @@ async def list_conversation_flows(
     session: AsyncSession = Depends(get_session),
 ):
     q = select(ConversationFlow).where(ConversationFlow.workspace_id == api_key.workspace_id)
+    # Tie-break on the id so same-millisecond rows aren't skipped by the anchor.
+    ascending = sort_order == "ascending"
     if pagination_key:
         anchor = await session.get(ConversationFlow, pagination_key)
         if anchor is not None:
-            if sort_order == "ascending":
-                q = q.where(ConversationFlow.created_at_ms > anchor.created_at_ms)
-            else:
-                q = q.where(ConversationFlow.created_at_ms < anchor.created_at_ms)
-    order = (
-        ConversationFlow.created_at_ms.asc()
-        if sort_order == "ascending"
-        else ConversationFlow.created_at_ms.desc()
-    )
+            key = tuple_(ConversationFlow.created_at_ms, ConversationFlow.conversation_flow_id)
+            bound = (anchor.created_at_ms, anchor.conversation_flow_id)
+            q = q.where(key > bound if ascending else key < bound)
+    if ascending:
+        q = q.order_by(
+            ConversationFlow.created_at_ms.asc(), ConversationFlow.conversation_flow_id.asc()
+        )
+    else:
+        q = q.order_by(
+            ConversationFlow.created_at_ms.desc(), ConversationFlow.conversation_flow_id.desc()
+        )
     # Fetch one extra row to compute has_more without a count query.
-    rows = (await session.scalars(q.order_by(order).limit(limit + 1))).all()
+    rows = (await session.scalars(q.limit(limit + 1))).all()
     has_more = len(rows) > limit
     rows = rows[:limit]
     return {

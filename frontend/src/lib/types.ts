@@ -83,7 +83,6 @@ export interface Call {
 export interface ListCallsResponse {
   calls: Call[];
   pagination_key?: string;
-  total: number;
 }
 
 export interface KnowledgeDocument {

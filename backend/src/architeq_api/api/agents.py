@@ -6,8 +6,23 @@ from ..auth import require_api_key
 from ..db import get_session
 from ..models import Agent, ApiKey, now_ms
 from ..schemas import CreateAgentRequest, agent_to_dict
+from ._deps import apply_patch, get_owned
+from .chat_agents import CHAT_VOICE_ID
 
 router = APIRouter(tags=["agents"])
+
+
+async def _get_voice_agent(session, agent_id: str, workspace_id: str) -> Agent:
+    """Workspace-scoped agent lookup that excludes chat agents.
+
+    Chat agents are Agent rows flagged by voice_id == CHAT_VOICE_ID and live
+    behind the /chat-agent endpoints; the voice-agent API must not surface them.
+    """
+    agent = await get_owned(session, Agent, agent_id, workspace_id, detail="Agent not found")
+    if agent.voice_id == CHAT_VOICE_ID:
+        raise HTTPException(404, detail="Agent not found")
+    return agent
+
 
 _MUTABLE_FIELDS = {
     "agent_name",
@@ -53,7 +68,7 @@ async def create_agent(
     data = body.model_dump(exclude_none=True, exclude={"agent_id"})
     agent = Agent(
         workspace_id=api_key.workspace_id,
-        **{k: v for k, v in data.items() if k in _MUTABLE_FIELDS or k == "response_engine"},
+        **{k: v for k, v in data.items() if k in _MUTABLE_FIELDS},
     )
     if body.agent_id:  # import mode: preserve an existing Retell agent id
         if await session.get(Agent, body.agent_id) is not None:
@@ -70,9 +85,7 @@ async def get_agent(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    agent = await session.get(Agent, agent_id)
-    if agent is None or agent.workspace_id != api_key.workspace_id:
-        raise HTTPException(404, detail="Agent not found")
+    agent = await _get_voice_agent(session, agent_id, api_key.workspace_id)
     return agent_to_dict(agent)
 
 
@@ -82,7 +95,14 @@ async def list_agents(
     session: AsyncSession = Depends(get_session),
 ):
     rows = (
-        await session.scalars(select(Agent).where(Agent.workspace_id == api_key.workspace_id))
+        await session.scalars(
+            select(Agent).where(
+                Agent.workspace_id == api_key.workspace_id,
+                # Exclude chat agents (voice_id == CHAT_VOICE_ID); is_distinct_from
+                # keeps rows with a NULL voice_id.
+                Agent.voice_id.is_distinct_from(CHAT_VOICE_ID),
+            )
+        )
     ).all()
     return [agent_to_dict(a) for a in rows]
 
@@ -94,15 +114,9 @@ async def update_agent(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    agent = await session.get(Agent, agent_id)
-    if agent is None or agent.workspace_id != api_key.workspace_id:
-        raise HTTPException(404, detail="Agent not found")
+    agent = await _get_voice_agent(session, agent_id, api_key.workspace_id)
     payload = await request.json()
-    for field, value in payload.items():
-        if field in _MUTABLE_FIELDS:
-            setattr(agent, field, value)
-    agent.version += 1
-    agent.last_modification_timestamp = now_ms()
+    apply_patch(agent, payload, _MUTABLE_FIELDS, bump_version=True, touch=True)
     await session.commit()
     return agent_to_dict(agent)
 
@@ -115,9 +129,7 @@ async def get_agent_versions(
 ):
     # Single live version per agent (no version history table yet), so the
     # version list is the current agent object alone.
-    agent = await session.get(Agent, agent_id)
-    if agent is None or agent.workspace_id != api_key.workspace_id:
-        raise HTTPException(404, detail="Agent not found")
+    agent = await _get_voice_agent(session, agent_id, api_key.workspace_id)
     return [agent_to_dict(agent)]
 
 
@@ -127,9 +139,7 @@ async def publish_agent(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    agent = await session.get(Agent, agent_id)
-    if agent is None or agent.workspace_id != api_key.workspace_id:
-        raise HTTPException(404, detail="Agent not found")
+    agent = await _get_voice_agent(session, agent_id, api_key.workspace_id)
     agent.is_published = True
     agent.last_modification_timestamp = now_ms()
     await session.commit()
@@ -142,8 +152,6 @@ async def delete_agent(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    agent = await session.get(Agent, agent_id)
-    if agent is None or agent.workspace_id != api_key.workspace_id:
-        raise HTTPException(404, detail="Agent not found")
+    agent = await _get_voice_agent(session, agent_id, api_key.workspace_id)
     await session.delete(agent)
     await session.commit()

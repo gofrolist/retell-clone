@@ -28,6 +28,15 @@ spec:
         - name: api
           image: {{ include "architeq.image" (dict "root" . "image" .Values.api.image) }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            # readOnlyRootFilesystem omitted: not confirmed the app avoids
+            # writing to its filesystem (e.g. Python bytecode / temp files).
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           ports:
             - name: http
               containerPort: {{ .Values.api.containerPort }}

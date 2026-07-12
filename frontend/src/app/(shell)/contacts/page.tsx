@@ -2,52 +2,16 @@
 
 import Button from "@/components/ui/Button";
 import { Field, TextInput } from "@/components/ui/Field";
+import LoadError from "@/components/ui/LoadError";
 import Modal from "@/components/ui/Modal";
+import RowMenu from "@/components/ui/RowMenu";
 import Toggle from "@/components/ui/Toggle";
 import { api } from "@/lib/api";
 import type { Contact } from "@/lib/types";
+import { useApiData } from "@/lib/useApiData";
 import { cn, formatDate, truncateId } from "@/lib/utils";
-import { Contact as ContactIcon, MoreHorizontal, Plug2, Plus, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-
-function RowMenu({ onDelete }: { onDelete: () => void }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="rounded-md p-1 text-faint hover:bg-app hover:text-ink cursor-pointer"
-        aria-label="More"
-      >
-        <MoreHorizontal className="size-4" />
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full z-20 mt-1 w-32 rounded-lg border border-line bg-white p-1 shadow-lg">
-          <button
-            onClick={() => {
-              setOpen(false);
-              onDelete();
-            }}
-            className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-[13px] text-bad hover:bg-app cursor-pointer"
-          >
-            Delete
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
+import { Contact as ContactIcon, Plug2, Plus, X } from "lucide-react";
+import { useState } from "react";
 
 function AddContactModal({
   open,
@@ -136,28 +100,18 @@ function AddContactModal({
 }
 
 export default function ContactsPage() {
-  const [contacts, setContacts] = useState<Contact[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { data, setData: setContacts, loading, error, setError, reload } = useApiData(
+    () => api.listContacts(),
+  );
+  const contacts = data ?? [];
   const [bannerOpen, setBannerOpen] = useState(true);
   const [addOpen, setAddOpen] = useState(false);
 
-  const load = () => {
-    api
-      .listContacts()
-      .then((list) => {
-        setContacts(list);
-        setError(null);
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load contacts"))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(load, []);
-
   const setDoNotCall = async (id: string, v: boolean) => {
     const prev = contacts;
-    setContacts((cur) => cur.map((c) => (c.contact_id === id ? { ...c, do_not_call: v } : c)));
+    setContacts((cur) =>
+      (cur ?? []).map((c) => (c.contact_id === id ? { ...c, do_not_call: v } : c)),
+    );
     try {
       await api.updateContact(id, { do_not_call: v });
     } catch {
@@ -168,7 +122,7 @@ export default function ContactsPage() {
   const deleteContact = async (id: string) => {
     try {
       await api.deleteContact(id);
-      setContacts((cur) => cur.filter((c) => c.contact_id !== id));
+      setContacts((cur) => (cur ?? []).filter((c) => c.contact_id !== id));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to delete contact");
     }
@@ -244,16 +198,7 @@ export default function ContactsPage() {
             {!loading && error && (
               <tr>
                 <td colSpan={9} className="px-4 py-10 text-center text-[13px]">
-                  <span className="text-bad">{error}</span>{" "}
-                  <button
-                    onClick={() => {
-                      setLoading(true);
-                      load();
-                    }}
-                    className="font-medium text-accent-deep hover:underline cursor-pointer"
-                  >
-                    Retry
-                  </button>
+                  <LoadError error={error} onRetry={reload} />
                 </td>
               </tr>
             )}
@@ -297,7 +242,7 @@ export default function ContactsPage() {
         </table>
       </div>
 
-      <AddContactModal open={addOpen} onClose={() => setAddOpen(false)} onCreated={load} />
+      <AddContactModal open={addOpen} onClose={() => setAddOpen(false)} onCreated={reload} />
     </div>
   );
 }

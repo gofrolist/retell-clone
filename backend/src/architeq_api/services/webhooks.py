@@ -11,6 +11,7 @@ import logging
 from typing import Any
 
 import httpx
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,7 +56,8 @@ async def send_event(session: AsyncSession, call: Call, event: str) -> None:
     if not url:
         return
     try:
-        security.assert_url_safe(url)
+        # DNS resolution is blocking; keep it off the event loop.
+        await run_in_threadpool(security.assert_url_safe, url)
     except security.UnsafeUrlError as exc:
         log.error("refusing webhook to unsafe URL for call %s: %s", call.call_id, exc)
         WEBHOOK_DELIVERIES.labels(event=event, outcome="blocked_unsafe_url").inc()
@@ -80,6 +82,8 @@ async def send_event(session: AsyncSession, call: Call, event: str) -> None:
                     content=raw_body,
                     headers={
                         "content-type": "application/json",
+                        # Re-sign each attempt: the consumer enforces a 5-minute
+                        # timestamp window and backoff could otherwise stale it.
                         signature.SIGNATURE_HEADER: signature.sign(raw_body, key),
                     },
                 )
@@ -87,19 +91,22 @@ async def send_event(session: AsyncSession, call: Call, event: str) -> None:
                 if 200 <= resp.status_code < 300:
                     delivery.delivered = True
                     WEBHOOK_DELIVERIES.labels(event=event, outcome="delivered").inc()
-                    break
+                    await session.commit()
+                    return
                 delivery.last_error = f"http {resp.status_code}"
             except httpx.HTTPError as exc:
                 delivery.last_error = str(exc)
             WEBHOOK_DELIVERIES.labels(event=event, outcome="retry").inc()
+            # Commit per attempt so the DB connection is returned to the pool
+            # during the sleep (a slow consumer would otherwise pin it for
+            # minutes) and intermediate state survives a process crash.
+            await session.commit()
             if attempt < settings.webhook_max_attempts - 1:
                 await asyncio.sleep(RETRY_BACKOFF_SECONDS[min(attempt, 2)])
-                # Re-sign each attempt: the consumer enforces a 5-minute
-                # timestamp window and backoff could otherwise stale it.
-        else:
-            WEBHOOK_DELIVERIES.labels(event=event, outcome="failed").inc()
-            delivery.next_attempt_at_ms = now_ms() + 600_000
-            log.error("webhook %s for %s failed after retries", event, call.call_id)
+
+    WEBHOOK_DELIVERIES.labels(event=event, outcome="failed").inc()
+    delivery.next_attempt_at_ms = now_ms() + 600_000
+    log.error("webhook %s for %s failed after retries", event, call.call_id)
     await session.commit()
 
 

@@ -38,6 +38,16 @@ spec:
         - name: worker
           image: {{ include "architeq.image" (dict "root" . "image" .Values.worker.image) }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          # Compatible with hostNetwork used for media; no privileged/caps needed.
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            # readOnlyRootFilesystem omitted: the livekit-agents worker may
+            # write temp/model files to its filesystem at runtime.
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           ports:
             - name: metrics
               containerPort: {{ .Values.worker.metricsPort }}

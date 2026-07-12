@@ -4,35 +4,22 @@ import SettingsCard, { SettingsPageHeader } from "@/components/settings/Settings
 import Button from "@/components/ui/Button";
 import CopyId from "@/components/ui/CopyId";
 import { Field, TextInput } from "@/components/ui/Field";
+import LoadError from "@/components/ui/LoadError";
 import Modal from "@/components/ui/Modal";
 import { api } from "@/lib/api";
-import type { ApiKey } from "@/lib/types";
+import { useApiData } from "@/lib/useApiData";
 import { cn, formatDate } from "@/lib/utils";
 import { KeyRound, Plus, TriangleAlert } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 export default function ApiKeysPage() {
-  const [keys, setKeys] = useState<ApiKey[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { data, loading, error, setError, reload } = useApiData(() => api.listApiKeys());
+  const keys = data ?? [];
   const [freshSecret, setFreshSecret] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
-
-  const load = () => {
-    api
-      .listApiKeys()
-      .then((list) => {
-        setKeys(list);
-        setError(null);
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load API keys"))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(load, []);
 
   const createKey = async () => {
     setCreating(true);
@@ -42,7 +29,7 @@ export default function ApiKeysPage() {
       setFreshSecret(created.secret ?? null);
       setCreateOpen(false);
       setNewName("");
-      load();
+      reload();
     } catch (e) {
       setCreateError(e instanceof Error ? e.message : "Failed to create API key");
     } finally {
@@ -53,7 +40,7 @@ export default function ApiKeysPage() {
   const revoke = async (id: string) => {
     try {
       await api.revokeApiKey(id);
-      load();
+      reload();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to revoke API key");
     }
@@ -96,16 +83,7 @@ export default function ApiKeysPage() {
           )}
           {!loading && error && (
             <p className="py-6 text-center text-[13px]">
-              <span className="text-bad">{error}</span>{" "}
-              <button
-                onClick={() => {
-                  setLoading(true);
-                  load();
-                }}
-                className="font-medium text-accent-deep hover:underline cursor-pointer"
-              >
-                Retry
-              </button>
+              <LoadError error={error} onRetry={reload} />
             </p>
           )}
           {!loading && !error && keys.length === 0 && (

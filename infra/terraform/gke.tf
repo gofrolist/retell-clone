@@ -38,12 +38,52 @@ resource "google_container_cluster" "cluster" {
     enable_components = ["SYSTEM_COMPONENTS", "WORKLOADS"]
   }
 
-  # Nodes get only private IPs except the voice pool, which needs public
-  # node IPs for direct WebRTC/SIP media; keep the control plane public
-  # endpoint for simplicity (lock down with authorized networks if needed).
+  # Private nodes: default-pool nodes get only private IPs and reach the
+  # internet via Cloud NAT. The voice pool overrides this (its network_config
+  # sets enable_private_nodes = false) because LiveKit needs public node IPs
+  # for direct WebRTC/SIP media. The control plane keeps a public endpoint
+  # (enable_private_endpoint = false), locked down by master_authorized_networks.
+  # NOTE: applying this to an existing cluster requires recreation — review before terraform apply
+  private_cluster_config {
+    enable_private_nodes    = true
+    enable_private_endpoint = false
+    master_ipv4_cidr_block  = "172.16.0.0/28" # /28 for the control plane; may need adjusting to avoid VPC overlap
+  }
+
+  master_authorized_networks_config {
+    dynamic "cidr_blocks" {
+      for_each = var.master_authorized_networks
+      content {
+        cidr_block   = cidr_blocks.value.cidr_block
+        display_name = cidr_blocks.value.display_name
+      }
+    }
+  }
+
   deletion_protection = false
 
   depends_on = [google_project_service.services]
+}
+
+# Dedicated least-privilege service account for GKE nodes, replacing the
+# default Compute Engine service account. Access is granted via the IAM
+# bindings below; nodes still use the cloud-platform oauth scope (Google's
+# recommended pattern) with actual authorization controlled by these roles.
+resource "google_service_account" "gke_nodes" {
+  account_id   = "${var.cluster_name}-gke-nodes"
+  display_name = "GKE node service account for ${var.cluster_name}"
+}
+
+resource "google_project_iam_member" "gke_nodes" {
+  for_each = toset([
+    "roles/logging.logWriter",
+    "roles/monitoring.metricWriter",
+    "roles/monitoring.viewer",
+    "roles/artifactregistry.reader",
+  ])
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.gke_nodes.email}"
 }
 
 resource "google_container_node_pool" "default" {
@@ -66,7 +106,8 @@ resource "google_container_node_pool" "default" {
     disk_size_gb = 100
     disk_type    = "pd-balanced"
 
-    oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+    service_account = google_service_account.gke_nodes.email
+    oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
 
     workload_metadata_config {
       mode = "GKE_METADATA"
@@ -103,7 +144,8 @@ resource "google_container_node_pool" "voice" {
     disk_size_gb = 100
     disk_type    = "pd-ssd"
 
-    oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+    service_account = google_service_account.gke_nodes.email
+    oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
 
     workload_metadata_config {
       mode = "GKE_METADATA"
@@ -126,5 +168,11 @@ resource "google_container_node_pool" "voice" {
       enable_secure_boot          = true
       enable_integrity_monitoring = true
     }
+  }
+
+  # Voice nodes need public IPs for direct WebRTC/SIP media, so they opt out
+  # of the cluster-wide private-nodes setting. Only this pool keeps public IPs.
+  network_config {
+    enable_private_nodes = false
   }
 }

@@ -3,7 +3,7 @@ import secrets
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import require_api_key
@@ -16,6 +16,7 @@ from ..schemas_extra import (
     ListChatsRequest,
     chat_to_dict,
 )
+from ._deps import get_owned
 
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["chats"])
@@ -82,9 +83,14 @@ async def create_chat(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    agent = await session.get(Agent, body.agent_id)
-    if agent is None or agent.workspace_id != api_key.workspace_id:
-        raise HTTPException(422, detail=f"agent {body.agent_id} not found")
+    agent = await get_owned(
+        session,
+        Agent,
+        body.agent_id,
+        api_key.workspace_id,
+        detail=f"agent {body.agent_id} not found",
+        status=422,
+    )
 
     chat = Chat(
         workspace_id=api_key.workspace_id,
@@ -108,9 +114,7 @@ async def get_chat(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    chat = await session.get(Chat, chat_id)
-    if chat is None or chat.workspace_id != api_key.workspace_id:
-        raise HTTPException(404, detail="Chat not found")
+    chat = await get_owned(session, Chat, chat_id, api_key.workspace_id, detail="Chat not found")
     return chat_to_dict(chat)
 
 
@@ -143,17 +147,19 @@ async def list_chats_v3(
         values = statuses.get("value") if isinstance(statuses, dict) else statuses
         if values:
             q = q.where(Chat.chat_status.in_(values))
+    # Tie-break on chat_id so same-millisecond rows aren't skipped by the anchor.
+    ascending = body.sort_order == "ascending"
     if body.pagination_key:
         anchor = await session.get(Chat, body.pagination_key)
         if anchor is not None:
-            if body.sort_order == "ascending":
-                q = q.where(Chat.created_at_ms > anchor.created_at_ms)
-            else:
-                q = q.where(Chat.created_at_ms < anchor.created_at_ms)
-    order = (
-        Chat.created_at_ms.asc() if body.sort_order == "ascending" else Chat.created_at_ms.desc()
-    )
-    rows = (await session.scalars(q.order_by(order).limit(body.limit + 1))).all()
+            key = tuple_(Chat.created_at_ms, Chat.chat_id)
+            bound = (anchor.created_at_ms, anchor.chat_id)
+            q = q.where(key > bound if ascending else key < bound)
+    if ascending:
+        q = q.order_by(Chat.created_at_ms.asc(), Chat.chat_id.asc())
+    else:
+        q = q.order_by(Chat.created_at_ms.desc(), Chat.chat_id.desc())
+    rows = (await session.scalars(q.limit(body.limit + 1))).all()
     has_more = len(rows) > body.limit
     rows = rows[: body.limit]
     return {
@@ -169,9 +175,9 @@ async def create_chat_completion(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    chat = await session.get(Chat, body.chat_id)
-    if chat is None or chat.workspace_id != api_key.workspace_id:
-        raise HTTPException(404, detail="Chat not found")
+    chat = await get_owned(
+        session, Chat, body.chat_id, api_key.workspace_id, detail="Chat not found"
+    )
     if chat.chat_status != "ongoing":
         raise HTTPException(422, detail="Chat has ended")
 
@@ -190,9 +196,7 @@ async def end_chat(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    chat = await session.get(Chat, chat_id)
-    if chat is None or chat.workspace_id != api_key.workspace_id:
-        raise HTTPException(404, detail="Chat not found")
+    chat = await get_owned(session, Chat, chat_id, api_key.workspace_id, detail="Chat not found")
     chat.chat_status = "ended"
     chat.end_timestamp = now_ms()
     await session.commit()

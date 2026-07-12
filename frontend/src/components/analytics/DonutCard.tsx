@@ -25,9 +25,10 @@ export default function DonutCard({
                 boxShadow: "0 4px 12px rgba(0,0,0,0.08)",
                 padding: "6px 10px",
               }}
-              formatter={(value) => [
-                `${value} (${Math.round(((value as number) / total) * 100)}%)`,
-              ]}
+              formatter={(value) => {
+                const pct = total > 0 ? Math.round(((value as number) / total) * 100) : 0;
+                return [`${value} (${pct}%)`];
+              }}
             />
             <Pie
               data={data}
@@ -47,19 +48,20 @@ export default function DonutCard({
         </ResponsiveContainer>
       </div>
       <div className="mt-3 space-y-1">
-        {data.map((d, i) => (
-          <div key={d.name} className="flex items-center gap-1.5 text-xs">
-            <span
-              className="size-2.5 rounded-[3px] shrink-0"
-              style={{ background: sliceColor(d.name, i) }}
-            />
-            <span className="grow truncate text-sub">{d.name}</span>
-            <span className="tabular-nums font-medium">{d.value}</span>
-            <span className="w-9 text-right tabular-nums text-faint">
-              {Math.round((d.value / total) * 100)}%
-            </span>
-          </div>
-        ))}
+        {data.map((d, i) => {
+          const pct = total > 0 ? Math.round((d.value / total) * 100) : 0;
+          return (
+            <div key={d.name} className="flex items-center gap-1.5 text-xs">
+              <span
+                className="size-2.5 rounded-[3px] shrink-0"
+                style={{ background: sliceColor(d.name, i) }}
+              />
+              <span className="grow truncate text-sub">{d.name}</span>
+              <span className="tabular-nums font-medium">{d.value}</span>
+              <span className="w-9 text-right tabular-nums text-faint">{pct}%</span>
+            </div>
+          );
+        })}
       </div>
     </ChartCard>
   );

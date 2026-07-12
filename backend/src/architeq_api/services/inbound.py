@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import urlencode, urlparse, urlunparse
 
 import httpx
+from fastapi.concurrency import run_in_threadpool
 
 from .. import security
 from ..config import get_settings
@@ -45,7 +46,8 @@ async def resolve_inbound(
         "call_inbound": {"from_number": from_number, "to_number": to_number},
     }
     try:
-        security.assert_url_safe(url)
+        # DNS resolution is blocking; keep it off the event loop.
+        await run_in_threadpool(security.assert_url_safe, url)
         async with httpx.AsyncClient(
             timeout=get_settings().inbound_webhook_timeout_seconds
         ) as client:
@@ -62,6 +64,13 @@ async def resolve_inbound(
         INBOUND_RESOLUTIONS.labels(outcome="webhook_ok").inc()
         return agent_id, {str(k): str(v) for k, v in dyn.items()}
     except Exception as exc:  # noqa: BLE001 — any failure degrades, never drops
-        log.warning("inbound webhook failed for %s: %s — using default agent", to_number, exc)
+        # Log the exception *type* only: when the caller_secret is carried in
+        # the query string, httpx exceptions stringify the full URL and would
+        # leak the shared function_secret into logs.
+        log.warning(
+            "inbound webhook failed for %s: %s — using default agent",
+            to_number,
+            type(exc).__name__,
+        )
         INBOUND_RESOLUTIONS.labels(outcome="webhook_failed_fallback").inc()
         return None, {}

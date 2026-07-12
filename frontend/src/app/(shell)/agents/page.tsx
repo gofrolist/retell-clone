@@ -7,9 +7,9 @@ import Button from "@/components/ui/Button";
 import Pagination from "@/components/ui/Pagination";
 import SearchInput from "@/components/ui/SearchInput";
 import { api } from "@/lib/api";
-import type { Agent } from "@/lib/types";
+import { useApiData } from "@/lib/useApiData";
 import { Bot, ChevronDown, Folder, Plus } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 function FoldersPanel() {
   return (
@@ -93,31 +93,16 @@ function pick(
 }
 
 export default function AgentsPage() {
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { data, setData: setAgents, loading, error, reload } = useApiData(
+    () => api.listAgents(),
+  );
+  const agents = data ?? [];
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [page, setPage] = useState(1);
   const fileRef = useRef<HTMLInputElement>(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setAgents(await api.listAgents());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load agents");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
 
   const handleImportFile = async (file: File) => {
     setImporting(true);
@@ -154,7 +139,7 @@ export default function AgentsPage() {
       if (!payload.voice_id) payload.voice_id = "cartesia-sonic-english";
 
       await api.createAgent(payload);
-      await load();
+      await reload();
     } catch (e) {
       setImportError(
         e instanceof SyntaxError
@@ -220,7 +205,7 @@ export default function AgentsPage() {
           ) : error ? (
             <div className="py-16 text-center">
               <p className="text-[13px] text-bad">{error}</p>
-              <Button className="mt-3" onClick={load}>
+              <Button className="mt-3" onClick={reload}>
                 Retry
               </Button>
             </div>
@@ -234,7 +219,7 @@ export default function AgentsPage() {
             <AgentsTable
               agents={filtered}
               onDeleted={(agentId) =>
-                setAgents((prev) => prev.filter((a) => a.agent_id !== agentId))
+                setAgents((prev) => (prev ?? []).filter((a) => a.agent_id !== agentId))
               }
             />
           )}

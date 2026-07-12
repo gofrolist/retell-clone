@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import require_api_key
 from ..db import get_session
-from ..models import ApiKey, RetellLLM, now_ms
+from ..models import ApiKey, RetellLLM
 from ..schemas import CreateLLMRequest, llm_to_dict
+from ._deps import apply_patch, get_owned
 
 router = APIRouter(tags=["retell-llm"])
 
@@ -42,9 +43,9 @@ async def get_llm(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    llm = await session.get(RetellLLM, llm_id)
-    if llm is None or llm.workspace_id != api_key.workspace_id:
-        raise HTTPException(404, detail="Retell LLM not found")
+    llm = await get_owned(
+        session, RetellLLM, llm_id, api_key.workspace_id, detail="Retell LLM not found"
+    )
     return llm_to_dict(llm)
 
 
@@ -68,15 +69,11 @@ async def update_llm(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    llm = await session.get(RetellLLM, llm_id)
-    if llm is None or llm.workspace_id != api_key.workspace_id:
-        raise HTTPException(404, detail="Retell LLM not found")
+    llm = await get_owned(
+        session, RetellLLM, llm_id, api_key.workspace_id, detail="Retell LLM not found"
+    )
     payload = await request.json()
-    for field, value in payload.items():
-        if field in _MUTABLE_FIELDS:
-            setattr(llm, field, value)
-    llm.version += 1
-    llm.last_modification_timestamp = now_ms()
+    apply_patch(llm, payload, _MUTABLE_FIELDS, bump_version=True, touch=True)
     await session.commit()
     return llm_to_dict(llm)
 
@@ -87,8 +84,8 @@ async def delete_llm(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    llm = await session.get(RetellLLM, llm_id)
-    if llm is None or llm.workspace_id != api_key.workspace_id:
-        raise HTTPException(404, detail="Retell LLM not found")
+    llm = await get_owned(
+        session, RetellLLM, llm_id, api_key.workspace_id, detail="Retell LLM not found"
+    )
     await session.delete(llm)
     await session.commit()

@@ -2,74 +2,26 @@
 
 import CreateAlertModal from "@/components/alerting/CreateAlertModal";
 import Button from "@/components/ui/Button";
+import LoadError from "@/components/ui/LoadError";
+import RowMenu from "@/components/ui/RowMenu";
 import Toggle from "@/components/ui/Toggle";
 import { api } from "@/lib/api";
 import type { Alert } from "@/lib/types";
-import { BellRing, MoreHorizontal, Plus } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-
-function RowMenu({ onDelete }: { onDelete: () => void }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="rounded-md p-1 text-faint hover:bg-app hover:text-ink cursor-pointer"
-        aria-label="More"
-      >
-        <MoreHorizontal className="size-4" />
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full z-20 mt-1 w-32 rounded-lg border border-line bg-white p-1 shadow-lg">
-          <button
-            onClick={() => {
-              setOpen(false);
-              onDelete();
-            }}
-            className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-[13px] text-bad hover:bg-app cursor-pointer"
-          >
-            Delete
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
+import { useApiData } from "@/lib/useApiData";
+import { BellRing, Plus } from "lucide-react";
+import { useState } from "react";
 
 export default function AlertingPage() {
-  const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { data, setData: setAlerts, loading, error, setError, reload } = useApiData(
+    () => api.listAlerts(),
+  );
+  const alerts = data ?? [];
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Alert | null>(null);
 
-  const load = () => {
-    api
-      .listAlerts()
-      .then((list) => {
-        setAlerts(list);
-        setError(null);
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load alerts"))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(load, []);
-
   const toggle = async (id: string, v: boolean) => {
     const prev = alerts;
-    setAlerts((cur) => cur.map((a) => (a.alert_id === id ? { ...a, enabled: v } : a)));
+    setAlerts((cur) => (cur ?? []).map((a) => (a.alert_id === id ? { ...a, enabled: v } : a)));
     try {
       await api.updateAlert(id, { enabled: v });
     } catch {
@@ -80,7 +32,7 @@ export default function AlertingPage() {
   const deleteAlert = async (id: string) => {
     try {
       await api.deleteAlert(id);
-      setAlerts((cur) => cur.filter((a) => a.alert_id !== id));
+      setAlerts((cur) => (cur ?? []).filter((a) => a.alert_id !== id));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to delete alert");
     }
@@ -111,16 +63,7 @@ export default function AlertingPage() {
         )}
         {!loading && error && (
           <div className="px-4 py-10 text-center text-[13px]">
-            <span className="text-bad">{error}</span>{" "}
-            <button
-              onClick={() => {
-                setLoading(true);
-                load();
-              }}
-              className="font-medium text-accent-deep hover:underline cursor-pointer"
-            >
-              Retry
-            </button>
+            <LoadError error={error} onRetry={reload} />
           </div>
         )}
         {!loading && !error && alerts.length === 0 && (
@@ -158,7 +101,7 @@ export default function AlertingPage() {
         open={modalOpen}
         onClose={() => setModalOpen(false)}
         editing={editing}
-        onSaved={load}
+        onSaved={reload}
       />
     </div>
   );

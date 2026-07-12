@@ -28,6 +28,7 @@ import inspect
 import json
 import logging
 import os
+from functools import lru_cache
 from typing import Any
 
 import httpx
@@ -43,6 +44,35 @@ from architeq_worker.tools import build_tools
 from architeq_worker.variables import resolve_template
 
 logger = logging.getLogger("architeq-worker")
+
+# Strong refs to fire-and-forget tasks: the event loop only keeps a weak
+# reference, so an un-held task can be GC'd before it runs (e.g. the inactivity
+# hangup would silently never fire).
+_background_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _spawn(coro: Any) -> asyncio.Task[Any]:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
+def _log_task_exception(task: asyncio.Task[Any]) -> None:
+    """Surface a crashed background task instead of letting it die silently."""
+    if not task.cancelled() and task.exception() is not None:
+        logger.error("background task %s failed", task.get_name(), exc_info=task.exception())
+
+
+@lru_cache(maxsize=1)
+def _gcp_credentials() -> str:
+    """Read the GCS service-account JSON once per process (it never changes)."""
+    creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    if creds_path and os.path.exists(creds_path):
+        with open(creds_path, "r", encoding="utf-8") as f:
+            return f.read()
+    return ""
+
 
 AGENT_NAME = "architeq-agent"
 TRANSCRIPT_UPDATE_INTERVAL_S = 10.0
@@ -261,7 +291,7 @@ async def _wait_for_answer(
 
 
 async def _load_call_config(
-    ctx: JobContext, api_client: InternalAPI
+    ctx: JobContext, api_client: InternalAPI, state: CallState
 ) -> tuple[dict[str, Any], rtc.RemoteParticipant | None]:
     """Outbound: call_id in job/room metadata → GET config.
     Inbound: from/to numbers from SIP participant attributes → POST resolve.
@@ -277,6 +307,9 @@ async def _load_call_config(
                 pass
     call_id = meta.get("call_id")
     if call_id:
+        # Set call_id before the GET so a failed config fetch still finalizes
+        # the call (posts an error status) instead of leaving it non-terminal.
+        state.call_id = call_id
         return await api_client.get_call_config(call_id), None
 
     participant = await _wait_for_sip_participant(ctx, timeout=30.0)
@@ -292,11 +325,7 @@ async def _start_recording(
     bucket = os.getenv("RECORDINGS_GCS_BUCKET")
     if not bucket:
         return
-    credentials = ""
-    creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-    if creds_path and os.path.exists(creds_path):
-        with open(creds_path, "r", encoding="utf-8") as f:
-            credentials = f.read()
+    credentials = _gcp_credentials()
     filepath = f"calls/{call_id}.ogg"
     try:
         await lkapi.egress.start_room_composite_egress(
@@ -349,7 +378,7 @@ def _wire_session_events(
         # user_away_timeout fired (maps end_call_after_silence_ms).
         if getattr(ev, "new_state", None) == "away":
             state.set_reason_once("inactivity")
-            asyncio.create_task(runtime.end_call("inactivity"))
+            _spawn(runtime.end_call("inactivity"))
 
     @session.on("close")
     def _on_close(ev: Any) -> None:
@@ -445,13 +474,12 @@ async def entrypoint(ctx: JobContext) -> None:
     ctx.add_shutdown_callback(_finalize)
 
     try:
-        cfg_raw, participant = await _load_call_config(ctx, api_client)
+        cfg_raw, participant = await _load_call_config(ctx, api_client, state)
     except Exception:
         state.set_reason_once("error_unknown")
         raise
     cfg = CallConfig.from_dict(cfg_raw)
     state.call_id = cfg.call_id
-    state.direction = cfg.direction
     metrics.JOBS_TOTAL.labels(direction=cfg.direction).inc()
     logger.info("job started: call_id=%s direction=%s", cfg.call_id, cfg.direction)
 
@@ -473,11 +501,6 @@ async def entrypoint(ctx: JobContext) -> None:
         return
 
     state.answered_at_ms = now_ms()
-    await api_client.post_event(
-        cfg.call_id,
-        {"event": "call_started", "start_timestamp": state.answered_at_ms},
-    )
-    await _start_recording(lkapi, ctx.room.name, cfg.call_id, state)
 
     # Dynamic variables + call-scoped {{call.*}} system variables
     # (consumer tool specs pass {{call.call_id}} as retell_call_id).
@@ -488,6 +511,14 @@ async def entrypoint(ctx: JobContext) -> None:
     )
 
     tool_http = httpx.AsyncClient()
+
+    async def _close_tool_http() -> None:
+        await tool_http.aclose()
+
+    # Register the close callback immediately: an exception between here and
+    # session start must not leak the client.
+    ctx.add_shutdown_callback(_close_tool_http)
+
     livekit_tools = build_tools(
         cfg.llm.general_tools,
         http=tool_http,
@@ -521,7 +552,27 @@ async def entrypoint(ctx: JobContext) -> None:
         begin_message=begin_message,
         start_speaker=cfg.llm.start_speaker,
     )
-    await session.start(agent=agent, room=ctx.room)
+
+    async def _post_call_started() -> None:
+        # Best-effort: a slow/failed call_started webhook must never delay the
+        # greeting or abort the call.
+        try:
+            await api_client.post_event(
+                cfg.call_id,
+                {"event": "call_started", "start_timestamp": state.answered_at_ms},
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("call_started webhook failed for %s", cfg.call_id)
+
+    # Start the agent immediately; run the call_started webhook and egress start
+    # concurrently so their latency isn't dead air on the caller's line. Only
+    # session.start can raise here (the other two swallow their own failures),
+    # so a genuine session failure still aborts the call.
+    await asyncio.gather(
+        session.start(agent=agent, room=ctx.room),
+        _post_call_started(),
+        _start_recording(lkapi, ctx.room.name, cfg.call_id, state),
+    )
 
     async def _max_duration_watchdog() -> None:
         await asyncio.sleep(cfg.agent.max_call_duration_ms / 1000.0)
@@ -544,29 +595,30 @@ async def entrypoint(ctx: JobContext) -> None:
                 },
             )
 
-    tasks.append(asyncio.create_task(_max_duration_watchdog()))
-    tasks.append(asyncio.create_task(_transcript_pump()))
+    def _track(coro: Any, name: str) -> None:
+        # Long-lived call tasks are cancelled at finalize; a done-callback logs
+        # any *unexpected* exception so a crashed watchdog/pump isn't silent.
+        task = asyncio.create_task(coro, name=name)
+        task.add_done_callback(_log_task_exception)
+        tasks.append(task)
+
+    _track(_max_duration_watchdog(), "max_duration_watchdog")
+    _track(_transcript_pump(), "transcript_pump")
     if amd_window_open["open"]:
-        tasks.append(
-            asyncio.create_task(
-                _run_amd(
-                    cfg,
-                    state,
-                    runtime,
-                    session,
-                    llm,
-                    participant,
-                    amd_speech,
-                    amd_window_open,
-                    variables,
-                )
-            )
+        _track(
+            _run_amd(
+                cfg,
+                state,
+                runtime,
+                session,
+                llm,
+                participant,
+                amd_speech,
+                amd_window_open,
+                variables,
+            ),
+            "amd",
         )
-
-    async def _close_tool_http() -> None:
-        await tool_http.aclose()
-
-    ctx.add_shutdown_callback(_close_tool_http)
 
 
 def _run() -> None:

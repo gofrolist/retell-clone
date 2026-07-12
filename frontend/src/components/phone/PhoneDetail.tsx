@@ -7,10 +7,9 @@ import { Field, TextInput } from "@/components/ui/Field";
 import Modal from "@/components/ui/Modal";
 import { api } from "@/lib/api";
 import type { Agent, PhoneNumber } from "@/lib/types";
+import { isE164 } from "@/lib/utils";
 import { ChevronRight, Pencil, PhoneOutgoing, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
-
-const E164 = /^\+[1-9]\d{6,14}$/;
 
 const ADD_ONS = [
   { name: "SMS", desc: "The ability to send SMS", action: "Setup SMS Function" },
@@ -82,7 +81,7 @@ export default function PhoneDetail({
 
   async function placeCall() {
     const to = callTo.trim();
-    if (!E164.test(to)) {
+    if (!isE164(to)) {
       setCallError("Enter a valid E.164 number, e.g. +14155550123");
       return;
     }

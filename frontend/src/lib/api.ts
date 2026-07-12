@@ -20,11 +20,14 @@ import type {
   WebhookDelivery,
 } from "./types";
 
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 // Dashboard auth: the backend accepts `Authorization: Bearer <token>` where
 // <token> is either the Google-sign-in session JWT (lib/auth.ts) or a
 // workspace API key. The session wins; NEXT_PUBLIC_API_KEY is the dev fallback.
-const API_KEY = process.env.NEXT_PUBLIC_API_KEY;
+// The API-key fallback is dev-only: never trust a NEXT_PUBLIC_ key in a
+// production build (it would ship to every browser).
+const API_KEY =
+  process.env.NODE_ENV !== "production" ? process.env.NEXT_PUBLIC_API_KEY : undefined;
 
 export const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
 
@@ -74,7 +77,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = bearerToken();
   let res: Response;
   try {
-    res = await fetch(`${BASE}${path}`, {
+    res = await fetch(`${API_BASE}${path}`, {
       cache: "no-store",
       signal: AbortSignal.timeout(10_000),
       ...init,
@@ -86,7 +89,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     });
   } catch {
     setBackendStatus("unreachable");
-    throw new ApiError(`Backend unreachable at ${BASE}`, 0);
+    throw new ApiError(`Backend unreachable at ${API_BASE}`, 0);
   }
   if (res.status === 401 || res.status === 403) {
     setBackendStatus("unauthorized");
@@ -281,7 +284,7 @@ export function uiCallFromRaw(c: RawCall): Call {
     call_summary: analysis.call_summary,
     recording_url: c.recording_url,
     transcript: (c.transcript_object ?? []).map((t) => ({
-      role: t.role === "agent" ? "agent" : "user",
+      role: t.role === "agent" ? "agent" : t.role === "kb_retrieval" ? "kb_retrieval" : "user",
       content: t.content,
       time: "",
     })),
@@ -343,8 +346,6 @@ export interface AgentDetail {
 
 export const api = {
   // ------------------------------------------------------------ agents
-  listAgentsRaw: () => request<RawAgent[]>("/list-agents"),
-
   listAgents: async (): Promise<Agent[]> => {
     const [agents, phones] = await Promise.all([
       request<RawAgent[]>("/list-agents"),
@@ -357,17 +358,19 @@ export const api = {
 
   /** Agent + its Retell LLM (prompt lives on the LLM, not the agent). */
   getAgentDetail: async (agentId: string): Promise<AgentDetail> => {
-    const agent = await request<RawAgent>(`/get-agent/${agentId}`);
+    const agent = await request<RawAgent>(`/get-agent/${encodeURIComponent(agentId)}`);
     const llmId = agent.response_engine?.llm_id;
-    const llm = llmId ? await request<RawLlm>(`/get-retell-llm/${llmId}`) : null;
+    const llm = llmId
+      ? await request<RawLlm>(`/get-retell-llm/${encodeURIComponent(llmId)}`)
+      : null;
     return { agent, llm };
   },
 
   updateAgent: (agentId: string, body: Partial<RawAgent>) =>
-    request<RawAgent>(`/update-agent/${agentId}`, patch(body)),
+    request<RawAgent>(`/update-agent/${encodeURIComponent(agentId)}`, patch(body)),
 
   updateLlm: (llmId: string, body: Partial<RawLlm>) =>
-    request<RawLlm>(`/update-retell-llm/${llmId}`, patch(body)),
+    request<RawLlm>(`/update-retell-llm/${encodeURIComponent(llmId)}`, patch(body)),
 
   createLlm: (body: Partial<RawLlm>) => request<RawLlm>("/create-retell-llm", post(body)),
 
@@ -376,9 +379,11 @@ export const api = {
   createConversationFlow: (body: Record<string, unknown>) =>
     request<{ conversation_flow_id: string }>("/create-conversation-flow", post(body)),
 
-  deleteAgent: (agentId: string) => request<void>(`/delete-agent/${agentId}`, del),
+  deleteAgent: (agentId: string) =>
+    request<void>(`/delete-agent/${encodeURIComponent(agentId)}`, del),
 
-  publishAgent: (agentId: string) => request<RawAgent>(`/publish-agent/${agentId}`, post({})),
+  publishAgent: (agentId: string) =>
+    request<RawAgent>(`/publish-agent/${encodeURIComponent(agentId)}`, post({})),
 
   // ------------------------------------------------------------- voices
   listVoices: () =>
@@ -395,15 +400,14 @@ export const api = {
     return {
       calls: raw.map(uiCallFromRaw),
       pagination_key: raw.length === limit ? raw[raw.length - 1].call_id : undefined,
-      total: raw.length,
     };
   },
 
   getCall: async (callId: string): Promise<Call> =>
-    uiCallFromRaw(await request<RawCall>(`/v2/get-call/${callId}`)),
+    uiCallFromRaw(await request<RawCall>(`/v2/get-call/${encodeURIComponent(callId)}`)),
 
   rerunCallAnalysis: (callId: string) =>
-    request<RawCall>(`/rerun-call-analysis/${callId}`, { method: "PUT" }),
+    request<RawCall>(`/rerun-call-analysis/${encodeURIComponent(callId)}`, { method: "PUT" }),
 
   createPhoneCall: (body: { from_number: string; to_number: string; override_agent_id?: string }) =>
     request<RawCall>("/v2/create-phone-call", post(body)),
@@ -442,21 +446,26 @@ export const api = {
     knowledge_base_urls?: string[];
   }) => request<RawKnowledgeBase>("/create-knowledge-base", post(body)),
 
-  deleteKnowledgeBase: (id: string) => request<void>(`/delete-knowledge-base/${id}`, del),
+  deleteKnowledgeBase: (id: string) =>
+    request<void>(`/delete-knowledge-base/${encodeURIComponent(id)}`, del),
 
   addKnowledgeBaseSources: (id: string, body: Record<string, unknown>) =>
-    request<RawKnowledgeBase>(`/add-knowledge-base-sources/${id}`, post(body)),
+    request<RawKnowledgeBase>(`/add-knowledge-base-sources/${encodeURIComponent(id)}`, post(body)),
 
   deleteKnowledgeBaseSource: (id: string, sourceId: string) =>
-    request<RawKnowledgeBase>(`/delete-knowledge-base-source/${id}/source/${sourceId}`, del),
+    request<RawKnowledgeBase>(
+      `/delete-knowledge-base-source/${encodeURIComponent(id)}/source/${encodeURIComponent(sourceId)}`,
+      del,
+    ),
 
   // ---------------------------------------------------------- contacts
   listContacts: () => request<Contact[]>("/list-contacts"),
   createContact: (body: Partial<Contact> & { phone_number: string }) =>
     request<Contact>("/create-contact", post(body)),
   updateContact: (id: string, body: Partial<Contact>) =>
-    request<Contact>(`/update-contact/${id}`, patch(body)),
-  deleteContact: (id: string) => request<void>(`/delete-contact/${id}`, del),
+    request<Contact>(`/update-contact/${encodeURIComponent(id)}`, patch(body)),
+  deleteContact: (id: string) =>
+    request<void>(`/delete-contact/${encodeURIComponent(id)}`, del),
 
   // --------------------------------------------------------- analytics
   getAnalytics: (days = 30) => request<AnalyticsData>(`/analytics/calls?days=${days}`),
@@ -469,20 +478,23 @@ export const api = {
     sampling_pct?: number;
     weekly_max?: number;
   }) => request<QaCohort>("/create-qa-cohort", post(body)),
-  deleteCohort: (id: string) => request<void>(`/delete-qa-cohort/${id}`, del),
+  deleteCohort: (id: string) =>
+    request<void>(`/delete-qa-cohort/${encodeURIComponent(id)}`, del),
 
   // ---------------------------------------------------------- alerting
   listAlerts: () => request<Alert[]>("/list-alerts"),
   createAlert: (body: Partial<Alert> & { name: string; metric: string }) =>
     request<Alert>("/create-alert", post(body)),
   updateAlert: (id: string, body: Partial<Alert>) =>
-    request<Alert>(`/update-alert/${id}`, patch(body)),
-  deleteAlert: (id: string) => request<void>(`/delete-alert/${id}`, del),
+    request<Alert>(`/update-alert/${encodeURIComponent(id)}`, patch(body)),
+  deleteAlert: (id: string) =>
+    request<void>(`/delete-alert/${encodeURIComponent(id)}`, del),
 
   // ---------------------------------------------------------- settings
   listApiKeys: () => request<ApiKey[]>("/list-api-keys"),
   createApiKey: (name: string) => request<ApiKey>("/create-api-key", post({ name })),
-  revokeApiKey: (keyId: string) => request<ApiKey>(`/revoke-api-key/${keyId}`, post({})),
+  revokeApiKey: (keyId: string) =>
+    request<ApiKey>(`/revoke-api-key/${encodeURIComponent(keyId)}`, post({})),
 
   listWebhookDeliveries: () => request<WebhookDelivery[]>("/list-webhook-deliveries"),
 

@@ -9,6 +9,7 @@ the allowlist, and issue an Architeq session JWT the dashboard then sends as
 import logging
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,7 +66,9 @@ def verify_google_id_token(token: str) -> dict:
 
 @router.post("/google")
 async def google_login(body: GoogleLoginRequest, session: AsyncSession = Depends(get_session)):
-    claims = verify_google_id_token(body.id_token)
+    # verify_google_id_token does blocking HTTP (Google cert fetch) via the
+    # requests transport; keep it off the event loop.
+    claims = await run_in_threadpool(verify_google_id_token, body.id_token)
     email = claims.get("email", "")
     if not _email_allowed(email):
         raise HTTPException(403, detail=f"{email} is not allowed to access this dashboard")
@@ -73,7 +76,7 @@ async def google_login(body: GoogleLoginRequest, session: AsyncSession = Depends
     # Single-tenant deployment: sessions attach to the first workspace.
     workspace = await session.scalar(select(Workspace).order_by(Workspace.created_at_ms).limit(1))
     if workspace is None:
-        raise HTTPException(503, detail="No workspace provisioned yet (run app.seed)")
+        raise HTTPException(503, detail="No workspace provisioned yet (run architeq_api.seed)")
 
     token, expires_at = issue_session(email, workspace.id, claims.get("name"))
     return {

@@ -59,6 +59,30 @@ async def test_finalize_is_idempotent(client):
     assert body["duration_ms"] == 5000
 
 
+async def test_finalize_without_transcript_preserves_accumulated_transcript(client):
+    """A crash-path finalize with no transcript must not wipe what
+    transcript_update events already stored."""
+    call_id = await _create_call(client)
+    await client.post(
+        f"/internal/calls/{call_id}/events",
+        headers=INTERNAL_HEADERS,
+        json={"event": "call_started", "start_timestamp": 1750000000000},
+    )
+    await client.post(
+        f"/internal/calls/{call_id}/events",
+        headers=INTERNAL_HEADERS,
+        json={"event": "transcript_update", "transcript": "Agent: Hi.\nUser: Hello."},
+    )
+    resp = await client.post(
+        f"/internal/calls/{call_id}/finalize",
+        headers=INTERNAL_HEADERS,
+        json={"duration_ms": 5000, "call_status": "error", "disconnection_reason": "error_unknown"},
+    )
+    assert resp.status_code == 200
+    body = (await client.get(f"/v2/get-call/{call_id}", headers=AUTH_HEADERS)).json()
+    assert body["transcript"] == "Agent: Hi.\nUser: Hello."
+
+
 async def test_analysis_fallback_marks_machine_detected_as_voicemail(client):
     """No Gemini key in tests → fallback analysis still keeps consumer's
     determineStatus working: machine_detected must imply in_voicemail."""

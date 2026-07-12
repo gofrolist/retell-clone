@@ -1,7 +1,7 @@
 """Bootstrap a workspace + API key (and optionally demo data).
 
 Usage:
-    python -m app.seed --api-key key_... [--workspace-name "USAN"] [--demo]
+    python -m architeq_api.seed --api-key key_... [--workspace-name "USAN"] [--demo]
 
 The API key doubles as the webhook-signature HMAC key, so pass the exact key
 the consumer has in RETELL_API_KEY to make cutover a pure env flip.
