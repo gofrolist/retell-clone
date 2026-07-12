@@ -11,6 +11,13 @@ WORKDIR /app
 
 ENV NEXT_TELEMETRY_DISABLED=1
 
+# NEXT_PUBLIC_* values are inlined into the client bundle at build time, so
+# they must arrive as build args — runtime env on the container has no effect.
+ARG NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_GOOGLE_CLIENT_ID
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} \
+    NEXT_PUBLIC_GOOGLE_CLIENT_ID=${NEXT_PUBLIC_GOOGLE_CLIENT_ID}
+
 # Install dependencies first so this layer stays cached until the lockfile
 # changes.
 COPY package.json bun.lock ./

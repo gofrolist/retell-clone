@@ -7,9 +7,9 @@
 #     --location=us-central1 --uniform-bucket-level-access
 # then uncomment and `terraform init -migrate-state`.
 #
-# terraform {
-#   backend "gcs" {
-#     bucket = "<PROJECT_ID>-architeq-tfstate"
-#     prefix = "architeq"
-#   }
-# }
+terraform {
+  backend "gcs" {
+    bucket = "usan-retirement-architeq-tfstate"
+    prefix = "architeq"
+  }
+}

@@ -123,7 +123,10 @@ gcloud auth configure-docker us-central1-docker.pkg.dev
 
 docker build -t $REGISTRY/architeq-api:v0.1.0 backend/
 docker build -t $REGISTRY/architeq-worker:v0.1.0 worker/
-docker build -t $REGISTRY/architeq-dashboard:v0.1.0 frontend/
+docker build -t $REGISTRY/architeq-dashboard:v0.1.0 \
+  --build-arg NEXT_PUBLIC_API_URL=https://api.<DOMAIN> \
+  --build-arg NEXT_PUBLIC_GOOGLE_CLIENT_ID=<oauth client id> \
+  frontend/   # NEXT_PUBLIC_* are baked in at build time
 docker push $REGISTRY/architeq-api:v0.1.0
 docker push $REGISTRY/architeq-worker:v0.1.0
 docker push $REGISTRY/architeq-dashboard:v0.1.0
