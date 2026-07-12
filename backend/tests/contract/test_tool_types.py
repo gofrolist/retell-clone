@@ -6,7 +6,23 @@ Retell tool union — including types the worker does not execute yet
 (code, mcp, bridge_transfer, cancel_transfer), which must still persist.
 """
 
-from tests.conftest import AGENT_ID, AUTH_HEADERS, INTERNAL_HEADERS
+import architeq_api.db as db_module
+from architeq_api.models import Call
+from tests.conftest import AGENT_ID, AUTH_HEADERS, INTERNAL_HEADERS, WORKSPACE_ID
+
+
+async def _seed_call(workspace_id: str = WORKSPACE_ID) -> str:
+    async with db_module.session_factory()() as session:
+        call = Call(
+            workspace_id=workspace_id,
+            agent_id=AGENT_ID,
+            direction="outbound",
+            call_status="ongoing",
+        )
+        session.add(call)
+        await session.commit()
+        return call.call_id
+
 
 ALL_RETELL_TOOLS = [
     {"type": "end_call", "name": "end_call", "description": "End the call."},
@@ -102,18 +118,46 @@ class TestToolTypeRoundTrip:
 
 class TestInternalAgentConfig:
     async def test_agent_swap_config_shape(self, client):
-        resp = await client.get(f"/internal/agents/{AGENT_ID}/config", headers=INTERNAL_HEADERS)
+        call_id = await _seed_call()
+        resp = await client.get(
+            f"/internal/agents/{AGENT_ID}/config",
+            params={"call_id": call_id},
+            headers=INTERNAL_HEADERS,
+        )
         assert resp.status_code == 200
         body = resp.json()
         assert body["agent"]["agent_id"] == AGENT_ID
         assert body["llm"] is not None and "general_prompt" in body["llm"]
 
     async def test_unknown_agent_404(self, client):
+        call_id = await _seed_call()
         resp = await client.get(
-            "/internal/agents/agent_missing000000000000000000/config", headers=INTERNAL_HEADERS
+            "/internal/agents/agent_missing000000000000000000/config",
+            params={"call_id": call_id},
+            headers=INTERNAL_HEADERS,
+        )
+        assert resp.status_code == 404
+
+    async def test_cross_workspace_agent_404(self, client, other_workspace):
+        # The destination agent must live in the calling call's workspace:
+        # agent_id comes from user-editable tool config, so an unscoped
+        # lookup would leak another tenant's prompt and tool secrets.
+        call_id = await _seed_call(workspace_id=other_workspace)
+        resp = await client.get(
+            f"/internal/agents/{AGENT_ID}/config",
+            params={"call_id": call_id},
+            headers=INTERNAL_HEADERS,
+        )
+        assert resp.status_code == 404
+
+    async def test_unknown_call_404(self, client):
+        resp = await client.get(
+            f"/internal/agents/{AGENT_ID}/config",
+            params={"call_id": "call_missing"},
+            headers=INTERNAL_HEADERS,
         )
         assert resp.status_code == 404
 
     async def test_requires_internal_token(self, client):
-        resp = await client.get(f"/internal/agents/{AGENT_ID}/config")
+        resp = await client.get(f"/internal/agents/{AGENT_ID}/config", params={"call_id": "call_x"})
         assert resp.status_code in (401, 403)

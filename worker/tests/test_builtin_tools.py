@@ -3,6 +3,7 @@
 from architeq_worker.state import CallState
 from architeq_worker.tools import (
     DTMF_CODES,
+    cal_default_end_date,
     cal_event_type_id,
     cal_timezone,
     extract_variable_parameters,
@@ -93,6 +94,14 @@ def test_cal_event_type_id_forms() -> None:
     assert cal_event_type_id({"event_type_id": "not-a-number"}, {}) is None
     assert cal_event_type_id({"event_type_id": True}, {}) is None
     assert cal_event_type_id({}, {}) is None
+
+
+def test_cal_default_end_date_is_one_week_out() -> None:
+    # Matches the tool schema's promise: "Defaults to one week after start_date."
+    assert cal_default_end_date("2026-07-14") == "2026-07-21"
+    assert cal_default_end_date("2026-12-28") == "2027-01-04"
+    # Unparseable input falls through unchanged (Cal.com returns the error).
+    assert cal_default_end_date("next tuesday") == "next tuesday"
 
 
 def test_cal_timezone_resolves_variables() -> None:

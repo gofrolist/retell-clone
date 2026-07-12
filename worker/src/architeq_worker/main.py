@@ -583,7 +583,11 @@ async def entrypoint(ctx: JobContext) -> None:
         to the destination agent. keep_current_language is implicit: the STT
         pipeline is fixed for the session.
         """
-        swap_raw = await api_client.get_agent_config(agent_id)
+        swap_raw = await api_client.get_agent_config(agent_id, call_id=cfg.call_id)
+        if not isinstance(swap_raw.get("llm"), dict):
+            # A destination without an LLM would wipe the live prompt/tools.
+            logger.warning("agent swap rejected: agent %s has no LLM config", agent_id)
+            return json.dumps({"error": "destination agent has no LLM configuration"})
         swap_cfg = CallConfig.from_dict({**cfg.raw, **swap_raw})
         new_instructions = resolve_template(swap_cfg.llm.general_prompt, variables)
         new_tools = build_tools(

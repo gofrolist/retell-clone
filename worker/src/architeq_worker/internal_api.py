@@ -46,10 +46,16 @@ class InternalAPI:
             raise InternalAPIError(f"config fetch for {call_id} -> {resp.status_code}")
         return resp.json()
 
-    async def get_agent_config(self, agent_id: str) -> dict[str, Any]:
-        """{agent, llm} for an agent_swap destination (docs/INTERNAL_API.md)."""
+    async def get_agent_config(self, agent_id: str, *, call_id: str) -> dict[str, Any]:
+        """{agent, llm} for an agent_swap destination (docs/INTERNAL_API.md).
+
+        call_id scopes the lookup: the control plane only returns agents in
+        the calling call's workspace.
+        """
         resp = await self._http.get(
-            f"{self._base_url}/internal/agents/{agent_id}/config", headers=self._headers
+            f"{self._base_url}/internal/agents/{agent_id}/config",
+            params={"call_id": call_id},
+            headers=self._headers,
         )
         if resp.status_code != 200:
             raise InternalAPIError(f"agent config fetch for {agent_id} -> {resp.status_code}")

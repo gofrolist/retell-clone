@@ -173,7 +173,13 @@ export interface RawLlm {
         cal_api_key?: string;
         event_type_id?: number | string;
         timezone?: string;
-        sms_content?: { type?: string; content?: string; prompt?: string; [key: string]: unknown };
+        sms_content?: {
+          type?: string;
+          content?: string;
+          prompt?: string;
+          template?: string;
+          [key: string]: unknown;
+        };
         variables?: {
           name?: string;
           type?: string;

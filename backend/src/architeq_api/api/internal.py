@@ -63,11 +63,22 @@ async def get_call_config(call_id: str, session: AsyncSession = Depends(get_sess
 
 
 @router.get("/agents/{agent_id}/config")
-async def get_agent_config(agent_id: str, session: AsyncSession = Depends(get_session)):
+async def get_agent_config(
+    agent_id: str, call_id: str, session: AsyncSession = Depends(get_session)
+):
     """Destination config for the agent_swap tool: the worker re-points the
-    live session at this agent's prompt/tools/voice mid-call."""
+    live session at this agent's prompt/tools/voice mid-call.
+
+    call_id is required and scopes the lookup to the calling call's
+    workspace — agent_id comes from user-editable tool config, so an
+    unscoped lookup would let one workspace pull another's prompts and
+    tool secrets.
+    """
+    call = await session.get(Call, call_id)
+    if call is None:
+        raise HTTPException(404, detail="Call not found")
     agent = await session.get(Agent, agent_id)
-    if agent is None:
+    if agent is None or agent.workspace_id != call.workspace_id:
         raise HTTPException(404, detail="Agent not found")
     llm_id = (agent.response_engine or {}).get("llm_id")
     llm = await session.get(RetellLLM, llm_id) if llm_id else None

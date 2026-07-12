@@ -26,18 +26,7 @@ import { useCallback, useRef, useState } from "react";
 
 type Tool = NonNullable<RawLlm["general_tools"]>[number];
 type ToolVariable = NonNullable<Tool["variables"]>[number];
-type ToolKind =
-  | "end_call"
-  | "transfer_call"
-  | "custom"
-  | "press_digit"
-  | "check_availability_cal"
-  | "book_appointment_cal"
-  | "send_sms"
-  | "extract_dynamic_variable"
-  | "agent_swap";
-
-const TOOL_KINDS: ToolKind[] = [
+const TOOL_KINDS = [
   "end_call",
   "transfer_call",
   "custom",
@@ -47,7 +36,8 @@ const TOOL_KINDS: ToolKind[] = [
   "send_sms",
   "extract_dynamic_variable",
   "agent_swap",
-];
+] as const;
+type ToolKind = (typeof TOOL_KINDS)[number];
 
 const NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 const METHOD_OPTIONS = ["GET", "POST", "PUT", "PATCH", "DELETE"].map((m) => ({
@@ -229,13 +219,8 @@ function TransferForm({
   const save = () => {
     const trimmedName = name.trim();
     const trimmedNumber = number.trim();
-    if (!trimmedName) return setError("Name is required");
-    if (!NAME_RE.test(trimmedName)) {
-      return setError("Name may only contain letters, digits, _ and - (max 64 chars)");
-    }
-    if (takenNames.includes(trimmedName)) {
-      return setError("A function with this name already exists");
-    }
+    const nameErr = nameError(trimmedName, takenNames);
+    if (nameErr) return setError(nameErr);
     if (!isE164(trimmedNumber)) {
       return setError("Destination must be an E.164 phone number, e.g. +14155550123");
     }
@@ -320,13 +305,8 @@ function CustomForm({
   const save = () => {
     const trimmedName = name.trim();
     const trimmedUrl = url.trim();
-    if (!trimmedName) return setError("Name is required");
-    if (!NAME_RE.test(trimmedName)) {
-      return setError("Name may only contain letters, digits, _ and - (max 64 chars)");
-    }
-    if (takenNames.includes(trimmedName)) {
-      return setError("A function with this name already exists");
-    }
+    const nameErr = nameError(trimmedName, takenNames);
+    if (nameErr) return setError(nameErr);
     if (!trimmedUrl) return setError("URL is required");
     const timeoutMs = Number(timeoutStr);
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 600000) {
@@ -681,13 +661,20 @@ function SendSmsForm({
   onSave: (tool: Tool) => void;
   onCancel: () => void;
 }) {
+  const initialContent = initial?.sms_content;
+  // Absent type means predefined on the Retell wire; template is a distinct
+  // variant we must not silently rewrite.
+  const initialMode =
+    initialContent?.type === "template"
+      ? "template"
+      : initialContent?.type === "predefined" || (!initialContent?.type && initialContent?.content)
+        ? "predefined"
+        : "inferred";
   const [name, setName] = useState(initial?.name ?? "send_sms");
   const [description, setDescription] = useState(initial?.description ?? "");
-  const [mode, setMode] = useState(
-    initial?.sms_content?.type === "predefined" ? "predefined" : "inferred",
-  );
+  const [mode, setMode] = useState(initialMode);
   const [content, setContent] = useState(
-    initial?.sms_content?.content ?? initial?.sms_content?.prompt ?? "",
+    initialContent?.content ?? initialContent?.prompt ?? "",
   );
   const [error, setError] = useState<string | null>(null);
 
@@ -698,15 +685,20 @@ function SendSmsForm({
     if (mode === "predefined" && !content.trim()) {
       return setError("Message content is required for a fixed message");
     }
+    // Spread the original sms_content so unknown Retell fields survive an
+    // edit; the template variant is kept verbatim.
+    const smsContent =
+      mode === "template"
+        ? { ...initialContent }
+        : mode === "predefined"
+          ? { ...initialContent, type: "predefined", content: content.trim() }
+          : { ...initialContent, type: "inferred", prompt: content.trim() };
     onSave({
       ...initial,
       type: "send_sms",
       name: trimmedName,
       description: description.trim(),
-      sms_content:
-        mode === "predefined"
-          ? { type: "predefined", content: content.trim() }
-          : { type: "inferred", prompt: content.trim() },
+      sms_content: smsContent,
     });
   };
 
@@ -733,29 +725,34 @@ function SendSmsForm({
           options={[
             { value: "inferred", label: "Generated from prompt" },
             { value: "predefined", label: "Fixed message" },
+            ...(initialMode === "template"
+              ? [{ value: "template", label: `Template (${initialContent?.template ?? "…"})` }]
+              : []),
           ]}
         />
       </Field>
-      <Field
-        label={mode === "predefined" ? "Message" : "Prompt"}
-        hint={
-          mode === "predefined"
-            ? "Sent verbatim; {{variables}} are resolved."
-            : "The agent writes the SMS from this prompt and the conversation."
-        }
-      >
-        <textarea
-          rows={3}
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          placeholder={
+      {mode !== "template" && (
+        <Field
+          label={mode === "predefined" ? "Message" : "Prompt"}
+          hint={
             mode === "predefined"
-              ? "Hi {{name}}, here is our address: …"
-              : "Text the caller a summary of the appointment we booked."
+              ? "Sent verbatim; {{variables}} are resolved."
+              : "The agent writes the SMS from this prompt and the conversation."
           }
-          className={TEXTAREA}
-        />
-      </Field>
+        >
+          <textarea
+            rows={3}
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            placeholder={
+              mode === "predefined"
+                ? "Hi {{name}}, here is our address: …"
+                : "Text the caller a summary of the appointment we booked."
+            }
+            className={TEXTAREA}
+          />
+        </Field>
+      )}
     </FormShell>
   );
 }
@@ -798,7 +795,10 @@ function ExtractVariablesForm({
         return setError(`Variable name "${varName}" may only contain letters, digits, _ and -`);
       }
       const type = v.type ?? "string";
+      // Spread the original spec so unknown Retell fields (examples,
+      // conditional_prompt, …) survive an edit.
       const spec: ToolVariable = {
+        ...v,
         name: varName,
         type,
         description: (v.description ?? "").trim(),
@@ -809,8 +809,11 @@ function ExtractVariablesForm({
           return setError(`Variable "${varName}" needs at least one choice`);
         }
         spec.choices = choices;
+      } else {
+        delete spec.choices;
       }
       if (v.required) spec.required = true;
+      else delete spec.required;
       cleaned.push(spec);
     }
     if (cleaned.length === 0) return setError("Add at least one variable");

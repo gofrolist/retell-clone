@@ -73,11 +73,14 @@ Terminal update; idempotent (second call is a no-op).
 }
 ```
 
-### `GET /internal/agents/{agent_id}/config`
+### `GET /internal/agents/{agent_id}/config?call_id={call_id}`
 Destination config for the `agent_swap` tool. Returns
 `{"agent": {…}, "llm": {…} | null}` (same shapes as in the call config);
 the worker re-points the live session at this agent's prompt, tools and
-voice mid-call. `404` for unknown agents.
+voice mid-call. `call_id` is required and scopes the lookup: `404` for
+unknown agents, unknown calls, or agents outside the calling call's
+workspace (agent_id comes from user-editable tool config). The worker
+refuses to swap when `llm` is null (it would wipe the live prompt/tools).
 
 On finalize the control plane: persists, fires `call_ended` (signed), runs
 Gemini post-call analysis (summary/call_summary, user_sentiment,
