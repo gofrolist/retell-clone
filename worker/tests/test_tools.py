@@ -7,9 +7,16 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
 from architeq_worker.state import CallState
-from architeq_worker.tools import execute_custom_tool, safe_execute_custom_tool
+from architeq_worker.tools import (
+    MAX_TOOL_RESPONSE_BYTES,
+    UnsafeToolUrlError,
+    assert_tool_url_safe,
+    execute_custom_tool,
+    safe_execute_custom_tool,
+)
 
 
 def _client(handler) -> httpx.AsyncClient:
@@ -164,6 +171,67 @@ def test_timeout_returns_error_json_to_model() -> None:
                 http,
                 name="slow_tool",
                 url="https://consumer.example.com/slow",
+                args={},
+                function_secret="s",
+                variables={},
+            )
+
+    result = json.loads(asyncio.run(run()))
+    assert "error" in result
+
+
+def test_ssrf_guard_blocks_private_address(monkeypatch) -> None:
+    # Without the dev bypass, a tool URL resolving to a private/link-local
+    # address (e.g. the metadata server) must be rejected before any request.
+    monkeypatch.delenv("ARCHITEQ_ALLOW_PRIVATE_WEBHOOKS", raising=False)
+
+    async def run() -> None:
+        for url in (
+            "http://169.254.169.254/latest/meta-data/",
+            "http://127.0.0.1:9090/metrics",
+            "http://[::1]/",
+            "ftp://consumer.example.com/x",
+        ):
+            with pytest.raises(UnsafeToolUrlError):
+                await assert_tool_url_safe(url)
+
+    asyncio.run(run())
+
+
+def test_ssrf_guard_surfaces_as_tool_error(monkeypatch) -> None:
+    monkeypatch.delenv("ARCHITEQ_ALLOW_PRIVATE_WEBHOOKS", raising=False)
+    called = {"posted": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        called["posted"] = True
+        return httpx.Response(200, json={})
+
+    async def run() -> str:
+        async with _client(handler) as http:
+            return await safe_execute_custom_tool(
+                http,
+                name="evil",
+                url="http://169.254.169.254/",
+                args={},
+                function_secret="s",
+                variables={},
+            )
+
+    result = json.loads(asyncio.run(run()))
+    assert "error" in result
+    assert called["posted"] is False  # blocked before the POST
+
+
+def test_oversized_response_becomes_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"x" * (MAX_TOOL_RESPONSE_BYTES + 1))
+
+    async def run() -> str:
+        async with _client(handler) as http:
+            return await safe_execute_custom_tool(
+                http,
+                name="huge",
+                url="https://consumer.example.com/tool",
                 args={},
                 function_secret="s",
                 variables={},

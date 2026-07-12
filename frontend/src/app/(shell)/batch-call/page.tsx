@@ -5,7 +5,7 @@ import { Field, TextInput } from "@/components/ui/Field";
 import Select from "@/components/ui/Select";
 import { api } from "@/lib/api";
 import type { PhoneNumber } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, isE164 } from "@/lib/utils";
 import {
   CalendarClock,
   CheckCircle2,
@@ -19,8 +19,6 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-
-const E164 = /^\+[1-9]\d{6,14}$/;
 
 const TEMPLATE_CSV =
   "to_number,first_name,appointment_time\n" +
@@ -97,7 +95,7 @@ function recipientsFromCsv(text: string): { recipients: Recipient[]; error?: str
       row: i + 1,
       to_number: to,
       dynamic_variables: vars,
-      error: E164.test(to) ? undefined : `"${to || "(empty)"}" is not a valid E.164 number`,
+      error: isE164(to) ? undefined : `"${to || "(empty)"}" is not a valid E.164 number`,
     };
   });
   return { recipients };

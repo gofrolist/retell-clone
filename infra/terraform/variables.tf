@@ -50,6 +50,22 @@ variable "voice_pool_machine_type" {
   default     = "c2-standard-8"
 }
 
+variable "sip_signalling_source_ranges" {
+  description = "Source CIDR ranges allowed to reach the livekit-sip signalling port (UDP 5060)."
+  type        = list(string)
+  # Restrict to Telnyx SIP signalling IP ranges in production
+  default = ["0.0.0.0/0"]
+}
+
+variable "master_authorized_networks" {
+  description = "CIDR blocks allowed to reach the GKE control plane public endpoint. Empty means no external access is authorized — populate with admin/office/CI ranges before use."
+  type = list(object({
+    cidr_block   = string
+    display_name = string
+  }))
+  default = []
+}
+
 variable "dns_zone_create" {
   description = "Whether to create the Cloud DNS managed zone (and A records) for var.domain. Set false if DNS is managed elsewhere (e.g. Cloudflare)."
   type        = bool

@@ -54,6 +54,11 @@ async def require_api_key(
 
 
 async def require_internal_token(x_internal_token: str | None = Header(default=None)) -> None:
-    expected = os.environ.get("ARCHITEQ_INTERNAL_TOKEN", "dev-internal-token")
+    expected = os.environ.get("ARCHITEQ_INTERNAL_TOKEN")
+    if not expected:
+        # Fail closed: a missing secret must never authenticate anyone. The
+        # /internal router hands out the shared function_secret, so a default
+        # would be a full worker-plane compromise.
+        raise HTTPException(status_code=503, detail="Internal auth not configured")
     if not x_internal_token or not hmac.compare_digest(x_internal_token, expected):
         raise HTTPException(status_code=401, detail="Invalid internal token")

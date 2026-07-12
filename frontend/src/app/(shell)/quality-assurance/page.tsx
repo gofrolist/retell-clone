@@ -2,49 +2,13 @@
 
 import CreateCohortModal from "@/components/qa/CreateCohortModal";
 import Button from "@/components/ui/Button";
+import LoadError from "@/components/ui/LoadError";
+import RowMenu from "@/components/ui/RowMenu";
 import { api } from "@/lib/api";
-import type { Agent, QaCohort } from "@/lib/types";
-import { MoreHorizontal, Plus, ScanSearch, TrendingUp } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-
-function RowMenu({ onDelete }: { onDelete: () => void }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="rounded-md p-1 text-faint hover:bg-app hover:text-ink cursor-pointer"
-        aria-label="More"
-      >
-        <MoreHorizontal className="size-4" />
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full z-20 mt-1 w-32 rounded-lg border border-line bg-white p-1 shadow-lg">
-          <button
-            onClick={() => {
-              setOpen(false);
-              onDelete();
-            }}
-            className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-[13px] text-bad hover:bg-app cursor-pointer"
-          >
-            Delete
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
+import type { Agent } from "@/lib/types";
+import { useApiData } from "@/lib/useApiData";
+import { Plus, ScanSearch, TrendingUp } from "lucide-react";
+import { useEffect, useState } from "react";
 
 function MetricCard({ label, value, suffix }: { label: string; value: string; suffix?: string }) {
   return (
@@ -61,32 +25,21 @@ function MetricCard({ label, value, suffix }: { label: string; value: string; su
 }
 
 export default function QualityAssurancePage() {
-  const [cohorts, setCohorts] = useState<QaCohort[]>([]);
+  const { data, setData: setCohorts, loading, error, setError, reload } = useApiData(
+    () => api.listCohorts(),
+  );
+  const cohorts = data ?? [];
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
 
-  const load = () => {
-    api
-      .listCohorts()
-      .then((list) => {
-        setCohorts(list);
-        setError(null);
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load cohorts"))
-      .finally(() => setLoading(false));
-  };
-
   useEffect(() => {
-    load();
     api.listAgents().then(setAgents).catch(() => {});
   }, []);
 
   const deleteCohort = async (id: string) => {
     try {
       await api.deleteCohort(id);
-      setCohorts((cur) => cur.filter((c) => c.cohort_id !== id));
+      setCohorts((cur) => (cur ?? []).filter((c) => c.cohort_id !== id));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to delete cohort");
     }
@@ -138,16 +91,7 @@ export default function QualityAssurancePage() {
         )}
         {!loading && error && (
           <div className="px-4 py-10 text-center text-[13px]">
-            <span className="text-bad">{error}</span>{" "}
-            <button
-              onClick={() => {
-                setLoading(true);
-                load();
-              }}
-              className="font-medium text-accent-deep hover:underline cursor-pointer"
-            >
-              Retry
-            </button>
+            <LoadError error={error} onRetry={reload} />
           </div>
         )}
         {!loading && !error && cohorts.length === 0 && (
@@ -179,7 +123,7 @@ export default function QualityAssurancePage() {
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         agents={agents}
-        onCreated={load}
+        onCreated={reload}
       />
     </div>
   );

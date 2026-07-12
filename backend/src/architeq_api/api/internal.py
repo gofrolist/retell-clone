@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import require_internal_token
-from ..db import get_session
+from ..db import get_session, session_factory
 from ..models import Agent, Call, PhoneNumber, RetellLLM, now_ms
 from ..schemas import agent_to_dict, llm_to_dict
 from ..services import inbound as inbound_svc
@@ -167,11 +167,19 @@ async def finalize_call(
     call.end_timestamp = body.end_timestamp or now_ms()
     call.duration_ms = body.duration_ms
     call.disconnection_reason = body.disconnection_reason
-    call.transcript = body.transcript
-    call.transcript_object = body.transcript_object
-    call.transcript_with_tool_calls = body.transcript_with_tool_calls
-    call.recording_url = body.recording_url
-    call.latency = body.latency
+    # Only overwrite when the finalize actually carries the value: a crash-path
+    # finalize with no transcript must not wipe what transcript_update events
+    # already accumulated (the analysis pipeline reads call.transcript).
+    if body.transcript is not None:
+        call.transcript = body.transcript
+    if body.transcript_object is not None:
+        call.transcript_object = body.transcript_object
+    if body.transcript_with_tool_calls is not None:
+        call.transcript_with_tool_calls = body.transcript_with_tool_calls
+    if body.recording_url is not None:
+        call.recording_url = body.recording_url
+    if body.latency is not None:
+        call.latency = body.latency
     await session.commit()
 
     if was_ongoing:
@@ -186,8 +194,6 @@ async def finalize_call(
 
 async def _send_webhook_fresh(call_id: str, event: str) -> None:
     """Load the call in a fresh session (the request session is closed by now)."""
-    from ..db import session_factory
-
     async with session_factory()() as session:
         call = await session.get(Call, call_id)
         if call is not None:
@@ -196,8 +202,6 @@ async def _send_webhook_fresh(call_id: str, event: str) -> None:
 
 async def _finalize_pipeline(call_id: str, in_voicemail_hint: bool | None) -> None:
     """call_ended → Gemini analysis → call_analyzed. Runs post-response."""
-    from ..db import session_factory
-
     async with session_factory()() as session:
         call = await session.get(Call, call_id)
         if call is None:

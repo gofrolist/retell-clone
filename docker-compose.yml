@@ -11,7 +11,7 @@ services:
       POSTGRES_PASSWORD: architeq
       POSTGRES_DB: architeq
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -23,7 +23,7 @@ services:
   redis:
     image: redis:8@sha256:2838d5524559494f6f1cd66e97e76b200d64a633a8614200620755ed395daf32
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -35,9 +35,9 @@ services:
     # Dev mode: API key/secret pair is devkey/secret.
     command: --dev --bind 0.0.0.0
     ports:
-      - "7880:7880"      # ws signalling
-      - "7881:7881"      # ICE/TCP
-      - "7882:7882/udp"  # media (dev mode single UDP port)
+      - "127.0.0.1:7880:7880"      # ws signalling
+      - "127.0.0.1:7881:7881"      # ICE/TCP
+      - "127.0.0.1:7882:7882/udp"  # media (dev mode single UDP port)
     depends_on:
       redis:
         condition: service_healthy

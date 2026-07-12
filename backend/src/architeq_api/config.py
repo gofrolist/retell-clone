@@ -25,7 +25,6 @@ class Settings(BaseSettings):
     )
 
     database_url: str = "postgresql+asyncpg://architeq:architeq@localhost:5432/architeq"
-    redis_url: str = "redis://localhost:6379/0"
 
     # LiveKit control plane
     livekit_url: str = Field("http://localhost:7880", validation_alias=_shared("LIVEKIT_URL"))
@@ -46,9 +45,6 @@ class Settings(BaseSettings):
 
     # Recordings
     recordings_gcs_bucket: str = Field("", validation_alias=_shared("RECORDINGS_GCS_BUCKET"))
-    recording_url_ttl_seconds: int = 60 * 60 * 24 * 30
-
-    metrics_enabled: bool = True
 
     # ── Security ────────────────────────────────────────────────────────────
     # Browser origins allowed to call the API (the dashboard).
@@ -58,6 +54,10 @@ class Settings(BaseSettings):
     allow_private_webhooks: bool = False
     # Per-API-key rate limit for the public API (requests per minute; 0 = off).
     rate_limit_rpm: int = 300
+    # Number of trusted reverse proxies in front of the API. When >0, the
+    # client IP for rate limiting is read from X-Forwarded-For at this depth
+    # from the right; 0 means trust only the socket peer (ignore XFF).
+    trusted_proxy_count: int = 0
 
     # ── Dashboard auth (Google Sign-In) ────────────────────────────────────
     # OAuth client id from Google Cloud Console (Web application type).

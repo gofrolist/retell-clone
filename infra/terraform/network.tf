@@ -80,9 +80,25 @@ resource "google_compute_firewall" "livekit_media" {
 
   allow {
     protocol = "udp"
-    ports    = ["5060", "10000-20000"] # livekit-sip signalling + media
+    ports    = ["10000-20000"] # livekit-sip media (RTP)
   }
 
   source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["voice-pool"]
+}
+
+# SIP signalling (UDP 5060) split into its own rule so it can be locked down
+# to the SIP trunk provider's source ranges without also restricting the
+# world-open WebRTC/SIP media ports above.
+resource "google_compute_firewall" "livekit_sip_signalling" {
+  name    = "${var.cluster_name}-livekit-sip-signalling"
+  network = google_compute_network.vpc.id
+
+  allow {
+    protocol = "udp"
+    ports    = ["5060"] # livekit-sip signalling
+  }
+
+  source_ranges = var.sip_signalling_source_ranges
   target_tags   = ["voice-pool"]
 }

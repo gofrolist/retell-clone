@@ -22,7 +22,7 @@ import {
   RefreshCw,
   X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 function MetaItem({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -58,6 +58,14 @@ export default function CallDrawer({
   const [full, setFull] = useState<Call | null>(null);
   const [rerunning, setRerunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const drawerRef = useRef<HTMLDivElement>(null);
+
+  // Move focus into the drawer on open, restore it to the opener on close.
+  useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    drawerRef.current?.focus();
+    return () => previouslyFocused?.focus?.();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -96,7 +104,14 @@ export default function CallDrawer({
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end bg-black/25" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="flex h-full w-full max-w-4xl bg-card shadow-2xl">
+      <div
+        ref={drawerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Call details"
+        tabIndex={-1}
+        className="flex h-full w-full max-w-4xl bg-card shadow-2xl outline-none"
+      >
         {/* main drawer column */}
         <div className="flex min-w-0 grow flex-col">
           <div className="flex items-center gap-2 border-b border-line px-5 py-3">
@@ -162,7 +177,7 @@ export default function CallDrawer({
               </MetaItem>
             </div>
 
-            {c.recording_url && (
+            {c.recording_url && /^https?:/i.test(c.recording_url) && (
               <div className="mt-4">
                 <AudioPlayer src={c.recording_url} durationMs={c.duration_ms || 0} />
               </div>

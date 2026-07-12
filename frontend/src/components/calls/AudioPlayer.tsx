@@ -19,6 +19,8 @@ export default function AudioPlayer({
   const [durationSec, setDurationSec] = useState(durationMs / 1000);
 
   const progress = durationSec > 0 ? Math.min(1, currentSec / durationSec) : 0;
+  // Only trust http(s) recording URLs — never render javascript:/data: schemes.
+  const safeSrc = src && /^https?:/i.test(src) ? src : undefined;
 
   function toggle() {
     const audio = audioRef.current;
@@ -41,7 +43,7 @@ export default function AudioPlayer({
     <div className="flex items-center gap-3 rounded-xl border border-line bg-white px-3 py-2.5 shadow-sm">
       <audio
         ref={audioRef}
-        src={src}
+        src={safeSrc}
         preload="metadata"
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
@@ -80,16 +82,18 @@ export default function AudioPlayer({
       <span className="text-xs tabular-nums text-sub shrink-0">
         {formatDuration(durationSec * 1000)}
       </span>
-      <a
-        href={src}
-        download
-        target="_blank"
-        rel="noopener noreferrer"
-        className="rounded-md p-1.5 text-faint hover:bg-app hover:text-ink cursor-pointer shrink-0"
-        aria-label="Download recording"
-      >
-        <Download className="size-4" />
-      </a>
+      {safeSrc && (
+        <a
+          href={safeSrc}
+          download
+          target="_blank"
+          rel="noopener noreferrer"
+          className="rounded-md p-1.5 text-faint hover:bg-app hover:text-ink cursor-pointer shrink-0"
+          aria-label="Download recording"
+        >
+          <Download className="size-4" />
+        </a>
+      )}
     </div>
   );
 }

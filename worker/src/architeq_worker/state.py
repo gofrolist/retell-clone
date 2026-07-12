@@ -23,7 +23,6 @@ def _percentile(samples: list[float], pct: float) -> float:
 @dataclass(slots=True)
 class CallState:
     call_id: str = ""
-    direction: str = "outbound"
     answered_at_ms: int | None = None
     ended_at_ms: int | None = None
     disconnection_reason: str | None = None

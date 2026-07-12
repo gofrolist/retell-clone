@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { Agent } from "@/lib/types";
 import { Bot, Copy, MoreVertical, Trash2 } from "lucide-react";
-import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useState } from "react";
 
 const AVATAR_COLORS = [
@@ -36,7 +36,6 @@ export default function AgentsTable({
   agents: Agent[];
   onDeleted?: (agentId: string) => void;
 }) {
-  const router = useRouter();
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -93,19 +92,21 @@ export default function AgentsTable({
           {agents.map((a, i) => (
             <tr
               key={a.agent_id}
-              onClick={() => router.push(`/agents/${a.agent_id}`)}
               className={cn(
-                "cursor-pointer border-b border-line/70 transition-colors hover:bg-app/70",
+                "border-b border-line/70 transition-colors hover:bg-app/70",
                 deletingId === a.agent_id && "pointer-events-none opacity-50",
               )}
             >
               <td className="py-3 pl-4 pr-3">
-                <span className="flex items-center gap-2.5 font-medium">
+                <Link
+                  href={`/agents/${a.agent_id}`}
+                  className="flex items-center gap-2.5 font-medium"
+                >
                   <span className="flex size-7 items-center justify-center rounded-lg border border-line bg-white text-emerald-600 shadow-sm shrink-0">
                     <Bot className="size-4" strokeWidth={1.8} />
                   </span>
                   <span className="truncate max-w-56">{a.agent_name}</span>
-                </span>
+                </Link>
               </td>
               <td className="px-3 py-3">
                 <Badge tone="gray">

@@ -4,12 +4,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import require_api_key
 from ..db import get_session
-from ..models import ApiKey, PhoneNumber, now_ms
+from ..models import ApiKey, PhoneNumber
 from ..schemas import (
     CreatePhoneNumberRequest,
     ImportPhoneNumberRequest,
     phone_number_to_dict,
 )
+from ._deps import apply_patch, get_owned
 
 router = APIRouter(tags=["phone-numbers"])
 
@@ -62,6 +63,7 @@ async def _create(e164, body, api_key, session, provider):
         inbound_agent_id=body.inbound_agent_id,
         outbound_agent_id=body.outbound_agent_id,
         inbound_webhook_url=body.inbound_webhook_url,
+        area_code=getattr(body, "area_code", None),
     )
     session.add(pn)
     await session.commit()
@@ -74,9 +76,9 @@ async def get_phone_number(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    pn = await session.get(PhoneNumber, phone_number)
-    if pn is None or pn.workspace_id != api_key.workspace_id:
-        raise HTTPException(404, detail="Phone number not found")
+    pn = await get_owned(
+        session, PhoneNumber, phone_number, api_key.workspace_id, detail="Phone number not found"
+    )
     return phone_number_to_dict(pn)
 
 
@@ -100,14 +102,11 @@ async def update_phone_number(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    pn = await session.get(PhoneNumber, phone_number)
-    if pn is None or pn.workspace_id != api_key.workspace_id:
-        raise HTTPException(404, detail="Phone number not found")
+    pn = await get_owned(
+        session, PhoneNumber, phone_number, api_key.workspace_id, detail="Phone number not found"
+    )
     payload = await request.json()
-    for field, value in payload.items():
-        if field in _MUTABLE_FIELDS:
-            setattr(pn, field, value)
-    pn.last_modification_timestamp = now_ms()
+    apply_patch(pn, payload, _MUTABLE_FIELDS, touch=True)
     await session.commit()
     return phone_number_to_dict(pn)
 
@@ -118,8 +117,8 @@ async def delete_phone_number(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    pn = await session.get(PhoneNumber, phone_number)
-    if pn is None or pn.workspace_id != api_key.workspace_id:
-        raise HTTPException(404, detail="Phone number not found")
+    pn = await get_owned(
+        session, PhoneNumber, phone_number, api_key.workspace_id, detail="Phone number not found"
+    )
     await session.delete(pn)
     await session.commit()

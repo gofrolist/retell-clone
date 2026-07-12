@@ -289,8 +289,6 @@ export const mockCalls: Call[] = Array.from({ length: 60 }, (_, i) => {
   };
 });
 
-export const MOCK_TOTAL_CALLS = 705;
-
 // ------------------------------------------------------- knowledge bases
 
 export const mockKnowledgeBases: KnowledgeBase[] = [

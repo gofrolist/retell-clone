@@ -64,11 +64,22 @@ class RateLimiter:
     def __init__(self, limit_per_minute: int):
         self.limit = limit_per_minute
         self._hits: dict[str, deque[float]] = defaultdict(deque)
+        self._last_sweep = 0.0
+
+    def _sweep(self, now: float) -> None:
+        # A flood of distinct credentials (e.g. rotated bogus bearer tokens)
+        # would otherwise grow _hits without bound: those keys are never
+        # revisited, so their decayed windows are never pruned on access.
+        for key in [k for k, w in self._hits.items() if not w or w[-1] <= now - 60]:
+            del self._hits[key]
+        self._last_sweep = now
 
     def check(self, key: str) -> bool:
         if self.limit <= 0:
             return True
         now = time.monotonic()
+        if now - self._last_sweep > 60:
+            self._sweep(now)
         window = self._hits[key]
         while window and window[0] <= now - 60:
             window.popleft()
@@ -84,15 +95,30 @@ _EXEMPT_PATHS = ("/healthz", "/metrics", "/internal/")
 class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(self, app):
         super().__init__(app)
-        self.limiter = RateLimiter(get_settings().rate_limit_rpm)
+        settings = get_settings()
+        # Two windows: one per credential (fair per-tenant) and one per client
+        # IP that always applies — so an attacker rotating bogus bearer tokens
+        # can't mint a fresh bucket per request and bypass the limit.
+        self.cred_limiter = RateLimiter(settings.rate_limit_rpm)
+        self.ip_limiter = RateLimiter(settings.rate_limit_rpm)
+        self.trusted_proxy_count = settings.trusted_proxy_count
+
+    def _client_ip(self, request: Request) -> str:
+        if self.trusted_proxy_count > 0:
+            forwarded = request.headers.get("x-forwarded-for", "")
+            hops = [h.strip() for h in forwarded.split(",") if h.strip()]
+            if hops:
+                # Count from the right: the rightmost hop is the nearest proxy.
+                return hops[-min(self.trusted_proxy_count, len(hops))]
+        return request.client.host if request.client else "unknown"
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
         if not any(path == p or path.startswith(p) for p in _EXEMPT_PATHS):
-            # Key by credential when present (fair per-tenant), else client IP.
+            ip_ok = self.ip_limiter.check(f"ip:{self._client_ip(request)}")
             auth = request.headers.get("authorization", "")
-            key = auth or (request.client.host if request.client else "unknown")
-            if not self.limiter.check(key):
+            cred_ok = self.cred_limiter.check(f"cred:{auth}") if auth else True
+            if not (ip_ok and cred_ok):
                 from fastapi.responses import JSONResponse
 
                 return JSONResponse(status_code=429, content={"detail": "Too many requests"})

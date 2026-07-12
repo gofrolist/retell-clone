@@ -9,7 +9,7 @@ from typing import Any
 
 from pydantic import Field
 
-from .models import BatchCall, Call, Chat, ConversationFlow, KnowledgeBase
+from .models import Call, Chat, ConversationFlow, KnowledgeBase
 from .schemas import CompatModel, call_to_dict
 
 
@@ -46,26 +46,11 @@ class BatchCallTask(CompatModel):
 
 class CreateBatchCallRequest(CompatModel):
     from_number: str
-    tasks: list[BatchCallTask]
+    # Cap batch size: each task creates a Call row and (unscheduled) a live
+    # dial in one request, so an unbounded list is a resource-exhaustion vector.
+    tasks: list[BatchCallTask] = Field(max_length=1000)
     name: str | None = None
     trigger_timestamp: int | None = None
-
-
-class KnowledgeBaseText(CompatModel):
-    title: str
-    text: str
-
-
-class CreateKnowledgeBaseRequest(CompatModel):
-    knowledge_base_name: str
-    knowledge_base_texts: list[KnowledgeBaseText] | None = None
-    knowledge_base_urls: list[str] | None = None
-    enable_auto_refresh: bool = False
-
-
-class AddKnowledgeBaseSourcesRequest(CompatModel):
-    knowledge_base_texts: list[KnowledgeBaseText] | None = None
-    knowledge_base_urls: list[str] | None = None
 
 
 class CreateConversationFlowRequest(CompatModel):
@@ -113,16 +98,6 @@ def serialize_call(call: Call) -> dict[str, Any]:
     if call.call_type == "web_call":
         return web_call_to_dict(call)
     return call_to_dict(call)
-
-
-def batch_call_to_dict(bc: BatchCall) -> dict[str, Any]:
-    return {
-        "batch_call_id": bc.batch_call_id,
-        "name": bc.name,
-        "from_number": bc.from_number,
-        "scheduled_timestamp": bc.trigger_timestamp,
-        "total_task_count": len(bc.tasks or []),
-    }
 
 
 def knowledge_base_to_dict(kb: KnowledgeBase) -> dict[str, Any]:

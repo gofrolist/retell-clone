@@ -35,6 +35,33 @@ async def test_create_batch_call_dials_each_task(client):
     assert by_to["+12137774445"]["retell_llm_dynamic_variables"] == {"first_name": "Ann"}
 
 
+async def test_list_calls_pagination_does_not_skip_same_millisecond_rows(client):
+    # A batch inserts many calls in the same millisecond; keyset pagination
+    # anchored only on created_at_ms would skip the anchor's siblings.
+    await client.post(
+        "/create-batch-call",
+        headers=AUTH_HEADERS,
+        json={
+            "from_number": FROM_NUMBER,
+            "tasks": [{"to_number": f"+1213777{i:04d}"} for i in range(5)],
+        },
+    )
+    seen: list[str] = []
+    page_key = None
+    for _ in range(10):  # safety bound against an infinite loop
+        payload: dict = {"limit": 2}
+        if page_key:
+            payload["pagination_key"] = page_key
+        rows = (await client.post("/v2/list-calls", headers=AUTH_HEADERS, json=payload)).json()
+        if not rows:
+            break
+        seen.extend(c["call_id"] for c in rows)
+        page_key = rows[-1]["call_id"]
+        if len(rows) < 2:
+            break
+    assert len(seen) == len(set(seen)) == 5
+
+
 async def test_scheduled_batch_call_is_stored_without_dialing(client, monkeypatch):
     async def _boom(call):
         raise AssertionError("scheduled batch must not dial immediately")

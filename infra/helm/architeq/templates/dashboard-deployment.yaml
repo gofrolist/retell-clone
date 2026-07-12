@@ -20,6 +20,15 @@ spec:
         - name: dashboard
           image: {{ include "architeq.image" (dict "root" . "image" .Values.dashboard.image) }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            # readOnlyRootFilesystem omitted: Next.js writes to .next/cache at
+            # runtime, so the root filesystem must stay writable.
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           ports:
             - name: http
               containerPort: {{ .Values.dashboard.containerPort }}

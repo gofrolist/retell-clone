@@ -1,9 +1,8 @@
 import logging
 import re
-import secrets
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import require_api_key
@@ -42,7 +41,7 @@ async def _get_workspace_agent(session: AsyncSession, workspace_id: str, agent_i
 
 
 def _web_call_access_token(call: Call) -> str:
-    """LiveKit room-join token; falls back to an opaque token if signing fails."""
+    """LiveKit room-join token for a web call."""
     settings = get_settings()
     try:
         from livekit import api as lk_api
@@ -53,9 +52,11 @@ def _web_call_access_token(call: Call) -> str:
             .with_grants(lk_api.VideoGrants(room_join=True, room=call.livekit_room or ""))
             .to_jwt()
         )
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # A fake token would 201 a web call that can never join the room, with
+        # the failure surfacing later, disconnected from the cause. Fail now.
         log.exception("failed to mint LiveKit access token for %s", call.call_id)
-        return f"tok_{secrets.token_hex(32)}"
+        raise HTTPException(500, detail="Failed to mint web call access token") from exc
 
 
 @router.post("/v2/create-phone-call", status_code=201)
@@ -161,18 +162,22 @@ async def list_calls(
         if upper := start_ts.get("upper_threshold"):
             q = q.where(Call.start_timestamp <= upper)
 
+    # Order and paginate on (created_at_ms, call_id): create-batch-call inserts
+    # many rows in the same millisecond, so a created_at_ms-only anchor would
+    # skip every sibling of the anchor row.
+    ascending = body.sort_order == "ascending"
     if body.pagination_key:
         anchor = await session.get(Call, body.pagination_key)
         if anchor is not None:
-            if body.sort_order == "ascending":
-                q = q.where(Call.created_at_ms > anchor.created_at_ms)
-            else:
-                q = q.where(Call.created_at_ms < anchor.created_at_ms)
+            key = tuple_(Call.created_at_ms, Call.call_id)
+            bound = (anchor.created_at_ms, anchor.call_id)
+            q = q.where(key > bound if ascending else key < bound)
 
-    order = (
-        Call.created_at_ms.asc() if body.sort_order == "ascending" else Call.created_at_ms.desc()
-    )
-    rows = (await session.scalars(q.order_by(order).limit(body.limit))).all()
+    if ascending:
+        q = q.order_by(Call.created_at_ms.asc(), Call.call_id.asc())
+    else:
+        q = q.order_by(Call.created_at_ms.desc(), Call.call_id.desc())
+    rows = (await session.scalars(q.limit(body.limit))).all()
     return [serialize_call(c) for c in rows]
 
 
