@@ -35,36 +35,36 @@ resource "google_dns_managed_zone" "zone" {
 
 locals {
   zone_name = var.dns_zone_create ? google_dns_managed_zone.zone[0].name : replace(var.domain, ".", "-")
+
+  # subdomain -> address, shared by both DNS backends.
+  dns_records = {
+    api     = google_compute_global_address.web.address
+    app     = google_compute_global_address.web.address
+    livekit = google_compute_address.livekit.address
+    sip     = google_compute_address.sip.address
+  }
 }
 
-resource "google_dns_record_set" "api" {
+resource "google_dns_record_set" "records" {
+  for_each = var.dns_zone_create ? local.dns_records : {}
+
   managed_zone = local.zone_name
-  name         = "api.${var.domain}."
+  name         = "${each.key}.${var.domain}."
   type         = "A"
   ttl          = 300
-  rrdatas      = [google_compute_global_address.web.address]
+  rrdatas      = [each.value]
 }
 
-resource "google_dns_record_set" "app" {
-  managed_zone = local.zone_name
-  name         = "app.${var.domain}."
-  type         = "A"
-  ttl          = 300
-  rrdatas      = [google_compute_global_address.web.address]
-}
+# Cloudflare-managed DNS (dns_zone_create=false, cloudflare_zone_id set).
+# Always proxied=false: Cloudflare's proxy cannot pass WebRTC UDP, SIP, or
+# GCP managed-certificate HTTP validation.
+resource "cloudflare_dns_record" "records" {
+  for_each = var.cloudflare_zone_id != "" ? local.dns_records : {}
 
-resource "google_dns_record_set" "livekit" {
-  managed_zone = local.zone_name
-  name         = "livekit.${var.domain}."
-  type         = "A"
-  ttl          = 300
-  rrdatas      = [google_compute_address.livekit.address]
-}
-
-resource "google_dns_record_set" "sip" {
-  managed_zone = local.zone_name
-  name         = "sip.${var.domain}."
-  type         = "A"
-  ttl          = 300
-  rrdatas      = [google_compute_address.sip.address]
+  zone_id = var.cloudflare_zone_id
+  name    = "${each.key}.${var.domain}"
+  type    = "A"
+  content = each.value
+  ttl     = 300
+  proxied = false
 }
