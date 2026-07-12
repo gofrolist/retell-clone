@@ -10,8 +10,12 @@ Surface 3):
 - Feed the response JSON back to the model as the tool result string.
 """
 
-from __future__ import annotations
-
+# NOTE: no `from __future__ import annotations` here. It would stringize the
+# `context: RunContext` annotations on the tool handlers, and livekit-agents
+# resolves those hints at execution time against this module's globals —
+# where RunContext is deliberately not imported (tests run without the
+# livekit stack). Python 3.14 (PEP 649) evaluates the annotation lazily via
+# the handler's closure, where the factory's local import IS visible.
 import asyncio
 import ipaddress
 import json
