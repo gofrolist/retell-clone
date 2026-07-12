@@ -152,7 +152,26 @@ export interface RawLlm {
   general_prompt: string | null;
   begin_message: string | null;
   start_speaker: "agent" | "user";
-  general_tools: { name: string; type?: string; description?: string; url?: string }[] | null;
+  general_tools:
+    | {
+        name: string;
+        type?: string;
+        description?: string;
+        url?: string;
+        method?: string;
+        timeout_ms?: number;
+        headers?: Record<string, string>;
+        query_params?: Record<string, string>;
+        parameters?: Record<string, unknown>;
+        args_at_root?: boolean;
+        speak_during_execution?: boolean;
+        speak_after_execution?: boolean;
+        execution_message_description?: string;
+        transfer_destination?: { type?: string; number?: string; [key: string]: unknown };
+        number?: string;
+        [key: string]: unknown;
+      }[]
+    | null;
   knowledge_base_ids: string[] | null;
   last_modification_timestamp: number;
   [key: string]: unknown;
