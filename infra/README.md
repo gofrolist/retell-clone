@@ -16,19 +16,19 @@ infra/
 ## `infra/private/` — operator secrets (gitignored, never committed)
 
 Real deployment values live in `infra/private/`, which `.gitignore` excludes
-entirely. It holds the generated `architeq-prod.yaml` (Helm secrets override),
-LiveKit server/SIP/egress values, SIP trunk JSONs (Telnyx credentials),
-`generated-secrets.env`, the `CUTOVER.md` runbook, and
-`gen-architeq-prod.sh`, which regenerates `architeq-prod.yaml` from terraform
-outputs + Secret Manager + `generated-secrets.env` after a `terraform apply`.
+entirely. `prod.env` is the single operator secrets file — every credential
+lives there and nowhere else. Alongside it: the generated `architeq-prod.yaml`
+(Helm secrets override), LiveKit server/SIP/egress values, SIP trunk JSONs
+(Telnyx credentials), the `CUTOVER.md` runbook, and `gen-architeq-prod.sh`,
+which regenerates `architeq-prod.yaml` from `prod.env` + terraform outputs +
+Secret Manager after a `terraform apply`.
 
 Because these files are gitignored they are NOT versioned or backed up by
 git: `git clean -fdx` will delete them, and a fresh clone will not have them.
-Keep an off-machine backup (or re-run `gen-architeq-prod.sh`; the inputs it
-reads from Secret Manager and terraform state are recoverable — the ones in
-`generated-secrets.env` are not). The app-level equivalent is
-`backend/.env.prod` (also gitignored). `.dockerignore` in each app excludes
-`.env*` so these can never leak into a docker build context.
+Keep an off-machine backup of `prod.env` — the values the generator derives
+from Secret Manager and terraform state are recoverable, the ones in
+`prod.env` are not. `.dockerignore` in each app excludes `.env*` so env files
+can never leak into a docker build context.
 
 Prereqs: `gcloud`, `terraform >= 1.7`, `helm`, `kubectl`,
 `lk` (livekit-cli), a GCP project with billing, and a registrable domain.
