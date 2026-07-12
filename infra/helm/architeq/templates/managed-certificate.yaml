@@ -8,5 +8,5 @@ metadata:
 spec:
   domains:
     - api.{{ .Values.global.domain }}
-    - app.{{ .Values.global.domain }}
+    - dashboard.{{ .Values.global.domain }}
 {{- end }}

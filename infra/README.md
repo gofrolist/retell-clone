@@ -176,16 +176,16 @@ helm install architeq infra/helm/architeq -n architeq -f architeq-prod.yaml
 
 ## 8. DNS / TLS
 
-Terraform already created A records (api., app. → global IP; sip. →
+Terraform already created A records (api., dashboard. → global IP; sip. →
 SIP LB IP; livekit. → LiveKit LB IP). The GKE ManagedCertificate for
-api./app. provisions automatically once DNS resolves (15–60 min);
+api./dashboard. provisions automatically once DNS resolves (15–60 min);
 check with `kubectl -n architeq describe managedcertificate`.
 
 ## Smoke test
 
 ```bash
 curl -s https://api.<DOMAIN>/healthz
-open https://app.<DOMAIN>
+open https://dashboard.<DOMAIN>
 # outbound test call
 curl -s -X POST https://api.<DOMAIN>/v2/create-phone-call \
   -H "Authorization: Bearer <api_key>" -H "Content-Type: application/json" \

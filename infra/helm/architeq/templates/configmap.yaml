@@ -14,10 +14,10 @@ data:
   # Worker -> api internal endpoints (in-cluster service).
   ARCHITEQ_API_URL: "http://{{ .Release.Name }}-api"
   ARCHITEQ_PUBLIC_API_URL: "https://api.{{ .Values.global.domain }}"
-  ARCHITEQ_PUBLIC_APP_URL: "https://app.{{ .Values.global.domain }}"
+  ARCHITEQ_PUBLIC_APP_URL: "https://dashboard.{{ .Values.global.domain }}"
   ARCHITEQ_PUBLIC_LIVEKIT_URL: "wss://livekit.{{ .Values.global.domain }}"
   # Dashboard auth + browser security
   ARCHITEQ_GOOGLE_OAUTH_CLIENT_ID: {{ .Values.config.googleOauthClientId | quote }}
   ARCHITEQ_DASHBOARD_ALLOWED_EMAILS: {{ .Values.config.dashboardAllowedEmails | quote }}
   ARCHITEQ_DASHBOARD_ALLOWED_DOMAINS: {{ .Values.config.dashboardAllowedDomains | quote }}
-  ARCHITEQ_CORS_ORIGINS: {{ .Values.config.corsOrigins | default (printf "[\"https://app.%s\"]" .Values.global.domain) | quote }}
+  ARCHITEQ_CORS_ORIGINS: {{ .Values.config.corsOrigins | default (printf "[\"https://dashboard.%s\"]" .Values.global.domain) | quote }}
