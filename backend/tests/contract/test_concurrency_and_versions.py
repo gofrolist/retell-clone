@@ -16,27 +16,21 @@ async def test_get_concurrency_shape_and_zero_baseline(client):
     assert body["concurrency_purchase_limit"] == 100
 
 
-async def test_get_concurrency_counts_ongoing_calls(client):
+async def test_get_concurrency_counts_live_calls(client):
+    # Live = registered (dialing) + ongoing; ended calls free the slot.
     async with db_module.session_factory()() as session:
-        session.add(
-            Call(
-                workspace_id=WORKSPACE_ID,
-                agent_id=AGENT_ID,
-                direction="outbound",
-                call_status="ongoing",
+        for status in ("ongoing", "registered", "ended"):
+            session.add(
+                Call(
+                    workspace_id=WORKSPACE_ID,
+                    agent_id=AGENT_ID,
+                    direction="outbound",
+                    call_status=status,
+                )
             )
-        )
-        session.add(
-            Call(
-                workspace_id=WORKSPACE_ID,
-                agent_id=AGENT_ID,
-                direction="outbound",
-                call_status="ended",
-            )
-        )
         await session.commit()
     resp = await client.get("/get-concurrency", headers=AUTH_HEADERS)
-    assert resp.json()["current_concurrency"] == 1
+    assert resp.json()["current_concurrency"] == 2
 
 
 async def test_get_concurrency_requires_auth(client):

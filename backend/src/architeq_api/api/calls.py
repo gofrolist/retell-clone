@@ -20,6 +20,7 @@ from ..schemas_extra import (
     web_call_to_dict,
 )
 from ..services import analysis, telephony
+from . import concurrency
 
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["calls"])
@@ -78,6 +79,15 @@ async def create_phone_call(
     agent = await session.get(Agent, agent_id)
     if agent is None or agent.workspace_id != api_key.workspace_id:
         raise HTTPException(422, detail=f"agent {agent_id} not found")
+
+    # Retell signals a full channel pool with 429; consumers match
+    # /concurrency limit|429/i and re-queue instead of marking the lead failed.
+    if await concurrency.count_live_calls(session, api_key.workspace_id) >= (
+        concurrency.CONCURRENCY_LIMIT
+    ):
+        raise HTTPException(
+            429, detail=f"Concurrency limit reached ({concurrency.CONCURRENCY_LIMIT})"
+        )
 
     # Dynamic variables are stored verbatim: arbitrary string keys, values
     # coerced to strings (contract: don't rename, don't drop).

@@ -75,6 +75,66 @@ def test_dynamic_variables_resolved_in_string_args() -> None:
     }
 
 
+def test_call_object_sent_alongside_flat_args() -> None:
+    """Retell POSTs a `call` object with custom-function args; consumer
+    handlers fall back to call.call_id / call.from_number /
+    call.retell_llm_dynamic_variables.phone when args omit them."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={})
+
+    call_info = {
+        "call_id": "call_abc123",
+        "direction": "outbound",
+        "from_number": "+19499195585",
+        "to_number": "+15551234567",
+        "retell_llm_dynamic_variables": {"phone": "+15551234567"},
+        "metadata": {},
+    }
+
+    async def run() -> None:
+        async with _client(handler) as http:
+            await execute_custom_tool(
+                http,
+                url="https://consumer.example.com/functions/v1/end-call",
+                args={"outcome": "answered"},
+                function_secret="s",
+                variables={},
+                call_info=call_info,
+            )
+
+    asyncio.run(run())
+    # args stay flat at the top level; `call` rides alongside them.
+    assert captured["body"]["outcome"] == "answered"
+    assert "args" not in captured["body"]
+    assert captured["body"]["call"] == call_info
+
+
+def test_call_scoped_template_resolves_in_args() -> None:
+    """log_outcome specs say: pass the exact value of {{call.call_id}}."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={})
+
+    async def run() -> None:
+        async with _client(handler) as http:
+            await execute_custom_tool(
+                http,
+                url="https://consumer.example.com/functions/v1/log-outcome",
+                args={"retell_call_id": "{{call.call_id}}", "phone": "{{phone}}"},
+                function_secret="s",
+                variables={"call.call_id": "call_abc123", "phone": "+15551234567"},
+            )
+
+    asyncio.run(run())
+    assert captured["body"]["retell_call_id"] == "call_abc123"
+    assert captured["body"]["phone"] == "+15551234567"
+
+
 def test_error_response_returns_error_json_to_model() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, text="boom")

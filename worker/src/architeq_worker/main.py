@@ -479,7 +479,9 @@ async def entrypoint(ctx: JobContext) -> None:
     )
     await _start_recording(lkapi, ctx.room.name, cfg.call_id, state)
 
-    variables = cfg.dynamic_variables
+    # Dynamic variables + call-scoped {{call.*}} system variables
+    # (consumer tool specs pass {{call.call_id}} as retell_call_id).
+    variables = cfg.resolution_variables()
     runtime = CallRuntime(ctx, lkapi, state)
     runtime.sip_participant_identity = (
         participant.identity if _is_sip_participant(participant) else None
@@ -493,6 +495,7 @@ async def entrypoint(ctx: JobContext) -> None:
         variables=variables,
         control=runtime,
         state=state,
+        call_info=cfg.tool_call_object(),
     )
 
     instructions = resolve_template(cfg.llm.general_prompt, variables)

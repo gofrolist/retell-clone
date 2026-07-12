@@ -118,3 +118,35 @@ class CallConfig:
             function_secret=_str(d.get("function_secret"), ""),
             raw=d,
         )
+
+    def resolution_variables(self) -> dict[str, Any]:
+        """Dynamic variables plus Retell call-scoped system variables.
+
+        Retell resolves ``{{call.call_id}}``-style placeholders from the live
+        call object, and consumer tool specs depend on it (log_outcome
+        requires ``retell_call_id={{call.call_id}}``). Call-scoped values are
+        facts about the call, so they win over same-named user variables.
+        """
+        return {
+            **self.dynamic_variables,
+            "call.call_id": self.call_id,
+            "call.direction": self.direction,
+            "call.from_number": self.from_number,
+            "call.to_number": self.to_number,
+        }
+
+    def tool_call_object(self) -> dict[str, Any]:
+        """The ``call`` object Retell sends alongside custom-function args.
+
+        Consumer handlers fall back to ``call.call_id`` /
+        ``call.from_number`` / ``call.retell_llm_dynamic_variables.phone``
+        when the model omits them from the args.
+        """
+        return {
+            "call_id": self.call_id,
+            "direction": self.direction,
+            "from_number": self.from_number,
+            "to_number": self.to_number,
+            "retell_llm_dynamic_variables": dict(self.dynamic_variables),
+            "metadata": dict(self.metadata),
+        }
