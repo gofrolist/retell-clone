@@ -6,13 +6,17 @@ metadata:
   labels:
     {{- include "architeq.labels" . | nindent 4 }}
   annotations:
+    # GKE ships no IngressClass objects — spec.ingressClassName pointing at a
+    # non-existent class makes the GCE controller ignore the Ingress entirely
+    # (silently: no events, no LB). The legacy annotation is the selector GKE
+    # actually supports.
+    kubernetes.io/ingress.class: {{ .Values.ingress.className }}
     kubernetes.io/ingress.global-static-ip-name: {{ .Values.ingress.staticIpName }}
     kubernetes.io/ingress.allow-http: "false"
     {{- if .Values.ingress.managedCertificate.enabled }}
     networking.gke.io/managed-certificates: {{ .Release.Name }}-cert
     {{- end }}
 spec:
-  ingressClassName: {{ .Values.ingress.className }}
   rules:
     - host: api.{{ .Values.global.domain }}
       http:
