@@ -2,9 +2,12 @@
 
 Usage:
     python -m architeq_api.seed --api-key key_... [--workspace-name "USAN"] [--demo]
+    python -m architeq_api.seed --api-key key_... --workspace-id ws_...   # attach only
 
 The API key doubles as the webhook-signature HMAC key, so pass the exact key
 the consumer has in RETELL_API_KEY to make cutover a pure env flip.
+--workspace-id attaches the key to an existing workspace (cutover on an
+already-provisioned deployment) instead of creating a new one.
 """
 
 import argparse
@@ -18,7 +21,9 @@ from .ids import new_api_key
 from .models import Agent, ApiKey, Base, Call, PhoneNumber, RetellLLM, Workspace, now_ms
 
 
-async def seed(api_key: str | None, workspace_name: str, demo: bool) -> None:
+async def seed(
+    api_key: str | None, workspace_name: str, demo: bool, workspace_id: str | None = None
+) -> None:
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -28,6 +33,18 @@ async def seed(api_key: str | None, workspace_name: str, demo: bool) -> None:
         existing = await session.scalar(select(ApiKey).where(ApiKey.key_hash == hash_key(key)))
         if existing:
             print(f"API key already present (workspace {existing.workspace_id})")
+            return
+        if workspace_id:
+            ws = await session.get(Workspace, workspace_id)
+            if ws is None:
+                raise SystemExit(f"workspace {workspace_id} not found")
+            session.add(
+                ApiKey(
+                    workspace_id=ws.id, key_hash=hash_key(key), key_material=key, name="imported"
+                )
+            )
+            await session.commit()
+            print(f"workspace={ws.id}\napi_key={key}")
             return
         ws = Workspace(name=workspace_name)
         session.add(ws)
@@ -114,9 +131,14 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--api-key", default=None, help="use this exact key (import mode)")
     parser.add_argument("--workspace-name", default="Default workspace")
+    parser.add_argument(
+        "--workspace-id",
+        default=None,
+        help="attach the key to this existing workspace instead of creating one",
+    )
     parser.add_argument("--demo", action="store_true", help="create demo agent/LLM/number")
     args = parser.parse_args()
-    asyncio.run(seed(args.api_key, args.workspace_name, args.demo))
+    asyncio.run(seed(args.api_key, args.workspace_name, args.demo, args.workspace_id))
 
 
 if __name__ == "__main__":
