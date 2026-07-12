@@ -7,6 +7,9 @@ metadata:
     app.kubernetes.io/component: dashboard
   annotations:
     cloud.google.com/neg: '{"ingress": true}'
+    # Custom LB health check: Next.js redirects "/" (307 -> /agents), and GCE
+    # health checks only accept a literal 200, which 502s the whole backend.
+    cloud.google.com/backend-config: '{"default": "{{ .Release.Name }}-dashboard"}'
 spec:
   type: ClusterIP
   selector:
