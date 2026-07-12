@@ -14,6 +14,10 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.6"
     }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 5"
+    }
   }
 }
 
@@ -25,4 +29,10 @@ provider "google" {
 provider "google-beta" {
   project = var.project_id
   region  = var.region
+}
+
+provider "cloudflare" {
+  # Empty token is fine when no cloudflare_* resources are created
+  # (cloudflare_zone_id unset).
+  api_token = var.cloudflare_api_token
 }

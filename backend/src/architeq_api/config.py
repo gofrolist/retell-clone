@@ -1,24 +1,42 @@
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _shared(name: str) -> AliasChoices:
+    """Credentials shared with the worker keep one canonical env name.
+
+    The livekit-agents plugins hard-read the bare names (LIVEKIT_API_KEY,
+    GOOGLE_API_KEY, ...), so the backend accepts them as fallbacks to its
+    ARCHITEQ_-prefixed names — one secret, one env key in deployments.
+    """
+    return AliasChoices(f"ARCHITEQ_{name}", name)
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="ARCHITEQ_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="ARCHITEQ_",
+        env_file=".env",
+        extra="ignore",
+        # Aliased fields must stay constructible by field name
+        # (Settings(google_api_key=...) in tests).
+        populate_by_name=True,
+    )
 
     database_url: str = "postgresql+asyncpg://architeq:architeq@localhost:5432/architeq"
     redis_url: str = "redis://localhost:6379/0"
 
     # LiveKit control plane
-    livekit_url: str = "http://localhost:7880"
-    livekit_api_key: str = "devkey"
-    livekit_api_secret: str = "devsecret"
+    livekit_url: str = Field("http://localhost:7880", validation_alias=_shared("LIVEKIT_URL"))
+    livekit_api_key: str = Field("devkey", validation_alias=_shared("LIVEKIT_API_KEY"))
+    livekit_api_secret: str = Field("devsecret", validation_alias=_shared("LIVEKIT_API_SECRET"))
     # Outbound SIP trunk id (LiveKit SIP -> Telnyx); created by infra bootstrap
     # (env: ARCHITEQ_SIP_OUTBOUND_TRUNK_ID, matching the Helm chart).
     sip_outbound_trunk_id: str = ""
 
     # Google GenAI (Gemini) for post-call analysis
-    google_api_key: str = ""
+    google_api_key: str = Field("", validation_alias=_shared("GOOGLE_API_KEY"))
     analysis_model: str = "gemini-2.5-flash"
 
     # Webhook delivery
@@ -27,7 +45,7 @@ class Settings(BaseSettings):
     inbound_webhook_timeout_seconds: float = 9.5
 
     # Recordings
-    recordings_gcs_bucket: str = ""
+    recordings_gcs_bucket: str = Field("", validation_alias=_shared("RECORDINGS_GCS_BUCKET"))
     recording_url_ttl_seconds: int = 60 * 60 * 24 * 30
 
     metrics_enabled: bool = True

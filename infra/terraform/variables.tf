@@ -51,7 +51,20 @@ variable "voice_pool_machine_type" {
 }
 
 variable "dns_zone_create" {
-  description = "Whether to create the Cloud DNS managed zone for var.domain. Set false if the zone is managed elsewhere."
+  description = "Whether to create the Cloud DNS managed zone (and A records) for var.domain. Set false if DNS is managed elsewhere (e.g. Cloudflare)."
   type        = bool
   default     = true
+}
+
+variable "cloudflare_api_token" {
+  description = "Cloudflare API token ('Edit zone DNS' template, scoped to the target zone). Set together with cloudflare_zone_id to have Terraform manage the A records in Cloudflare; leave empty otherwise."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "cloudflare_zone_id" {
+  description = "Cloudflare zone id for var.domain. Empty = no Cloudflare DNS records are managed."
+  type        = string
+  default     = ""
 }
