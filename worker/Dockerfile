@@ -21,11 +21,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Runtime stage: no uv, no build tools, no source tree — just the venv.
 FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
 
-RUN useradd --system --create-home worker
+# Numeric UID so Kubernetes runAsNonRoot can verify the user.
+RUN useradd --system --create-home --uid 10001 worker
 ENV PYTHONUNBUFFERED=1 PATH="/app/.venv/bin:$PATH"
 COPY --from=builder --chown=worker:worker /app/.venv /app/.venv
 
-USER worker
+USER 10001:10001
 WORKDIR /app
 
 # Prometheus metrics
