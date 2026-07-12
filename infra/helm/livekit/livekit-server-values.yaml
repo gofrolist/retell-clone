@@ -47,6 +47,15 @@ loadBalancer:
   tls:
     - hosts:
         - LIVEKIT_DOMAIN # livekit.<domain>
+      # The chart renders spec.tls from this block; without a secretName the
+      # GCE controller fails the whole LB sync (`secret "" does not exist`).
+      # Point it at a self-signed placeholder — real TLS comes from the
+      # ManagedCertificate above (SNI picks it for the livekit host):
+      #   openssl req -x509 -newkey rsa:2048 -keyout k.pem -out c.pem \
+      #     -days 3650 -nodes -subj "/CN=ingress-placeholder.invalid"
+      #   kubectl -n livekit create secret tls livekit-ingress-placeholder-tls \
+      #     --cert=c.pem --key=k.pem
+      secretName: livekit-ingress-placeholder-tls
 
 # Pin LiveKit to the voice node pool.
 nodeSelector:
