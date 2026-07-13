@@ -14,11 +14,23 @@ router = APIRouter(tags=["voices"])
 PREVIEWS_DIR = Path(__file__).resolve().parent.parent / "static" / "voice_previews"
 
 
-def _with_preview(voice: dict[str, Any]) -> dict[str, Any]:
+def _previews_on_disk() -> set[str]:
+    """Voice ids with a committed sample.
+
+    Read per request (one directory scan, not one stat per voice) so tests can
+    repoint PREVIEWS_DIR at runtime.
+    """
+    return {p.stem for p in PREVIEWS_DIR.glob("*.mp3")}
+
+
+def _public_base() -> str:
+    return get_settings().public_api_url.rstrip("/")
+
+
+def _with_preview(voice: dict[str, Any], available: set[str], base: str) -> dict[str, Any]:
     """Fill preview_audio_url when the voice's sample file exists on disk."""
-    if not (PREVIEWS_DIR / f"{voice['voice_id']}.mp3").is_file():
+    if voice["voice_id"] not in available:
         return voice
-    base = get_settings().public_api_url.rstrip("/")
     return {
         **voice,
         "preview_audio_url": f"{base}/static/voice_previews/{voice['voice_id']}.mp3",
@@ -27,7 +39,8 @@ def _with_preview(voice: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("/list-voices")
 async def list_voices(api_key: ApiKey = Depends(require_api_key)):
-    return [_with_preview(v) for v in VOICES]
+    available, base = _previews_on_disk(), _public_base()
+    return [_with_preview(v, available, base) for v in VOICES]
 
 
 @router.get("/get-voice/{voice_id}")
@@ -35,4 +48,4 @@ async def get_voice(voice_id: str, api_key: ApiKey = Depends(require_api_key)):
     voice = VOICES_BY_ID.get(voice_id)
     if voice is None:
         raise HTTPException(404, detail="Voice not found")
-    return _with_preview(voice)
+    return _with_preview(voice, _previews_on_disk(), _public_base())

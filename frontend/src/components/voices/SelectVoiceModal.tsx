@@ -7,14 +7,14 @@ import EmptyState from "@/components/ui/EmptyState";
 import Modal from "@/components/ui/Modal";
 import SearchInput from "@/components/ui/SearchInput";
 import Select from "@/components/ui/Select";
-import { UnderlineTabs } from "@/components/ui/Tabs";
+import { PILL_ACTIVE_CLASSES, PILL_CONTAINER_CLASSES, UnderlineTabs } from "@/components/ui/Tabs";
 import Tooltip from "@/components/ui/Tooltip";
 import { voiceNameFromId } from "@/lib/api";
 import type { Voice } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, pressableProps } from "@/lib/utils";
 import { AudioLines, Check, Pause, Play, Plus } from "lucide-react";
-import { useMemo, useState } from "react";
-import { useVoicePreview } from "./useVoicePreview";
+import { useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { resolvePreviewUrl, useVoicePreview } from "./useVoicePreview";
 
 const TOP_TABS = [
   { key: "platform", label: "Platform Voices" },
@@ -56,7 +56,9 @@ function PlayButton({
   playingId: string | null;
   onToggle: (voiceId: string, previewUrl: string | null | undefined) => void;
 }) {
-  const canPlay = Boolean(voice.preview_audio_url);
+  // Mirror the hook's actual playability check, or the button looks live
+  // while clicks silently no-op (e.g. a scheme-less ARCHITEQ_PUBLIC_API_URL).
+  const canPlay = resolvePreviewUrl(voice.preview_audio_url) !== null;
   const playing = playingId === voice.voice_id;
   return (
     <button
@@ -100,16 +102,31 @@ export default function SelectVoiceModal({
   const [selected, setSelected] = useState(currentVoiceId);
   const { playingId, toggle } = useVoicePreview();
 
+  // An agent imported from Retell can store a voice outside our catalog
+  // (e.g. "11labs-…"). Pin it as a row so it stays visible, searchable, and
+  // re-selectable — the old native <select> injected it via withValue().
+  const allVoices = useMemo<Voice[]>(() => {
+    if (!currentVoiceId || voices.some((v) => v.voice_id === currentVoiceId)) return voices;
+    return [
+      {
+        voice_id: currentVoiceId,
+        voice_name: voiceNameFromId(currentVoiceId),
+        provider: currentVoiceId.split("-")[0].toLowerCase(),
+      },
+      ...voices,
+    ];
+  }, [voices, currentVoiceId]);
+
   const accents = useMemo(() => {
-    const distinct = [...new Set(voices.map((v) => v.accent).filter(Boolean))] as string[];
+    const distinct = [...new Set(allVoices.map((v) => v.accent).filter(Boolean))] as string[];
     return [{ value: "all", label: "Accent" }, ...distinct.sort().map((a) => ({ value: a, label: a }))];
-  }, [voices]);
+  }, [allVoices]);
 
   const filtersActive = gender !== "all" || accent !== "all" || age !== "all" || search !== "";
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return voices.filter(
+    return allVoices.filter(
       (v) =>
         (gender === "all" || v.gender === gender) &&
         (accent === "all" || v.accent === accent) &&
@@ -118,14 +135,68 @@ export default function SelectVoiceModal({
           v.voice_name.toLowerCase().includes(q) ||
           v.voice_id.toLowerCase().includes(q)),
     );
-  }, [voices, gender, accent, age, search]);
+  }, [allVoices, gender, accent, age, search]);
 
-  const recommended = voices.filter((v) => v.recommended);
-  const selectedVoice = voices.find((v) => v.voice_id === selected);
+  const recommended = useMemo(() => voices.filter((v) => v.recommended), [voices]);
+  const selectedVoice = useMemo(
+    () => allVoices.find((v) => v.voice_id === selected),
+    [allVoices, selected],
+  );
 
   const applyVoice = (voiceId: string) => {
-    onSelect(voiceId);
+    // Re-applying the unchanged voice must not dirty the editor draft.
+    if (voiceId !== currentVoiceId) onSelect(voiceId);
     onClose();
+  };
+
+  // Listbox keyboard model for the voice table: roving tabindex, arrow keys,
+  // Home/End, and buffered type-ahead by voice name.
+  const rowRefs = useRef<(HTMLTableRowElement | null)[]>([]);
+  const typeahead = useRef({ buf: "", at: 0 });
+  const rovingIdx = Math.max(0, filtered.findIndex((v) => v.voice_id === selected));
+
+  const onRowKeyDown = (e: ReactKeyboardEvent<HTMLTableRowElement>, i: number) => {
+    // Only when the row itself is focused — let inner controls
+    // (e.g. the play/Use Voice buttons) handle their own keys.
+    if (e.target !== e.currentTarget) return;
+    const focusRow = (j: number) => rowRefs.current[j]?.focus();
+    switch (e.key) {
+      case "Enter":
+      case " ":
+        e.preventDefault();
+        setSelected(filtered[i].voice_id);
+        return;
+      case "ArrowDown":
+        e.preventDefault();
+        focusRow(Math.min(i + 1, filtered.length - 1));
+        return;
+      case "ArrowUp":
+        e.preventDefault();
+        focusRow(Math.max(i - 1, 0));
+        return;
+      case "Home":
+        e.preventDefault();
+        focusRow(0);
+        return;
+      case "End":
+        e.preventDefault();
+        focusRow(filtered.length - 1);
+        return;
+    }
+    if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      const t = typeahead.current;
+      t.buf = e.timeStamp - t.at > 800 ? e.key : t.buf + e.key;
+      t.at = e.timeStamp;
+      const q = t.buf.toLowerCase();
+      const from = t.buf.length === 1 ? i + 1 : i;
+      for (let step = 0; step < filtered.length; step++) {
+        const j = (from + step) % filtered.length;
+        if (filtered[j].voice_name.toLowerCase().startsWith(q)) {
+          focusRow(j);
+          return;
+        }
+      }
+    }
   };
 
   return (
@@ -162,7 +233,11 @@ export default function SelectVoiceModal({
             <Button variant="secondary" onClick={onClose}>
               Cancel
             </Button>
-            <Button variant="primary" disabled={!selected} onClick={() => applyVoice(selected)}>
+            <Button
+              variant="primary"
+              disabled={!selected || selected === currentVoiceId}
+              onClick={() => applyVoice(selected)}
+            >
               Save
             </Button>
           </div>
@@ -172,12 +247,15 @@ export default function SelectVoiceModal({
       <UnderlineTabs tabs={TOP_TABS} active={tab} onChange={setTab} />
 
       {tab === "custom" && (
-        <div className="mt-4 grid grid-cols-5 gap-0.5 rounded-lg border border-line bg-app p-0.5">
+        <div className={cn("mt-4 grid grid-cols-5", PILL_CONTAINER_CLASSES)}>
           {PROVIDERS.map((p) =>
             p.enabled ? (
               <button
                 key={p.key}
-                className="rounded-md border border-line bg-white px-3 py-1.5 text-center text-[13px] font-medium text-ink shadow-sm"
+                className={cn(
+                  "rounded-md px-3 py-1.5 text-center text-[13px] font-medium",
+                  PILL_ACTIVE_CLASSES,
+                )}
               >
                 {p.label}
               </button>
@@ -218,16 +296,7 @@ export default function SelectVoiceModal({
             {recommended.map((v, i) => (
               <div
                 key={v.voice_id}
-                role="button"
-                tabIndex={0}
-                aria-label={`Select voice ${v.voice_name}`}
-                onClick={() => setSelected(v.voice_id)}
-                onKeyDown={(e) => {
-                  if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
-                    e.preventDefault();
-                    setSelected(v.voice_id);
-                  }
-                }}
+                {...pressableProps(`Select voice ${v.voice_name}`, () => setSelected(v.voice_id))}
                 className={cn(
                   "flex items-center gap-2.5 rounded-xl border p-3 text-left transition-colors cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-accent/30",
                   selected === v.voice_id
@@ -274,21 +343,18 @@ export default function SelectVoiceModal({
                 </th>
               </tr>
             </thead>
-            <tbody>
+            <tbody role="listbox" aria-label="Voices">
               {filtered.map((v, i) => (
                 <tr
                   key={v.voice_id}
-                  onClick={() => setSelected(v.voice_id)}
-                  onKeyDown={(e) => {
-                    // Only when the row itself is focused — let inner controls
-                    // (e.g. the play/Use Voice buttons) handle their own keys.
-                    if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
-                      e.preventDefault();
-                      setSelected(v.voice_id);
-                    }
+                  ref={(el) => {
+                    rowRefs.current[i] = el;
                   }}
-                  tabIndex={0}
-                  role="button"
+                  onClick={() => setSelected(v.voice_id)}
+                  onKeyDown={(e) => onRowKeyDown(e, i)}
+                  tabIndex={i === rovingIdx ? 0 : -1}
+                  role="option"
+                  aria-selected={selected === v.voice_id}
                   aria-label={`Select voice ${v.voice_name}`}
                   className={cn(
                     "group/row cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-accent/30 focus-visible:ring-inset",

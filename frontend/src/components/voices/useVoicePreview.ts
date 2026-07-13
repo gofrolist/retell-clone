@@ -1,6 +1,7 @@
 "use client";
 
 import { API_BASE } from "@/lib/api";
+import { isHttpUrl } from "@/lib/utils";
 import { useEffect, useRef, useState } from "react";
 
 /**
@@ -10,7 +11,7 @@ import { useEffect, useRef, useState } from "react";
  */
 export function resolvePreviewUrl(url: string | null | undefined): string | null {
   if (!url) return null;
-  if (/^https?:/i.test(url)) return url;
+  if (isHttpUrl(url)) return url;
   if (url.startsWith("/static/")) return `${API_BASE}${url}`;
   return null;
 }

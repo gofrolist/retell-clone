@@ -1,3 +1,5 @@
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+
 export function cn(...classes: (string | false | null | undefined)[]): string {
   return classes.filter(Boolean).join(" ");
 }
@@ -61,4 +63,35 @@ const E164 = /^\+[1-9]\d{6,14}$/;
 /** True if `v` is a valid E.164 phone number (e.g. "+14155550123"). */
 export function isE164(v: string): boolean {
   return E164.test(v);
+}
+
+/**
+ * True for http(s) URLs — the only schemes we ever hand to media elements
+ * (never javascript:/data:). Single source for that security check.
+ */
+export function isHttpUrl(v: string): boolean {
+  return /^https?:/i.test(v);
+}
+
+/**
+ * Spread onto a non-button element (row, card) to make it click- and
+ * keyboard-activatable like a button, without stealing keys from nested
+ * controls (copy/play buttons handle their own).
+ */
+export function pressableProps(label: string, onActivate: () => void) {
+  return {
+    role: "button" as const,
+    tabIndex: 0,
+    "aria-label": label,
+    onClick: onActivate,
+    onKeyDown: (e: ReactKeyboardEvent<HTMLElement>) => {
+      // Only when the element itself is focused — let inner controls
+      // handle their own keys.
+      if (e.target !== e.currentTarget) return;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onActivate();
+      }
+    },
+  };
 }

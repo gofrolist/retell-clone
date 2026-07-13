@@ -1,6 +1,6 @@
 "use client";
 
-import { formatDuration } from "@/lib/utils";
+import { formatDuration, isHttpUrl } from "@/lib/utils";
 import { Download, Play, Pause } from "lucide-react";
 import { useRef, useState } from "react";
 
@@ -20,7 +20,7 @@ export default function AudioPlayer({
 
   const progress = durationSec > 0 ? Math.min(1, currentSec / durationSec) : 0;
   // Only trust http(s) recording URLs — never render javascript:/data: schemes.
-  const safeSrc = src && /^https?:/i.test(src) ? src : undefined;
+  const safeSrc = src && isHttpUrl(src) ? src : undefined;
 
   function toggle() {
     const audio = audioRef.current;
