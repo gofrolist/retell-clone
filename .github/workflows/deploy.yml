@@ -89,4 +89,4 @@ jobs:
           helm upgrade architeq infra/helm/architeq -n architeq \
             --reuse-values \
             --set "api.image.tag=$V,worker.image.tag=$V,dashboard.image.tag=$V" \
-            --atomic --wait --timeout 10m
+            --rollback-on-failure --wait --timeout 10m

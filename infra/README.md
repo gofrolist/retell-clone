@@ -144,7 +144,7 @@ Releases are automated — never bump image tags by hand:
    Merging it tags `vX.Y.Z` and publishes a GitHub release.
 3. The release triggers `.github/workflows/deploy.yml`: builds + pushes all
    three images at `vX.Y.Z`, then
-   `helm upgrade architeq --reuse-values --set …image.tag=vX.Y.Z --atomic`.
+   `helm upgrade architeq --reuse-values --set …image.tag=vX.Y.Z --rollback-on-failure`.
 
 Redeploy/rollback: run the Deploy workflow manually (workflow_dispatch) with
 any existing release tag.
@@ -153,6 +153,9 @@ Caveat: `--reuse-values` re-renders the chart with the values already in the
 cluster. A chart change that introduces a NEW required value (e.g. a new
 secret) must first be applied locally once:
 `helm upgrade architeq infra/helm/architeq -n architeq -f infra/private/architeq-prod.yaml --reuse-values`.
+Image tags are owned by CI: keep `image.tag` pins OUT of
+`infra/private/architeq-prod.yaml`, or `-f` will override the CI-set tags
+with stale ones.
 
 One-time setup (already done, recorded for rebuild-from-scratch):
 
