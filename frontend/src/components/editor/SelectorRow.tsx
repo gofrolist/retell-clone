@@ -2,10 +2,13 @@
 
 import { VoiceAvatar } from "@/components/agents/AgentsTable";
 import Select from "@/components/ui/Select";
+import SelectVoiceModal from "@/components/voices/SelectVoiceModal";
 import { voiceNameFromId } from "@/lib/api";
 import { LLM_MODELS } from "@/lib/models";
+import type { Voice } from "@/lib/types";
 import { withValue } from "@/lib/utils";
-import { BookOpen, Clock4, Settings2, Sparkles } from "lucide-react";
+import { BookOpen, ChevronDown, Clock4, Settings2, Sparkles } from "lucide-react";
+import { useState } from "react";
 
 const LANGUAGES: { value: string; label: string; flag: string }[] = [
   { value: "en-US", label: "English (US)", flag: "🇺🇸" },
@@ -30,18 +33,15 @@ export default function SelectorRow({
   onVoice: (v: string) => void;
   language: string;
   onLanguage: (v: string) => void;
-  voices: { voice_id: string; voice_name: string }[];
+  voices: Voice[];
 }) {
+  const [voiceModalOpen, setVoiceModalOpen] = useState(false);
+
   const modelOptions = withValue(
     LLM_MODELS.map((m) => ({ value: m.id, label: m.label })),
     model,
   );
 
-  const voiceOptions = withValue(
-    voices.map((v) => ({ value: v.voice_id, label: v.voice_name })),
-    voiceId,
-    voiceNameFromId(voiceId),
-  );
   const voiceName = voices.find((v) => v.voice_id === voiceId)?.voice_name ?? voiceNameFromId(voiceId);
 
   const languageOptions = withValue(LANGUAGES, language);
@@ -67,13 +67,23 @@ export default function SelectorRow({
           </button>
         </>
       )}
-      <Select
-        value={voiceId}
-        onChange={onVoice}
-        prefix={<VoiceAvatar name={voiceName} index={0} />}
-        className="[&_select]:pl-10"
-        options={voiceOptions}
-      />
+      <button
+        onClick={() => setVoiceModalOpen(true)}
+        className="inline-flex h-9 items-center gap-2 rounded-lg border border-line bg-white pl-2 pr-2.5 text-[13px] font-medium transition-colors hover:bg-app cursor-pointer"
+        aria-haspopup="dialog"
+      >
+        <VoiceAvatar name={voiceName} index={0} />
+        {voiceName}
+        <ChevronDown className="size-3.5 text-faint" />
+      </button>
+      {voiceModalOpen && (
+        <SelectVoiceModal
+          voices={voices}
+          currentVoiceId={voiceId}
+          onSelect={onVoice}
+          onClose={() => setVoiceModalOpen(false)}
+        />
+      )}
       <Select
         value={language}
         onChange={onLanguage}
