@@ -1,5 +1,7 @@
 """GET /list-voices and GET /get-voice/{voice_id}."""
 
+import uuid
+
 from tests.conftest import AUTH_HEADERS
 
 VOICE_FIELDS = {
@@ -98,11 +100,25 @@ async def test_preview_audio_url_absolute_with_public_api_url(client, tmp_path, 
 async def test_static_mount_serves_preview_files_without_auth(client):
     from architeq_api.api.voices import PREVIEWS_DIR
 
-    sample = PREVIEWS_DIR / "test-sample.mp3"
+    sample = PREVIEWS_DIR / f"test-sample-{uuid.uuid4().hex}.mp3"
     sample.write_bytes(b"ID3 test bytes")
     try:
-        resp = await client.get("/static/voice_previews/test-sample.mp3")
+        resp = await client.get(f"/static/voice_previews/{sample.name}")
         assert resp.status_code == 200
         assert resp.content == b"ID3 test bytes"
     finally:
-        sample.unlink()
+        sample.unlink(missing_ok=True)
+
+
+async def test_preview_audio_url_absolute_without_trailing_slash(client, tmp_path, monkeypatch):
+    from architeq_api.api import voices as voices_api
+    from architeq_api.config import get_settings
+
+    (tmp_path / "cartesia-sonic.mp3").write_bytes(b"ID3 fake mp3")
+    monkeypatch.setattr(voices_api, "PREVIEWS_DIR", tmp_path)
+    monkeypatch.setattr(get_settings(), "public_api_url", "https://api.example.com")
+    resp = await client.get("/get-voice/cartesia-sonic", headers=AUTH_HEADERS)
+    assert (
+        resp.json()["preview_audio_url"]
+        == "https://api.example.com/static/voice_previews/cartesia-sonic.mp3"
+    )

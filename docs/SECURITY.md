@@ -46,3 +46,11 @@ Dev escape hatch: `ARCHITEQ_ALLOW_PRIVATE_WEBHOOKS=true`.
 
 `/metrics` and `/healthz` expose no tenant data. Logs never include API keys
 or session tokens.
+
+## Public static assets
+
+`GET /static/voice_previews/*.mp3` is the platform's first unauthenticated
+public content mount: committed, non-tenant voice preview audio served
+without auth by design so the dashboard's `<audio>` element and any API
+consumer can play previews. It still passes through the per-IP rate-limit
+and security-headers middleware like every other route.
