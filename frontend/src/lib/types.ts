@@ -39,6 +39,18 @@ export interface AgentFunction {
   type: "builtin" | "custom";
 }
 
+/** /list-voices catalog entry (Retell voice shape + Architeq extras). */
+export interface Voice {
+  voice_id: string;
+  voice_name: string;
+  provider: string;
+  gender?: string;
+  accent?: string;
+  age?: string;
+  preview_audio_url?: string | null;
+  recommended?: boolean;
+}
+
 export type EndReason =
   | "agent hangup"
   | "user hangup"
