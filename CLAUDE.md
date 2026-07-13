@@ -38,6 +38,9 @@ names match project names:
 - Local stack: `docker compose up -d` then `make api` / `make worker` / `make web`
 - pre-commit hooks (gitleaks, ruff check+format, pytest, eslint) run on commit;
   full sweep: `pre-commit run --all-files`
+- Releases: PR titles must be conventional commits (`pr-title` check);
+  merging release-please's release PR tags + deploys everything; never bump
+  image tags by hand (see `infra/README.md` § Releasing)
 
 ## Key docs
 
