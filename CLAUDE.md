@@ -38,9 +38,21 @@ names match project names:
 - Local stack: `docker compose up -d` then `make api` / `make worker` / `make web`
 - pre-commit hooks (gitleaks, ruff check+format, pytest, eslint) run on commit;
   full sweep: `pre-commit run --all-files`
-- Releases: PR titles must be conventional commits (`pr-title` check);
-  merging release-please's release PR tags + deploys everything; never bump
-  image tags by hand (see `infra/README.md` § Releasing)
+
+## Releases & prod
+
+- `main` is protected: changes land by PR only, squash-merged, and the PR
+  title must be a conventional commit (`feat:` / `fix:` / … — required
+  `pr-title` check; the title becomes the commit message).
+- Releases are automated: release-please maintains a `chore(main): release
+  X.Y.Z` PR; merging it tags, builds all three images at that version, and
+  deploys prod (`deploy.yml`, keyless WIF auth). Never bump image tags by
+  hand. Rollback = run Deploy via workflow_dispatch with an older tag.
+  Runbook + one-time setup: `infra/README.md` § Releasing.
+- Prod: GKE cluster `architeq` (GCP project `usan-retirement`, us-east1);
+  `api.` / `dashboard.usanretirement.com`. Operator values and secrets live
+  ONLY in gitignored `infra/private/` (not backed up — don't `git clean -fdx`)
+  and must never be committed.
 
 ## Key docs
 
@@ -48,4 +60,4 @@ names match project names:
 contract), `docs/API_COVERAGE.md` (Retell endpoint matrix),
 `docs/SECURITY.md` (auth model, SSRF/rate-limit/allowlists),
 `docs/UI_INVENTORY.md` (dashboard spec from screenshots),
-`docs/MIGRATION.md` (cutover runbook), `infra/README.md` (deploy).
+`docs/MIGRATION.md` (cutover runbook), `infra/README.md` (deploy + releasing).
