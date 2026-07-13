@@ -3,7 +3,7 @@
 import CopyId from "@/components/ui/CopyId";
 import StatusDot from "@/components/ui/StatusDot";
 import type { Call, Sentiment } from "@/lib/types";
-import { cn, formatCallTime, formatCost, formatDuration, truncateId } from "@/lib/utils";
+import { cn, formatCallTime, formatCost, formatDuration, pressableProps, truncateId } from "@/lib/utils";
 
 type DotColor = "green" | "red" | "blue" | "gray" | "orange";
 
@@ -68,18 +68,10 @@ export default function CallsTable({
         {calls.map((c) => (
           <tr
             key={c.call_id}
-            onClick={() => onSelect(c)}
-            onKeyDown={(e) => {
-              // Only when the row itself is focused — let inner controls
-              // (e.g. the copy-ID button) handle their own keys.
-              if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
-                e.preventDefault();
-                onSelect(c);
-              }
-            }}
-            tabIndex={0}
-            role="button"
-            aria-label={`Call from ${c.from_number} at ${formatCallTime(c.start_timestamp)}`}
+            {...pressableProps(
+              `Call from ${c.from_number} at ${formatCallTime(c.start_timestamp)}`,
+              () => onSelect(c),
+            )}
             className={cn(
               "cursor-pointer border-b border-line/70 transition-colors",
               selectedId === c.call_id ? "bg-app" : "hover:bg-app/60",

@@ -17,6 +17,7 @@ import type {
   ListCallsResponse,
   PhoneNumber,
   QaCohort,
+  Voice,
   WebhookDelivery,
 } from "./types";
 
@@ -427,10 +428,7 @@ export const api = {
     request<RawAgent>(`/publish-agent/${encodeURIComponent(agentId)}`, post({})),
 
   // ------------------------------------------------------------- voices
-  listVoices: () =>
-    request<
-      { voice_id: string; voice_name: string; provider: string; gender?: string; accent?: string }[]
-    >("/list-voices"),
+  listVoices: () => request<Voice[]>("/list-voices"),
 
   // ------------------------------------------------------------- calls
   // Retell shape: POST /v2/list-calls returns a bare array; the last item's

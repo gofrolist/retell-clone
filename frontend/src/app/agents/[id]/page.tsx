@@ -17,6 +17,7 @@ import TranscriptionSection from "@/components/editor/sections/TranscriptionSect
 import WebhookSection from "@/components/editor/sections/WebhookSection";
 import Accordion from "@/components/ui/Accordion";
 import { api, type RawAgent, type RawLlm } from "@/lib/api";
+import type { Voice } from "@/lib/types";
 import { DEFAULT_POST_CALL_ANALYSIS_MODEL } from "@/lib/models";
 import {
   AudioLines,
@@ -46,7 +47,7 @@ export default function AgentEditorPage({
   const [agent, setAgent] = useState<RawAgent | null>(null);
   const [llm, setLlm] = useState<RawLlm | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [voices, setVoices] = useState<{ voice_id: string; voice_name: string }[]>([]);
+  const [voices, setVoices] = useState<Voice[]>([]);
 
   // Dirty state: fields the user changed but hasn't saved yet. Displayed
   // values are `{...server, ...draft}`; Save PATCHes only the drafts.
