@@ -86,9 +86,9 @@ sees secret values. `--atomic` rolls back automatically if the rollout fails.
 A concurrency group (`deploy-prod`, no cancel-in-progress) serializes deploys.
 
 **Known limitation:** a chart change that introduces a *new required secret
-value* needs one local `helm upgrade -f infra/private/architeq-prod.yaml` to
-seed it before (or instead of) the CI deploy. Routine releases never need
-this. Documented in the runbook.
+value* needs one local `helm upgrade -f infra/private/architeq-prod.yaml
+--reuse-values` to seed it before (or instead of) the CI deploy. Routine
+releases never need this. Documented in the runbook.
 
 ### `infra/terraform/github-deploy.tf`
 

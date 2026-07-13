@@ -341,7 +341,7 @@ jobs:
         # values already live in the cluster, so secret values from
         # infra/private/ never enter CI. A chart change that ADDS a required
         # secret value needs one local `helm upgrade -f
-        # infra/private/architeq-prod.yaml` first (see infra/README.md).
+        # infra/private/architeq-prod.yaml --reuse-values` first (see infra/README.md).
         run: |
           V="${{ steps.v.outputs.version }}"
           helm upgrade architeq infra/helm/architeq -n architeq \
@@ -396,7 +396,7 @@ any existing release tag.
 Caveat: `--reuse-values` re-renders the chart with the values already in the
 cluster. A chart change that introduces a NEW required value (e.g. a new
 secret) must first be applied locally once:
-`helm upgrade architeq infra/helm/architeq -n architeq -f infra/private/architeq-prod.yaml`.
+`helm upgrade architeq infra/helm/architeq -n architeq -f infra/private/architeq-prod.yaml --reuse-values`.
 
 One-time setup (already done, recorded for rebuild-from-scratch):
 

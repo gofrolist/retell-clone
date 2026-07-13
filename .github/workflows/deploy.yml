@@ -30,14 +30,12 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ github.event.release.tag_name || inputs.version }}
     steps:
-      - name: Resolve version
-        id: v
-        run: echo "version=${{ github.event.release.tag_name || inputs.version }}" >> "$GITHUB_OUTPUT"
-
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ steps.v.outputs.version }}
+          ref: ${{ env.VERSION }}
 
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
@@ -53,7 +51,7 @@ jobs:
 
       - name: Build images
         run: |
-          V="${{ steps.v.outputs.version }}"
+          V="$VERSION"
           docker build -t "$REGISTRY/architeq-api:$V" backend/
           docker build -t "$REGISTRY/architeq-worker:$V" worker/
           docker build -t "$REGISTRY/architeq-dashboard:$V" \
@@ -63,7 +61,7 @@ jobs:
 
       - name: Push images
         run: |
-          V="${{ steps.v.outputs.version }}"
+          V="$VERSION"
           docker push "$REGISTRY/architeq-api:$V"
           docker push "$REGISTRY/architeq-worker:$V"
           docker push "$REGISTRY/architeq-dashboard:$V"
@@ -73,17 +71,21 @@ jobs:
           cluster_name: ${{ env.GKE_CLUSTER }}
           location: ${{ env.GKE_LOCATION }}
           project_id: ${{ env.GCP_PROJECT }}
+          use_dns_based_endpoint: "true"
 
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.3
 
       - name: Helm upgrade
         # --reuse-values: re-render the (possibly updated) chart with the
         # values already live in the cluster, so secret values from
         # infra/private/ never enter CI. A chart change that ADDS a required
-        # secret value needs one local `helm upgrade -f
-        # infra/private/architeq-prod.yaml` first (see infra/README.md).
+        # secret value needs one local `helm upgrade architeq
+        # infra/helm/architeq -n architeq -f infra/private/architeq-prod.yaml
+        # --reuse-values` first (see infra/README.md).
         run: |
-          V="${{ steps.v.outputs.version }}"
+          V="$VERSION"
           helm upgrade architeq infra/helm/architeq -n architeq \
             --reuse-values \
             --set "api.image.tag=$V,worker.image.tag=$V,dashboard.image.tag=$V" \

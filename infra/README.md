@@ -152,7 +152,7 @@ any existing release tag.
 Caveat: `--reuse-values` re-renders the chart with the values already in the
 cluster. A chart change that introduces a NEW required value (e.g. a new
 secret) must first be applied locally once:
-`helm upgrade architeq infra/helm/architeq -n architeq -f infra/private/architeq-prod.yaml`.
+`helm upgrade architeq infra/helm/architeq -n architeq -f infra/private/architeq-prod.yaml --reuse-values`.
 
 One-time setup (already done, recorded for rebuild-from-scratch):
 
@@ -171,7 +171,7 @@ One-time setup (already done, recorded for rebuild-from-scratch):
 
 ```bash
 REGISTRY=$(terraform -chdir=infra/terraform output -raw artifact_registry)
-gcloud auth configure-docker us-central1-docker.pkg.dev
+gcloud auth configure-docker us-east1-docker.pkg.dev
 
 docker build -t $REGISTRY/architeq-api:v0.1.0 backend/
 docker build -t $REGISTRY/architeq-worker:v0.1.0 worker/
