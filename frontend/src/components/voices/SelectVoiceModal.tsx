@@ -7,7 +7,7 @@ import EmptyState from "@/components/ui/EmptyState";
 import Modal from "@/components/ui/Modal";
 import SearchInput from "@/components/ui/SearchInput";
 import Select from "@/components/ui/Select";
-import { PILL_ACTIVE_CLASSES, PILL_CONTAINER_CLASSES, UnderlineTabs } from "@/components/ui/Tabs";
+import { PILL_ACTIVE_CLASSES, PILL_CONTAINER_CLASSES } from "@/components/ui/Tabs";
 import Tooltip from "@/components/ui/Tooltip";
 import { voiceNameFromId } from "@/lib/api";
 import type { Voice } from "@/lib/types";
@@ -15,11 +15,6 @@ import { cn, pressableProps } from "@/lib/utils";
 import { AudioLines, Check, Pause, Play, Plus } from "lucide-react";
 import { useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { resolvePreviewUrl, useVoicePreview } from "./useVoicePreview";
-
-const TOP_TABS = [
-  { key: "platform", label: "Platform Voices" },
-  { key: "custom", label: "Custom Providers" },
-];
 
 // Only Cartesia ships today; the rest are visible but disabled (Retell parity).
 const PROVIDERS = [
@@ -94,7 +89,6 @@ export default function SelectVoiceModal({
   onSelect: (voiceId: string) => void;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState("platform");
   const [gender, setGender] = useState("all");
   const [accent, setAccent] = useState("all");
   const [age, setAge] = useState("all");
@@ -244,34 +238,30 @@ export default function SelectVoiceModal({
         </div>
       }
     >
-      <UnderlineTabs tabs={TOP_TABS} active={tab} onChange={setTab} />
-
-      {tab === "custom" && (
-        <div className={cn("mt-4 grid grid-cols-5", PILL_CONTAINER_CLASSES)}>
-          {PROVIDERS.map((p) =>
-            p.enabled ? (
+      <div className={cn("grid grid-cols-5", PILL_CONTAINER_CLASSES)}>
+        {PROVIDERS.map((p) =>
+          p.enabled ? (
+            <button
+              key={p.key}
+              className={cn(
+                "rounded-md px-3 py-1.5 text-center text-[13px] font-medium",
+                PILL_ACTIVE_CLASSES,
+              )}
+            >
+              {p.label}
+            </button>
+          ) : (
+            <Tooltip key={p.key} label="Coming soon" side="bottom" className="w-full">
               <button
-                key={p.key}
-                className={cn(
-                  "rounded-md px-3 py-1.5 text-center text-[13px] font-medium",
-                  PILL_ACTIVE_CLASSES,
-                )}
+                disabled
+                className="w-full rounded-md px-3 py-1.5 text-center text-[13px] font-medium text-faint cursor-not-allowed"
               >
                 {p.label}
               </button>
-            ) : (
-              <Tooltip key={p.key} label="Coming soon" className="w-full">
-                <button
-                  disabled
-                  className="w-full rounded-md px-3 py-1.5 text-center text-[13px] font-medium text-faint cursor-not-allowed"
-                >
-                  {p.label}
-                </button>
-              </Tooltip>
-            ),
-          )}
-        </div>
-      )}
+            </Tooltip>
+          ),
+        )}
+      </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <Tooltip label="Coming soon">
