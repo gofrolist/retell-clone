@@ -40,10 +40,16 @@ export function useVoicePreview() {
     audioRef.current?.pause();
     const audio = new Audio(src);
     audioRef.current = audio;
-    audio.onended = () => setPlayingId(null);
-    audio.onerror = () => setPlayingId(null);
+    const reset = () => {
+      // A replaced preview's events must not clobber the current one.
+      if (audioRef.current !== audio) return;
+      audioRef.current = null;
+      setPlayingId(null);
+    };
+    audio.onended = reset;
+    audio.onerror = reset;
     setPlayingId(voiceId);
-    audio.play().catch(() => setPlayingId(null));
+    audio.play().catch(reset);
   };
 
   return { playingId, toggle };
