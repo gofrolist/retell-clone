@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     # Recordings
     recordings_gcs_bucket: str = Field("", validation_alias=_shared("RECORDINGS_GCS_BUCKET"))
 
+    # Public base URL of this API (e.g. https://api.usanretirement.com), used
+    # to build absolute preview_audio_url links; empty = relative /static/...
+    public_api_url: str = ""
+
     # ── Security ────────────────────────────────────────────────────────────
     # Browser origins allowed to call the API (the dashboard).
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:3100"]

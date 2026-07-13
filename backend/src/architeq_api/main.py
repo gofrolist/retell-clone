@@ -1,8 +1,10 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from .api import (
@@ -65,6 +67,14 @@ app.include_router(conversation_flows.router)
 app.include_router(chats.router)
 app.include_router(chat_agents.router)
 app.include_router(dashboard.router)
+
+# Public, read-only assets (voice preview mp3s). No auth: previews must be
+# playable from a bare <audio> tag in the dashboard.
+app.mount(
+    "/static",
+    StaticFiles(directory=Path(__file__).resolve().parent / "static"),
+    name="static",
+)
 
 
 @app.get("/healthz")

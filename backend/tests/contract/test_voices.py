@@ -58,3 +58,51 @@ async def test_list_voices_includes_recommended_flags(client):
         "cartesia-blake",
         "cartesia-jacqueline",
     }
+
+
+async def test_preview_audio_url_null_when_sample_missing(client, tmp_path, monkeypatch):
+    from architeq_api.api import voices as voices_api
+
+    monkeypatch.setattr(voices_api, "PREVIEWS_DIR", tmp_path)  # empty dir
+    resp = await client.get("/get-voice/cartesia-sonic", headers=AUTH_HEADERS)
+    assert resp.json()["preview_audio_url"] is None
+
+
+async def test_preview_audio_url_relative_when_sample_exists(client, tmp_path, monkeypatch):
+    from architeq_api.api import voices as voices_api
+
+    (tmp_path / "cartesia-sonic.mp3").write_bytes(b"ID3 fake mp3")
+    monkeypatch.setattr(voices_api, "PREVIEWS_DIR", tmp_path)
+    resp = await client.get("/get-voice/cartesia-sonic", headers=AUTH_HEADERS)
+    assert resp.json()["preview_audio_url"] == "/static/voice_previews/cartesia-sonic.mp3"
+    # And the same voice in the list response carries the same URL.
+    listed = (await client.get("/list-voices", headers=AUTH_HEADERS)).json()
+    sonic = next(v for v in listed if v["voice_id"] == "cartesia-sonic")
+    assert sonic["preview_audio_url"] == "/static/voice_previews/cartesia-sonic.mp3"
+
+
+async def test_preview_audio_url_absolute_with_public_api_url(client, tmp_path, monkeypatch):
+    from architeq_api.api import voices as voices_api
+    from architeq_api.config import get_settings
+
+    (tmp_path / "cartesia-sonic.mp3").write_bytes(b"ID3 fake mp3")
+    monkeypatch.setattr(voices_api, "PREVIEWS_DIR", tmp_path)
+    monkeypatch.setattr(get_settings(), "public_api_url", "https://api.example.com/")
+    resp = await client.get("/get-voice/cartesia-sonic", headers=AUTH_HEADERS)
+    assert (
+        resp.json()["preview_audio_url"]
+        == "https://api.example.com/static/voice_previews/cartesia-sonic.mp3"
+    )
+
+
+async def test_static_mount_serves_preview_files_without_auth(client):
+    from architeq_api.api.voices import PREVIEWS_DIR
+
+    sample = PREVIEWS_DIR / "test-sample.mp3"
+    sample.write_bytes(b"ID3 test bytes")
+    try:
+        resp = await client.get("/static/voice_previews/test-sample.mp3")
+        assert resp.status_code == 200
+        assert resp.content == b"ID3 test bytes"
+    finally:
+        sample.unlink()
