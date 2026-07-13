@@ -10,13 +10,15 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from pydantic import Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import hash_key, require_api_key
+from ..config import get_settings
 from ..db import get_session
-from ..ids import new_api_key
+from ..ids import new_api_key, new_invite_token
 from ..models import (
     Alert,
     ApiKey,
@@ -25,9 +27,12 @@ from ..models import (
     QaCohort,
     WebhookDelivery,
     Workspace,
+    WorkspaceInvite,
+    WorkspaceMember,
     now_ms,
 )
 from ..schemas import CompatModel
+from ..sessions import decode_session
 
 router = APIRouter(tags=["dashboard"])
 
@@ -497,3 +502,139 @@ async def update_workspace(
             setattr(ws, field, payload[field])
     await session.commit()
     return {"workspace_id": ws.id, "name": ws.name, "webhook_url": ws.webhook_url}
+
+
+# --------------------------------------------------------- members & invites
+
+_EMAIL_RE = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+
+
+def _member_json(m: WorkspaceMember) -> dict[str, Any]:
+    return {"email": m.email, "name": m.name, "role": m.role, "created_at_ms": m.created_at_ms}
+
+
+def _invite_json(inv: WorkspaceInvite) -> dict[str, Any]:
+    return {
+        "invite_id": inv.id,
+        "email": inv.email,
+        "role": inv.role,
+        "status": inv.status,
+        "token": inv.token,
+        "invited_by": inv.invited_by,
+        "created_at_ms": inv.created_at_ms,
+        "expires_at_ms": inv.expires_at_ms,
+    }
+
+
+def _caller_email(authorization: str | None) -> str | None:
+    """Inviter identity for the audit trail; None when using a raw API key."""
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    claims = decode_session(authorization.removeprefix("Bearer ").strip())
+    return claims.get("sub") if claims else None
+
+
+@router.get("/list-members")
+async def list_members(
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    rows = (
+        await session.scalars(
+            select(WorkspaceMember)
+            .where(WorkspaceMember.workspace_id == api_key.workspace_id)
+            .order_by(WorkspaceMember.created_at_ms)
+        )
+    ).all()
+    return [_member_json(m) for m in rows]
+
+
+@router.get("/list-invites")
+async def list_invites(
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    rows = (
+        await session.scalars(
+            select(WorkspaceInvite)
+            .where(
+                WorkspaceInvite.workspace_id == api_key.workspace_id,
+                WorkspaceInvite.status == "pending",
+            )
+            .order_by(WorkspaceInvite.created_at_ms)
+        )
+    ).all()
+    return [_invite_json(inv) for inv in rows]
+
+
+class CreateInviteRequest(CompatModel):
+    email: str = Field(min_length=3, max_length=320, pattern=_EMAIL_RE)
+    role: str = Field(default="member", pattern="^(admin|member)$")
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _strip_email(cls, v: Any) -> Any:
+        return v.strip() if isinstance(v, str) else v
+
+
+@router.post("/create-invite", status_code=201)
+async def create_invite(
+    body: CreateInviteRequest,
+    authorization: str | None = Header(default=None),
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    email = body.email.strip().lower()
+    member = await session.scalar(
+        select(WorkspaceMember).where(
+            WorkspaceMember.workspace_id == api_key.workspace_id,
+            WorkspaceMember.email == email,
+        )
+    )
+    if member is not None:
+        raise HTTPException(409, detail=f"{email} is already a member of this workspace")
+
+    expires_at_ms = now_ms() + get_settings().invite_ttl_hours * 3_600_000
+    invited_by = _caller_email(authorization)
+
+    # Re-inviting a pending email regenerates that invite (fresh token + expiry)
+    # instead of stacking rows — the partial unique index backstops races.
+    invite = await session.scalar(
+        select(WorkspaceInvite).where(
+            WorkspaceInvite.workspace_id == api_key.workspace_id,
+            WorkspaceInvite.email == email,
+            WorkspaceInvite.status == "pending",
+        )
+    )
+    if invite is not None:
+        invite.token = new_invite_token()
+        invite.role = body.role
+        invite.expires_at_ms = expires_at_ms
+        invite.invited_by = invited_by or invite.invited_by
+    else:
+        invite = WorkspaceInvite(
+            workspace_id=api_key.workspace_id,
+            email=email,
+            role=body.role,
+            invited_by=invited_by,
+            expires_at_ms=expires_at_ms,
+        )
+        session.add(invite)
+    await session.commit()
+    await session.refresh(invite)
+    return _invite_json(invite)
+
+
+@router.post("/revoke-invite/{invite_id}", status_code=204)
+async def revoke_invite(
+    invite_id: str,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    invite = await session.get(WorkspaceInvite, invite_id)
+    if invite is None or invite.workspace_id != api_key.workspace_id:
+        raise HTTPException(404, detail="Invite not found")
+    if invite.status != "pending":
+        raise HTTPException(409, detail=f"Invite is already {invite.status}")
+    invite.status = "revoked"
+    await session.commit()
