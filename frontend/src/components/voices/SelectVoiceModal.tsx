@@ -216,11 +216,20 @@ export default function SelectVoiceModal({
           <h3 className="text-[13px] font-semibold">Recommended Voices</h3>
           <div className="mt-2 grid grid-cols-2 gap-3 lg:grid-cols-4">
             {recommended.map((v, i) => (
-              <button
+              <div
                 key={v.voice_id}
+                role="button"
+                tabIndex={0}
+                aria-label={`Select voice ${v.voice_name}`}
                 onClick={() => setSelected(v.voice_id)}
+                onKeyDown={(e) => {
+                  if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+                    e.preventDefault();
+                    setSelected(v.voice_id);
+                  }
+                }}
                 className={cn(
-                  "flex items-center gap-2.5 rounded-xl border p-3 text-left transition-colors cursor-pointer",
+                  "flex items-center gap-2.5 rounded-xl border p-3 text-left transition-colors cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-accent/30",
                   selected === v.voice_id
                     ? "border-accent ring-2 ring-accent/15"
                     : "border-line hover:bg-app",
@@ -239,7 +248,7 @@ export default function SelectVoiceModal({
                   </span>
                 </span>
                 <PlayButton voice={v} playingId={playingId} onToggle={toggle} />
-              </button>
+              </div>
             ))}
           </div>
         </div>
@@ -270,8 +279,19 @@ export default function SelectVoiceModal({
                 <tr
                   key={v.voice_id}
                   onClick={() => setSelected(v.voice_id)}
+                  onKeyDown={(e) => {
+                    // Only when the row itself is focused — let inner controls
+                    // (e.g. the play/Use Voice buttons) handle their own keys.
+                    if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+                      e.preventDefault();
+                      setSelected(v.voice_id);
+                    }
+                  }}
+                  tabIndex={0}
+                  role="button"
+                  aria-label={`Select voice ${v.voice_name}`}
                   className={cn(
-                    "group/row cursor-pointer",
+                    "group/row cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-accent/30 focus-visible:ring-inset",
                     selected === v.voice_id ? "bg-accent/5" : "hover:bg-app",
                   )}
                 >
@@ -298,7 +318,7 @@ export default function SelectVoiceModal({
                           applyVoice(v.voice_id);
                         }}
                         className={cn(
-                          "invisible group-hover/row:visible",
+                          "invisible group-hover/row:visible group-focus-within/row:visible",
                           selected === v.voice_id && "visible",
                         )}
                       >
