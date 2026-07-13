@@ -2,6 +2,7 @@
 
 The worker synthesizes with Cartesia; this catalog mirrors the Cartesia
 voices we ship. `preview_audio_url` is null until previews are hosted.
+`recommended` marks the voices surfaced as cards in the dashboard's voice picker.
 """
 
 from typing import Any
@@ -15,6 +16,7 @@ VOICES: list[dict[str, Any]] = [
         "gender": "female",
         "age": "Young",
         "preview_audio_url": None,
+        "recommended": True,
     },
     {
         "voice_id": "cartesia-sonic-english",
@@ -24,6 +26,7 @@ VOICES: list[dict[str, Any]] = [
         "gender": "female",
         "age": "Young",
         "preview_audio_url": None,
+        "recommended": False,
     },
     {
         "voice_id": "cartesia-savannah",
@@ -33,6 +36,7 @@ VOICES: list[dict[str, Any]] = [
         "gender": "female",
         "age": "Middle Aged",
         "preview_audio_url": None,
+        "recommended": True,
     },
     {
         "voice_id": "cartesia-brooke",
@@ -42,6 +46,7 @@ VOICES: list[dict[str, Any]] = [
         "gender": "female",
         "age": "Young",
         "preview_audio_url": None,
+        "recommended": False,
     },
     {
         "voice_id": "cartesia-katie",
@@ -51,6 +56,7 @@ VOICES: list[dict[str, Any]] = [
         "gender": "female",
         "age": "Young",
         "preview_audio_url": None,
+        "recommended": False,
     },
     {
         "voice_id": "cartesia-jacqueline",
@@ -60,6 +66,7 @@ VOICES: list[dict[str, Any]] = [
         "gender": "female",
         "age": "Middle Aged",
         "preview_audio_url": None,
+        "recommended": True,
     },
     {
         "voice_id": "cartesia-blake",
@@ -69,6 +76,7 @@ VOICES: list[dict[str, Any]] = [
         "gender": "male",
         "age": "Young",
         "preview_audio_url": None,
+        "recommended": True,
     },
     {
         "voice_id": "cartesia-ronald",
@@ -78,6 +86,7 @@ VOICES: list[dict[str, Any]] = [
         "gender": "male",
         "age": "Middle Aged",
         "preview_audio_url": None,
+        "recommended": False,
     },
     {
         "voice_id": "cartesia-connor",
@@ -87,6 +96,7 @@ VOICES: list[dict[str, Any]] = [
         "gender": "male",
         "age": "Young",
         "preview_audio_url": None,
+        "recommended": False,
     },
     {
         "voice_id": "cartesia-griffin",
@@ -96,6 +106,7 @@ VOICES: list[dict[str, Any]] = [
         "gender": "male",
         "age": "Old",
         "preview_audio_url": None,
+        "recommended": False,
     },
     {
         "voice_id": "cartesia-daniela",
@@ -105,6 +116,7 @@ VOICES: list[dict[str, Any]] = [
         "gender": "female",
         "age": "Young",
         "preview_audio_url": None,
+        "recommended": False,
     },
     {
         "voice_id": "cartesia-luca",
@@ -114,6 +126,7 @@ VOICES: list[dict[str, Any]] = [
         "gender": "male",
         "age": "Middle Aged",
         "preview_audio_url": None,
+        "recommended": False,
     },
 ]
 

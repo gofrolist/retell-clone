@@ -43,3 +43,18 @@ async def test_get_voice_unknown_id_404(client):
 async def test_voices_require_auth(client):
     assert (await client.get("/list-voices")).status_code == 401
     assert (await client.get("/get-voice/cartesia-sonic")).status_code == 401
+
+
+async def test_list_voices_includes_recommended_flags(client):
+    resp = await client.get("/list-voices", headers=AUTH_HEADERS)
+    assert resp.status_code == 200
+    voices = resp.json()
+    # Additive field: present on every voice, boolean.
+    assert all(isinstance(v.get("recommended"), bool) for v in voices)
+    recommended = {v["voice_id"] for v in voices if v["recommended"]}
+    assert recommended == {
+        "cartesia-sonic",
+        "cartesia-savannah",
+        "cartesia-blake",
+        "cartesia-jacqueline",
+    }
