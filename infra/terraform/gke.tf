@@ -60,6 +60,16 @@ resource "google_container_cluster" "cluster" {
     }
   }
 
+  # DNS-based control-plane endpoint: lets GitHub Actions (ephemeral runner
+  # IPs) run helm against the cluster with IAM auth alone. The IP endpoint
+  # above stays allowlisted; this adds an authenticated alternative, it does
+  # not widen the IP allowlist.
+  control_plane_endpoints_config {
+    dns_endpoint_config {
+      allow_external_traffic = true
+    }
+  }
+
   deletion_protection = false
 
   depends_on = [google_project_service.services]

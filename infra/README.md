@@ -134,11 +134,47 @@ Keep the outbound trunk id — architeq-api uses it to place calls
 - [ ] AMD (Answering Machine Detection) enabled on the connection with
       result passthrough
 
-## 6. Build & push images
+## Releasing (normal path)
+
+Releases are automated — never bump image tags by hand:
+
+1. Merge PRs to `main` with conventional-commit titles (`feat: …`, `fix: …`;
+   enforced by the `pr-title` check).
+2. release-please maintains a release PR that accumulates `CHANGELOG.md`.
+   Merging it tags `vX.Y.Z` and publishes a GitHub release.
+3. The release triggers `.github/workflows/deploy.yml`: builds + pushes all
+   three images at `vX.Y.Z`, then
+   `helm upgrade architeq --reuse-values --set …image.tag=vX.Y.Z --rollback-on-failure`.
+
+Redeploy/rollback: run the Deploy workflow manually (workflow_dispatch) with
+any existing release tag.
+
+Caveat: `--reuse-values` re-renders the chart with the values already in the
+cluster. A chart change that introduces a NEW required value (e.g. a new
+secret) must first be applied locally once:
+`helm upgrade architeq infra/helm/architeq -n architeq -f infra/private/architeq-prod.yaml --reuse-values`.
+Image tags are owned by CI: keep `image.tag` pins OUT of
+`infra/private/architeq-prod.yaml`, or `-f` will override the CI-set tags
+with stale ones.
+
+One-time setup (already done, recorded for rebuild-from-scratch):
+
+- `terraform apply` creates the WIF pool/provider + `architeq-deployer` SA
+  (`infra/terraform/github-deploy.tf`).
+- Repo variables: `GCP_WIF_PROVIDER` / `GCP_DEPLOYER_SA` (from the terraform
+  outputs `deploy_workload_identity_provider` / `deploy_service_account`) and
+  `NEXT_PUBLIC_GOOGLE_CLIENT_ID` (OAuth client id, public by design).
+- Repo secret `RELEASE_PLEASE_TOKEN`: fine-grained PAT scoped to this repo,
+  permissions Contents: read/write + Pull requests: read/write. Needed
+  because events created with the default `GITHUB_TOKEN` don't trigger
+  workflows (CI on the release PR, deploy on release publish).
+- `pr-title` added to the required status checks on `main`.
+
+## 6. Build & push images (manual / break-glass)
 
 ```bash
 REGISTRY=$(terraform -chdir=infra/terraform output -raw artifact_registry)
-gcloud auth configure-docker us-central1-docker.pkg.dev
+gcloud auth configure-docker us-east1-docker.pkg.dev
 
 docker build -t $REGISTRY/architeq-api:v0.1.0 backend/
 docker build -t $REGISTRY/architeq-worker:v0.1.0 worker/
@@ -151,7 +187,7 @@ docker push $REGISTRY/architeq-worker:v0.1.0
 docker push $REGISTRY/architeq-dashboard:v0.1.0
 ```
 
-## 7. Deploy Architeq
+## 7. Deploy Architeq (manual / break-glass)
 
 Create a private values override in `infra/private/` (gitignored — never
 commit real secrets), or generate it with `infra/private/gen-architeq-prod.sh`:

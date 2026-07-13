@@ -1,0 +1,92 @@
+# .github/workflows/deploy.yml
+name: Deploy
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Existing release tag to deploy (e.g. v0.2.0) — redeploy or rollback"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # OIDC token for google-github-actions/auth
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+env:
+  REGISTRY: us-east1-docker.pkg.dev/usan-retirement/architeq
+  GKE_CLUSTER: architeq
+  GKE_LOCATION: us-east1
+  GCP_PROJECT: usan-retirement
+  # Baked into the public JS bundle at build time — not secrets.
+  NEXT_PUBLIC_API_URL: https://api.usanretirement.com
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ github.event.release.tag_name || inputs.version }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.VERSION }}
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          install_components: gke-gcloud-auth-plugin
+
+      - name: Configure docker for Artifact Registry
+        run: gcloud auth configure-docker us-east1-docker.pkg.dev --quiet
+
+      - name: Build images
+        run: |
+          V="$VERSION"
+          docker build -t "$REGISTRY/architeq-api:$V" backend/
+          docker build -t "$REGISTRY/architeq-worker:$V" worker/
+          docker build -t "$REGISTRY/architeq-dashboard:$V" \
+            --build-arg NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
+            --build-arg NEXT_PUBLIC_GOOGLE_CLIENT_ID="${{ vars.NEXT_PUBLIC_GOOGLE_CLIENT_ID }}" \
+            frontend/
+
+      - name: Push images
+        run: |
+          V="$VERSION"
+          docker push "$REGISTRY/architeq-api:$V"
+          docker push "$REGISTRY/architeq-worker:$V"
+          docker push "$REGISTRY/architeq-dashboard:$V"
+
+      - uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395 # v3.0.0
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER }}
+          location: ${{ env.GKE_LOCATION }}
+          project_id: ${{ env.GCP_PROJECT }}
+          use_dns_based_endpoint: "true"
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.3
+
+      - name: Helm upgrade
+        # --reuse-values: re-render the (possibly updated) chart with the
+        # values already live in the cluster, so secret values from
+        # infra/private/ never enter CI. A chart change that ADDS a required
+        # secret value needs one local `helm upgrade architeq
+        # infra/helm/architeq -n architeq -f infra/private/architeq-prod.yaml
+        # --reuse-values` first (see infra/README.md).
+        run: |
+          V="$VERSION"
+          helm upgrade architeq infra/helm/architeq -n architeq \
+            --reuse-values \
+            --set "api.image.tag=$V,worker.image.tag=$V,dashboard.image.tag=$V" \
+            --rollback-on-failure --wait --timeout 10m
