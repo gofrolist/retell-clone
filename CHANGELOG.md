@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.0](https://github.com/gofrolist/retell-clone/compare/v0.2.0...v0.3.0) (2026-07-14)
+
+
+### Features
+
+* drop voice modal top tabs, keep single provider bar ([#64](https://github.com/gofrolist/retell-clone/issues/64)) ([143bb6a](https://github.com/gofrolist/retell-clone/commit/143bb6a2fcf73b6dd86b1963c52ca91362cd0ff2))
+* Retell-style voice selection modal ([#61](https://github.com/gofrolist/retell-clone/issues/61)) ([0857975](https://github.com/gofrolist/retell-clone/commit/08579754c11a8f4ed810f14dd5dfb9003f47b24b))
+* workspace member invites ([#65](https://github.com/gofrolist/retell-clone/issues/65)) ([fc1d999](https://github.com/gofrolist/retell-clone/commit/fc1d99972e1997b729021830e42514a8c7b7f19c))
+
 ## [0.2.0](https://github.com/gofrolist/retell-clone/compare/v0.1.7...v0.2.0) (2026-07-13)
 
 
