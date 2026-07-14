@@ -5,6 +5,7 @@ import { Field, TextInput } from "@/components/ui/Field";
 import Modal from "@/components/ui/Modal";
 import Select from "@/components/ui/Select";
 import { api, inviteLink, type WorkspaceInvite } from "@/lib/api";
+import { useCopied } from "@/lib/useCopied";
 import { Check, Copy } from "lucide-react";
 import { useState } from "react";
 
@@ -12,6 +13,14 @@ const ROLES = [
   { value: "member", label: "Member" },
   { value: "admin", label: "Admin" },
 ];
+
+// The TTL is a backend setting (ARCHITEQ_INVITE_TTL_HOURS) — describe the
+// actual expiry from the response instead of hardcoding a duration.
+function expiresText(expiresAtMs: number): string {
+  const hours = Math.max(1, Math.round((expiresAtMs - Date.now()) / 3_600_000));
+  if (hours >= 48) return `in ${Math.round(hours / 24)} days`;
+  return hours === 1 ? "in 1 hour" : `in ${hours} hours`;
+}
 
 export default function InviteMemberModal({
   open,
@@ -28,14 +37,13 @@ export default function InviteMemberModal({
   const [error, setError] = useState<string | null>(null);
   // No email delivery yet: after creating we show the link to share by hand.
   const [created, setCreated] = useState<WorkspaceInvite | null>(null);
-  const [copied, setCopied] = useState(false);
+  const { copiedKey, copy } = useCopied();
 
   const close = () => {
     setEmail("");
     setRole("member");
     setError(null);
     setCreated(null);
-    setCopied(false);
     onClose();
   };
 
@@ -51,13 +59,6 @@ export default function InviteMemberModal({
     } finally {
       setSubmitting(false);
     }
-  };
-
-  const copy = async () => {
-    if (!created) return;
-    await navigator.clipboard.writeText(inviteLink(created));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
@@ -92,13 +93,13 @@ export default function InviteMemberModal({
           <p className="text-[13px] text-sub">
             Invite created for <span className="font-medium text-ink">{created.email}</span>.
             Share this link — it works only when they sign in with that Google
-            account, and expires in 7 days.
+            account, and expires {expiresText(created.expires_at_ms)}.
           </p>
           <div className="flex items-center gap-2">
             <TextInput readOnly value={inviteLink(created)} onFocus={(e) => e.target.select()} />
-            <Button variant="secondary" onClick={copy}>
-              {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-              {copied ? "Copied" : "Copy"}
+            <Button variant="secondary" onClick={() => copy(inviteLink(created))}>
+              {copiedKey ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+              {copiedKey ? "Copied" : "Copy"}
             </Button>
           </div>
         </div>

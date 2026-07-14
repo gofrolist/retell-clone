@@ -570,4 +570,5 @@ export const api = {
     request<WorkspaceInvite>("/create-invite", post(body)),
   revokeInvite: (inviteId: string) =>
     request<void>(`/revoke-invite/${encodeURIComponent(inviteId)}`, post({})),
+  removeMember: (email: string) => request<void>("/remove-member", post({ email })),
 };

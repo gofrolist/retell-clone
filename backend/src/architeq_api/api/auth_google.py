@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
@@ -87,26 +88,32 @@ async def _redeem_invite(
         raise HTTPException(403, detail="Invalid invite link")
     if invite.email != email:
         raise HTTPException(403, detail="This invite was issued to a different email address")
+    workspace_id = invite.workspace_id
     member = await session.scalar(
         select(WorkspaceMember).where(
-            WorkspaceMember.workspace_id == invite.workspace_id,
+            WorkspaceMember.workspace_id == workspace_id,
             WorkspaceMember.email == email,
         )
     )
     if member is not None:
-        return invite.workspace_id
+        return workspace_id
     if invite.status == "revoked":
         raise HTTPException(403, detail="This invite has been revoked")
     if invite.status != "pending" or invite.expires_at_ms <= now_ms():
         raise HTTPException(403, detail="This invite has expired — ask for a new link")
 
     session.add(
-        WorkspaceMember(workspace_id=invite.workspace_id, email=email, name=name, role=invite.role)
+        WorkspaceMember(workspace_id=workspace_id, email=email, name=name, role=invite.role)
     )
     invite.status = "accepted"
     invite.accepted_at_ms = now_ms()
-    await session.commit()
-    return invite.workspace_id
+    try:
+        await session.commit()
+    except IntegrityError:
+        # Concurrent redemption (double-click, two tabs): the other request
+        # already created the member row — degrade to a normal login.
+        await session.rollback()
+    return workspace_id
 
 
 @router.post("/google")
@@ -117,9 +124,33 @@ async def google_login(body: GoogleLoginRequest, session: AsyncSession = Depends
     email = claims.get("email", "").lower()
     name = claims.get("name")
 
+    workspace_id: str | None
     if body.invite_token:
         workspace_id = await _redeem_invite(session, body.invite_token, email, name)
-        workspace = await session.get(Workspace, workspace_id)
+    elif _email_allowed(email):
+        # Allowlisted emails keep the pre-invites invariant: they always
+        # attach to the first workspace and are recorded as its owners,
+        # regardless of any memberships picked up via invites.
+        workspace = await session.scalar(
+            select(Workspace).order_by(Workspace.created_at_ms).limit(1)
+        )
+        workspace_id = workspace.id if workspace is not None else None
+        if workspace_id is not None:
+            member = await session.scalar(
+                select(WorkspaceMember).where(
+                    WorkspaceMember.workspace_id == workspace_id,
+                    WorkspaceMember.email == email,
+                )
+            )
+            if member is None:
+                session.add(
+                    WorkspaceMember(workspace_id=workspace_id, email=email, name=name, role="owner")
+                )
+                try:
+                    await session.commit()
+                except IntegrityError:
+                    # Concurrent first login already recorded the row.
+                    await session.rollback()
     else:
         member = await session.scalar(
             select(WorkspaceMember)
@@ -127,32 +158,20 @@ async def google_login(body: GoogleLoginRequest, session: AsyncSession = Depends
             .order_by(WorkspaceMember.created_at_ms)
             .limit(1)
         )
-        if member is not None:
-            workspace = await session.get(Workspace, member.workspace_id)
-        elif _email_allowed(email):
-            # Single-tenant deployment: allowlist logins attach to the first
-            # workspace and are recorded as its owners.
-            workspace = await session.scalar(
-                select(Workspace).order_by(Workspace.created_at_ms).limit(1)
-            )
-            if workspace is not None:
-                session.add(
-                    WorkspaceMember(workspace_id=workspace.id, email=email, name=name, role="owner")
-                )
-                await session.commit()
-        else:
+        if member is None:
             raise HTTPException(403, detail=f"{email} is not allowed to access this dashboard")
-    if workspace is None:
+        workspace_id = member.workspace_id
+    if workspace_id is None:
         raise HTTPException(503, detail="No workspace provisioned yet (run architeq_api.seed)")
 
-    token, expires_at = issue_session(email, workspace.id, name)
+    token, expires_at = issue_session(email, workspace_id, name)
     return {
         "token": token,
         "expires_at": expires_at,
         "email": email,
         "name": name,
         "picture": claims.get("picture"),
-        "workspace_id": workspace.id,
+        "workspace_id": workspace_id,
     }
 
 

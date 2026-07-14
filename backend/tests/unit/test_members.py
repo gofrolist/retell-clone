@@ -204,3 +204,122 @@ async def test_invited_by_recorded_from_session(client, monkeypatch):
     )
     assert resp.status_code == 201
     assert resp.json()["invited_by"] == "admin@example.com"
+
+
+# ---------------------------------------------------- roles & offboarding
+
+
+async def _login_as_member(client, monkeypatch, email="invitee@example.com") -> str:
+    """Invite + accept + return the member's session token."""
+    invite = await _create_invite(client, email=email)
+    _google_as(monkeypatch, email)
+    resp = await client.post(
+        "/auth/google", json={"id_token": "fake", "invite_token": invite["token"]}
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["token"]
+
+
+async def test_member_role_cannot_manage_invites(client, monkeypatch):
+    token = await _login_as_member(client, monkeypatch)
+    member_headers = {"Authorization": f"Bearer {token}"}
+
+    resp = await client.post(
+        "/create-invite", json={"email": "x@example.com", "role": "admin"}, headers=member_headers
+    )
+    assert resp.status_code == 403
+    assert (await client.get("/list-invites", headers=member_headers)).status_code == 403
+    other = await _create_invite(client, email="pending@example.com")
+    resp = await client.post(f"/revoke-invite/{other['invite_id']}", headers=member_headers)
+    assert resp.status_code == 403
+    resp = await client.post(
+        "/remove-member", json={"email": "someone@example.com"}, headers=member_headers
+    )
+    assert resp.status_code == 403
+    # Viewing members stays open to every member.
+    assert (await client.get("/list-members", headers=member_headers)).status_code == 200
+
+
+async def test_admin_role_can_manage_invites(client, monkeypatch):
+    invite = await _create_invite(client, email="admin2@example.com", role="admin")
+    _google_as(monkeypatch, "admin2@example.com")
+    login = await client.post(
+        "/auth/google", json={"id_token": "fake", "invite_token": invite["token"]}
+    )
+    admin_headers = {"Authorization": f"Bearer {login.json()['token']}"}
+    resp = await client.post(
+        "/create-invite", json={"email": "new@example.com"}, headers=admin_headers
+    )
+    assert resp.status_code == 201
+
+
+async def test_remove_member_revokes_login(client, monkeypatch):
+    await _login_as_member(client, monkeypatch)
+
+    resp = await client.post(
+        "/remove-member", json={"email": "invitee@example.com"}, headers=AUTH_HEADERS
+    )
+    assert resp.status_code == 204
+    assert (await client.get("/list-members", headers=AUTH_HEADERS)).json() == []
+
+    # Their invite was consumed and the member row is gone: login now 403s.
+    _google_as(monkeypatch, "invitee@example.com")
+    resp = await client.post("/auth/google", json={"id_token": "fake"})
+    assert resp.status_code == 403
+
+    # Unknown member 404s.
+    resp = await client.post(
+        "/remove-member", json={"email": "ghost@example.com"}, headers=AUTH_HEADERS
+    )
+    assert resp.status_code == 404
+
+
+async def test_cannot_remove_yourself(client, monkeypatch):
+    _google_as(monkeypatch, "admin@example.com")
+    login = await client.post("/auth/google", json={"id_token": "fake"})
+    session_headers = {"Authorization": f"Bearer {login.json()['token']}"}
+    resp = await client.post(
+        "/remove-member", json={"email": "admin@example.com"}, headers=session_headers
+    )
+    assert resp.status_code == 403
+    assert len((await client.get("/list-members", headers=AUTH_HEADERS)).json()) == 1
+
+
+async def test_expired_invites_are_not_listed_and_reinvite_regenerates(client):
+    invite = await _create_invite(client)
+    from architeq_api import db as db_module
+    from architeq_api.models import WorkspaceInvite
+
+    async with db_module.session_factory()() as session:
+        row = await session.get(WorkspaceInvite, invite["invite_id"])
+        row.expires_at_ms = 1
+        await session.commit()
+
+    assert (await client.get("/list-invites", headers=AUTH_HEADERS)).json() == []
+    # Re-inviting revives the hidden row instead of conflicting with it.
+    fresh = await _create_invite(client)
+    assert fresh["invite_id"] == invite["invite_id"]
+    listed = (await client.get("/list-invites", headers=AUTH_HEADERS)).json()
+    assert [i["invite_id"] for i in listed] == [invite["invite_id"]]
+
+
+async def test_allowlisted_login_prefers_first_workspace_over_invited_one(
+    client, other_workspace, monkeypatch
+):
+    """Allowlist keeps its pre-invites guarantee: plain logins by allowlisted
+    emails always land on the first workspace, even after accepting an invite
+    elsewhere."""
+    from tests.conftest import OTHER_AUTH_HEADERS
+
+    resp = await client.post(
+        "/create-invite", json={"email": "admin@example.com"}, headers=OTHER_AUTH_HEADERS
+    )
+    invite = resp.json()
+    _google_as(monkeypatch, "admin@example.com")
+    accept = await client.post(
+        "/auth/google", json={"id_token": "fake", "invite_token": invite["token"]}
+    )
+    assert accept.json()["workspace_id"] == other_workspace
+
+    plain = await client.post("/auth/google", json={"id_token": "fake"})
+    assert plain.json()["workspace_id"] == WORKSPACE_ID

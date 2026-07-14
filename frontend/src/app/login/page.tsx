@@ -46,29 +46,33 @@ export default function LoginPage() {
   // Invite links land here as /login?invite=<token>; the token rides along on
   // /auth/google, where a matching Google email redeems the invite. Read via
   // window.location (not useSearchParams) to skip the Suspense requirement.
+  // This state only drives the banner and the redirect guard — the POST reads
+  // the URL directly (see handleCredential).
   const [inviteToken, setInviteToken] = useState<string | null>(null);
   useEffect(() => {
-    setInviteToken(new URLSearchParams(window.location.search).get("invite"));
-  }, []);
-
-  // Already signed in? Straight to the dashboard — unless following an invite
-  // link, which may belong to a different Google account.
-  useEffect(() => {
-    const hasInvite = new URLSearchParams(window.location.search).has("invite");
-    if (!hasInvite && getValidSession()) router.replace("/agents");
+    const token = new URLSearchParams(window.location.search).get("invite");
+    setInviteToken(token);
+    // Already signed in? Straight to the dashboard — unless following an
+    // invite link, which may belong to a different Google account.
+    if (!token && getValidSession()) router.replace("/agents");
   }, [router]);
 
   const handleCredential = useCallback(
     async (response: GisCredentialResponse) => {
       setError(null);
       setBusy(true);
+      // Read the invite token from the URL at credential time, not from
+      // state: next/script's onReady fires the first render's initGoogle
+      // exactly once on fresh loads, so a state value captured here would
+      // still be the initial null and the invite would silently be dropped.
+      const inviteParam = new URLSearchParams(window.location.search).get("invite");
       try {
         const res = await fetch(`${API}/auth/google`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             id_token: response.credential,
-            ...(inviteToken ? { invite_token: inviteToken } : {}),
+            ...(inviteParam ? { invite_token: inviteParam } : {}),
           }),
         });
         if (res.ok) {
@@ -122,7 +126,7 @@ export default function LoginPage() {
         setBusy(false);
       }
     },
-    [router, inviteToken],
+    [router],
   );
 
   const initGoogle = useCallback(() => {

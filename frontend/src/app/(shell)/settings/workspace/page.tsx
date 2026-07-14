@@ -11,6 +11,7 @@ import {
   getSessionSnapshot,
   subscribeSession,
 } from "@/lib/auth";
+import { useCopied } from "@/lib/useCopied";
 import { Check, Copy } from "lucide-react";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 
@@ -48,7 +49,7 @@ export default function WorkspacePage() {
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [invites, setInvites] = useState<WorkspaceInvite[]>([]);
   const [inviteOpen, setInviteOpen] = useState(false);
-  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const { copiedKey, copy } = useCopied();
 
   const session = useSyncExternalStore(
     subscribeSession,
@@ -58,6 +59,9 @@ export default function WorkspacePage() {
 
   const refreshMembers = useCallback(() => {
     api.listMembers().then(setMembers).catch(() => {});
+  }, []);
+  // list-invites is owner/admin-only; plain members just see no invite rows.
+  const refreshInvites = useCallback(() => {
     api.listInvites().then(setInvites).catch(() => {});
   }, []);
 
@@ -67,7 +71,8 @@ export default function WorkspacePage() {
       .then((ws) => setName(ws.name))
       .catch(() => {}); // backend banner covers unreachable
     refreshMembers();
-  }, [refreshMembers]);
+    refreshInvites();
+  }, [refreshMembers, refreshInvites]);
 
   const save = async () => {
     setSaving(true);
@@ -86,15 +91,18 @@ export default function WorkspacePage() {
     }
   };
 
-  const copyLink = async (invite: WorkspaceInvite) => {
-    await navigator.clipboard.writeText(inviteLink(invite));
-    setCopiedId(invite.invite_id);
-    setTimeout(() => setCopiedId(null), 2000);
-  };
-
   const revoke = async (invite: WorkspaceInvite) => {
     try {
       await api.revokeInvite(invite.invite_id);
+    } catch {
+      // refetch below reconciles either way
+    }
+    refreshInvites();
+  };
+
+  const removeMember = async (member: WorkspaceMember) => {
+    try {
+      await api.removeMember(member.email);
     } catch {
       // refetch below reconciles either way
     }
@@ -153,9 +161,16 @@ export default function WorkspacePage() {
                       {m.name && <span className="ml-1.5 text-sub">{m.name}</span>}
                     </span>
                   </span>
-                  <Badge tone={m.role === "owner" ? "blue" : "gray"}>
-                    {ROLE_LABEL[m.role] ?? m.role}
-                  </Badge>
+                  <span className="flex items-center gap-1.5">
+                    <Badge tone={m.role === "owner" ? "blue" : "gray"}>
+                      {ROLE_LABEL[m.role] ?? m.role}
+                    </Badge>
+                    {members.length > 0 && m.email !== session?.email && (
+                      <Button size="sm" variant="ghost" onClick={() => removeMember(m)}>
+                        Remove
+                      </Button>
+                    )}
+                  </span>
                 </div>
               ))}
               {invites.map((inv) => (
@@ -174,13 +189,17 @@ export default function WorkspacePage() {
                   </span>
                   <span className="flex items-center gap-1.5">
                     <Badge tone="outline">Pending</Badge>
-                    <Button size="sm" variant="ghost" onClick={() => copyLink(inv)}>
-                      {copiedId === inv.invite_id ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => copy(inviteLink(inv), inv.invite_id)}
+                    >
+                      {copiedKey === inv.invite_id ? (
                         <Check className="size-3.5" />
                       ) : (
                         <Copy className="size-3.5" />
                       )}
-                      {copiedId === inv.invite_id ? "Copied" : "Copy link"}
+                      {copiedKey === inv.invite_id ? "Copied" : "Copy link"}
                     </Button>
                     <Button size="sm" variant="ghost" onClick={() => revoke(inv)}>
                       Revoke
@@ -221,7 +240,7 @@ export default function WorkspacePage() {
       <InviteMemberModal
         open={inviteOpen}
         onClose={() => setInviteOpen(false)}
-        onInvited={refreshMembers}
+        onInvited={refreshInvites}
       />
     </div>
   );
