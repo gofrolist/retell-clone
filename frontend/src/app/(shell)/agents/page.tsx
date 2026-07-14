@@ -88,6 +88,8 @@ function FolderModal({
 
 function FoldersPanel({
   folders,
+  error,
+  onRetry,
   selectedId,
   onSelect,
   onAdd,
@@ -95,6 +97,8 @@ function FoldersPanel({
   onDelete,
 }: {
   folders: AgentFolder[];
+  error: string | null;
+  onRetry: () => void;
   selectedId: string | null;
   onSelect: (folderId: string | null) => void;
   onAdd: () => void;
@@ -181,8 +185,17 @@ function FoldersPanel({
           )}
         </div>
       ))}
-      {folders.length === 0 && (
-        <p className="px-3 py-1.5 text-[12.5px] text-faint">No folders yet.</p>
+      {error ? (
+        <p className="px-3 py-1.5 text-[12.5px] text-bad">
+          Couldn&apos;t load folders.{" "}
+          <button onClick={onRetry} className="font-medium underline cursor-pointer">
+            Retry
+          </button>
+        </p>
+      ) : (
+        folders.length === 0 && (
+          <p className="px-3 py-1.5 text-[12.5px] text-faint">No folders yet.</p>
+        )
       )}
     </div>
   );
@@ -253,7 +266,12 @@ export default function AgentsPage() {
     () => api.listAgents(),
   );
   const agents = useMemo(() => data ?? [], [data]);
-  const { data: folderData, setData: setFolders } = useApiData(() => api.listAgentFolders());
+  const {
+    data: folderData,
+    setData: setFolders,
+    error: foldersError,
+    reload: reloadFolders,
+  } = useApiData(() => api.listAgentFolders());
   const folders = useMemo(() => folderData ?? [], [folderData]);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [folderModal, setFolderModal] = useState<FolderModalState>(null);
@@ -272,6 +290,9 @@ export default function AgentsPage() {
       const rest = (prev ?? []).filter((f) => f.folder_id !== folder.folder_id);
       return [...rest, folder].sort((a, b) => a.folder_name.localeCompare(b.folder_name));
     });
+    // Converge to the server's ordering (DB collation can differ from
+    // localeCompare on edge cases); the optimistic list stays until it lands.
+    void reloadFolders();
   };
 
   const deleteFolder = async (folder: AgentFolder) => {
@@ -333,6 +354,9 @@ export default function AgentsPage() {
       if (!payload.voice_id) payload.voice_id = "cartesia-sonic-english";
 
       await api.createAgent(payload);
+      // Imported agents land in no folder — jump back to All Agents so the
+      // new row is visible instead of silently filtered out.
+      setSelectedFolderId(null);
       await reload();
     } catch (e) {
       setImportError(
@@ -360,6 +384,8 @@ export default function AgentsPage() {
       panel={
         <FoldersPanel
           folders={folders}
+          error={foldersError}
+          onRetry={reloadFolders}
           selectedId={selectedFolderId}
           onSelect={setSelectedFolderId}
           onAdd={() => setFolderModal({ mode: "create" })}

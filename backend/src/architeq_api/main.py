@@ -40,7 +40,11 @@ def _apply_column_backfills(sync_conn) -> None:
     """
     agent_cols = {c["name"] for c in inspect(sync_conn).get_columns("agents")}
     if "folder_id" not in agent_cols:
-        sync_conn.execute(text("ALTER TABLE agents ADD COLUMN folder_id VARCHAR(64)"))
+        # IF NOT EXISTS guards concurrent replica boots racing past the
+        # inspect() check (Postgres only; SQLite dev/test DBs are
+        # single-process and get the column from create_all anyway).
+        guard = "IF NOT EXISTS " if sync_conn.dialect.name == "postgresql" else ""
+        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}folder_id VARCHAR(64)"))
         sync_conn.execute(
             text("CREATE INDEX IF NOT EXISTS ix_agents_folder_id ON agents (folder_id)")
         )

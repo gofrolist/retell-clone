@@ -155,6 +155,7 @@ class AgentFolder(Base):
     """Dashboard-only grouping for agents (Retell's sidebar folders)."""
 
     __tablename__ = "agent_folders"
+    __table_args__ = (UniqueConstraint("workspace_id", "folder_name"),)
 
     folder_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_folder_id)
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
