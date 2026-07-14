@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/gofrolist/retell-clone/compare/v0.3.1...v0.4.0) (2026-07-14)
+
+
+### Features
+
+* live cost/latency/token estimates in agent details header ([#70](https://github.com/gofrolist/retell-clone/issues/70)) ([aa950ce](https://github.com/gofrolist/retell-clone/commit/aa950cea720d8152100e7d65d2175e24eed77b2b))
+* working agent folders ([#68](https://github.com/gofrolist/retell-clone/issues/68)) ([dc4d1bc](https://github.com/gofrolist/retell-clone/commit/dc4d1bcfb0101574002d6fe0fa7a6a53b6e2fe54))
+
 ## [0.3.1](https://github.com/gofrolist/retell-clone/compare/v0.3.0...v0.3.1) (2026-07-14)
 
 
