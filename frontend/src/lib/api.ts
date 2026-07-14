@@ -92,10 +92,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     setBackendStatus("unreachable");
     throw new ApiError(`Backend unreachable at ${API_BASE}`, 0);
   }
-  if (res.status === 401 || res.status === 403) {
+  if (res.status === 401) {
     setBackendStatus("unauthorized");
     throw new ApiError("Not authorized — sign in or set NEXT_PUBLIC_API_KEY", res.status);
   }
+  // 403 means authenticated but forbidden (e.g. a role gate): the backend is
+  // fine and the credential works, so don't flip the global banner — surface
+  // the backend's reason to the caller instead.
   setBackendStatus("ok");
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`;
@@ -104,6 +107,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       if (body?.detail) detail = String(body.detail);
     } catch {
       // non-JSON error body; keep the status line
+    }
+    if (res.status === 403 && detail === `403 ${res.statusText}`) {
+      detail = "You don't have permission to do this";
     }
     throw new ApiError(detail, res.status);
   }

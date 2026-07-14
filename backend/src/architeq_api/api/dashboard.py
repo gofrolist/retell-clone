@@ -34,6 +34,7 @@ from ..models import (
 )
 from ..schemas import CompatModel
 from ..sessions import email_from_authorization
+from .auth_google import _email_allowed
 
 router = APIRouter(tags=["dashboard"])
 
@@ -541,7 +542,9 @@ async def require_member_manager(
 
     A raw API key carries no personal identity and is operator credentials,
     so it manages members unrestricted (also the dev-mode path). A session
-    JWT must belong to an owner or admin of the workspace.
+    JWT must belong to an owner or admin of the workspace — or an allowlisted
+    email, which is owner-by-definition: its member row is only written at
+    login, so sessions issued before that row exists must not be locked out.
     """
     email = email_from_authorization(authorization)
     if email is None:
@@ -552,7 +555,7 @@ async def require_member_manager(
             WorkspaceMember.email == email,
         )
     )
-    if member is None or member.role not in ("owner", "admin"):
+    if (member is None or member.role not in ("owner", "admin")) and not _email_allowed(email):
         raise HTTPException(403, detail="Only workspace owners and admins can manage members")
     return MemberManager(api_key, email)
 
