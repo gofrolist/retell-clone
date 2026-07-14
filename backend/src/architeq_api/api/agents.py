@@ -56,6 +56,7 @@ _MUTABLE_FIELDS = {
     "denoising_mode",
     "opt_out_sensitive_data_storage",
     "response_engine",
+    "folder_id",
 }
 
 

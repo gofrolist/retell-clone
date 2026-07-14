@@ -6,6 +6,7 @@ from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from sqlalchemy import inspect, text
 
 from .api import (
     agents,
@@ -31,12 +32,28 @@ from .security import RateLimitMiddleware, SecurityHeadersMiddleware
 logging.basicConfig(level=logging.INFO)
 
 
+def _apply_column_backfills(sync_conn) -> None:
+    """Additive schema fixups for columns added after a table shipped.
+
+    create_all only creates missing *tables*, so pre-existing databases need
+    new columns added by hand. Everything here must be idempotent.
+    """
+    agent_cols = {c["name"] for c in inspect(sync_conn).get_columns("agents")}
+    if "folder_id" not in agent_cols:
+        sync_conn.execute(text("ALTER TABLE agents ADD COLUMN folder_id VARCHAR(64)"))
+        sync_conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_agents_folder_id ON agents (folder_id)")
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Dev convenience; production schema is managed by alembic.
+    # Dev convenience; production schema is managed the same way (additive
+    # create_all + column backfills on boot).
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_apply_column_backfills)
     yield
     await engine.dispose()
 

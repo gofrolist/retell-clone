@@ -12,7 +12,7 @@ from typing import Any, NamedTuple
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +21,8 @@ from ..config import get_settings
 from ..db import get_session
 from ..ids import new_api_key, new_invite_token
 from ..models import (
+    Agent,
+    AgentFolder,
     Alert,
     ApiKey,
     Call,
@@ -117,6 +119,94 @@ async def call_analytics(
         "user_sentiment": _breakdown(sentiments),
         "phone_direction": _breakdown(directions),
     }
+
+
+# -------------------------------------------------------------- agent folders
+
+
+def _folder_to_dict(f: AgentFolder) -> dict[str, Any]:
+    return {
+        "folder_id": f.folder_id,
+        "folder_name": f.folder_name,
+        "last_modification_timestamp": f.last_modification_timestamp,
+    }
+
+
+class FolderRequest(CompatModel):
+    folder_name: str = Field(min_length=1, max_length=255)
+
+    @field_validator("folder_name")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("folder_name must not be blank")
+        return v
+
+
+async def _get_folder(session: AsyncSession, folder_id: str, workspace_id: str) -> AgentFolder:
+    folder = await session.get(AgentFolder, folder_id)
+    if folder is None or folder.workspace_id != workspace_id:
+        raise HTTPException(404, detail="Folder not found")
+    return folder
+
+
+@router.get("/list-agent-folders")
+async def list_agent_folders(
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    folders = (
+        await session.scalars(
+            select(AgentFolder)
+            .where(AgentFolder.workspace_id == api_key.workspace_id)
+            .order_by(AgentFolder.folder_name)
+        )
+    ).all()
+    return [_folder_to_dict(f) for f in folders]
+
+
+@router.post("/create-agent-folder", status_code=201)
+async def create_agent_folder(
+    body: FolderRequest,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    folder = AgentFolder(workspace_id=api_key.workspace_id, folder_name=body.folder_name)
+    session.add(folder)
+    await session.commit()
+    return _folder_to_dict(folder)
+
+
+@router.patch("/update-agent-folder/{folder_id}")
+async def update_agent_folder(
+    folder_id: str,
+    body: FolderRequest,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    folder = await _get_folder(session, folder_id, api_key.workspace_id)
+    folder.folder_name = body.folder_name
+    folder.last_modification_timestamp = now_ms()
+    await session.commit()
+    return _folder_to_dict(folder)
+
+
+@router.delete("/delete-agent-folder/{folder_id}", status_code=204)
+async def delete_agent_folder(
+    folder_id: str,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    folder = await _get_folder(session, folder_id, api_key.workspace_id)
+    # Agents fall back to "no folder" — deleting a folder never deletes agents.
+    await session.execute(
+        update(Agent)
+        .where(Agent.workspace_id == api_key.workspace_id, Agent.folder_id == folder_id)
+        .values(folder_id=None)
+    )
+    await session.delete(folder)
+    await session.commit()
 
 
 # ------------------------------------------------------------------- contacts

@@ -564,6 +564,14 @@ export function demoResponse<T>(path: string, init?: RequestInit): T {
   const route = path.split("?")[0];
 
   if (route === "/list-agents") return mockAgents.map(rawAgent) as T;
+  if (route === "/list-agent-folders")
+    return [
+      {
+        folder_id: "folder_demo000000000000000001",
+        folder_name: "Template Agents",
+        last_modification_timestamp: NOW,
+      },
+    ] as T;
   if (route.startsWith("/get-agent/")) {
     const a = mockAgents.find((x) => x.agent_id === route.split("/").pop());
     if (!a) throw new Error("Agent not found");

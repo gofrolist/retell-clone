@@ -59,6 +59,67 @@ async def test_contact_crud_and_call_stats(client):
     assert (await client.get("/list-contacts", headers=AUTH_HEADERS)).json() == []
 
 
+async def test_agent_folder_crud_and_assignment(client):
+    created = await client.post(
+        "/create-agent-folder", headers=AUTH_HEADERS, json={"folder_name": "  Template Agents  "}
+    )
+    assert created.status_code == 201
+    folder = created.json()
+    assert folder["folder_name"] == "Template Agents"
+    folder_id = folder["folder_id"]
+    assert folder_id.startswith("folder_")
+
+    listed = (await client.get("/list-agent-folders", headers=AUTH_HEADERS)).json()
+    assert [f["folder_id"] for f in listed] == [folder_id]
+
+    # Agents move into a folder through the normal update-agent PATCH.
+    moved = await client.patch(
+        f"/update-agent/{AGENT_ID}", headers=AUTH_HEADERS, json={"folder_id": folder_id}
+    )
+    assert moved.status_code == 200
+    assert moved.json()["folder_id"] == folder_id
+
+    renamed = await client.patch(
+        f"/update-agent-folder/{folder_id}", headers=AUTH_HEADERS, json={"folder_name": "Prod"}
+    )
+    assert renamed.json()["folder_name"] == "Prod"
+
+    # Deleting the folder unassigns its agents but keeps them.
+    assert (
+        await client.delete(f"/delete-agent-folder/{folder_id}", headers=AUTH_HEADERS)
+    ).status_code == 204
+    assert (await client.get("/list-agent-folders", headers=AUTH_HEADERS)).json() == []
+    agent = (await client.get(f"/get-agent/{AGENT_ID}", headers=AUTH_HEADERS)).json()
+    assert agent["folder_id"] is None
+
+
+async def test_agent_folder_rejects_blank_name(client):
+    resp = await client.post(
+        "/create-agent-folder", headers=AUTH_HEADERS, json={"folder_name": "  "}
+    )
+    assert resp.status_code == 422
+
+
+async def test_agent_folders_are_workspace_scoped(client, other_workspace):
+    folder_id = (
+        await client.post(
+            "/create-agent-folder", headers=AUTH_HEADERS, json={"folder_name": "Mine"}
+        )
+    ).json()["folder_id"]
+
+    assert (await client.get("/list-agent-folders", headers=OTHER_AUTH_HEADERS)).json() == []
+    assert (
+        await client.patch(
+            f"/update-agent-folder/{folder_id}",
+            headers=OTHER_AUTH_HEADERS,
+            json={"folder_name": "Hijack"},
+        )
+    ).status_code == 404
+    assert (
+        await client.delete(f"/delete-agent-folder/{folder_id}", headers=OTHER_AUTH_HEADERS)
+    ).status_code == 404
+
+
 async def test_alert_crud(client):
     created = await client.post(
         "/create-alert",

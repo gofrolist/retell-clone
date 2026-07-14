@@ -91,6 +91,8 @@ class CreateAgentRequest(CompatModel):
     stt_mode: str | None = None
     denoising_mode: str | None = None
     opt_out_sensitive_data_storage: bool | None = None
+    # Architeq extra (dashboard folders); absent from Retell's public API.
+    folder_id: str | None = None
 
 
 class CreatePhoneNumberRequest(CompatModel):
@@ -228,6 +230,8 @@ def agent_to_dict(agent: Agent) -> dict[str, Any]:
         "denoising_mode": agent.denoising_mode,
         "opt_out_sensitive_data_storage": agent.opt_out_sensitive_data_storage,
         "last_modification_timestamp": agent.last_modification_timestamp,
+        # Architeq extra (dashboard folders); additive, not in Retell's shape.
+        "folder_id": agent.folder_id,
     }
 
 
