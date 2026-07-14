@@ -8,6 +8,9 @@ import type { ReactNode } from "react";
  * driven by :hover / :focus-within on the wrapper, so it needs no JS state.
  * Unlike Tooltip it hosts arbitrary content rows, so the panel is opaque,
  * bordered, and interactive-width.
+ * The gap below the trigger is padding inside the hover box (not margin), so
+ * the pointer can travel into the panel without dropping :hover; className
+ * lands on the inner visual card, unlike Tooltip where it hits the wrapper.
  */
 export default function HoverCard({
   trigger,
@@ -29,12 +32,13 @@ export default function HoverCard({
       <div
         role="tooltip"
         className={cn(
-          "invisible absolute left-1/2 top-full z-30 mt-1.5 w-72 -translate-x-1/2 rounded-xl border border-line bg-card p-2 opacity-0 shadow-lg transition-opacity",
+          "invisible absolute left-1/2 top-full z-30 w-72 -translate-x-1/2 pt-1.5 opacity-0 transition-opacity",
           "group-hover/card:visible group-hover/card:opacity-100 group-focus-within/card:visible group-focus-within/card:opacity-100",
-          className,
         )}
       >
-        {children}
+        <div className={cn("rounded-xl border border-line bg-card p-2 shadow-lg", className)}>
+          {children}
+        </div>
       </div>
     </span>
   );
