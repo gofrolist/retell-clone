@@ -10,6 +10,8 @@
 // 2026-07-14; update in place when providers reprice.
 
 import type { RawLlm } from "@/lib/api";
+import type { LlmModelId } from "@/lib/models";
+import { formatCost } from "@/lib/utils";
 
 export interface EstimateRow {
   label: string;
@@ -33,16 +35,27 @@ interface LlmRate {
 // https://ai.google.dev/gemini-api/docs/pricing
 // Gemini 3.x output prices include thinking tokens, so real output cost per
 // visible token can run higher — treat these as a list-price floor.
-const LLM_RATES: Record<string, LlmRate> = {
+// `satisfies` ties this to the models.ts catalog: adding a model there
+// without a rate here is a compile error.
+const LLM_RATES = {
   "gemini-3.5-flash": { inputPer1M: 1.5, outputPer1M: 9.0, ttftMs: [350, 600] },
   "gemini-3.1-flash-lite": { inputPer1M: 0.25, outputPer1M: 1.5, ttftMs: [250, 450] },
   "gemini-2.5-pro": { inputPer1M: 1.25, outputPer1M: 10.0, ttftMs: [600, 1200] },
   "gemini-2.5-flash": { inputPer1M: 0.3, outputPer1M: 2.5, ttftMs: [350, 600] },
   "gemini-2.5-flash-lite": { inputPer1M: 0.1, outputPer1M: 0.4, ttftMs: [250, 450] },
-};
+} satisfies Record<LlmModelId, LlmRate>;
 
 // Catalog drift safety net: unknown model ids estimate as gemini-2.5-flash.
 const DEFAULT_LLM_RATE: LlmRate = LLM_RATES["gemini-2.5-flash"];
+
+// The wire `model` is a free-form string, so guard the lookup with
+// Object.hasOwn: a bare index would resolve Object.prototype keys (a model
+// named "toString" would return the inherited function and crash the math).
+function getLlmRate(model: string): LlmRate {
+  return Object.hasOwn(LLM_RATES, model)
+    ? (LLM_RATES as Record<string, LlmRate>)[model]
+    : DEFAULT_LLM_RATE;
+}
 
 // Assumption-based turn/prompt model — our own estimates, no external source.
 const CHARS_PER_TOKEN = 4; // standard rough heuristic for English text
@@ -118,7 +131,7 @@ export function estimateCost(
 ): Estimate {
   const rows: EstimateRow[] = [];
   if (llm && tokens) {
-    const rate = LLM_RATES[llm.model] ?? DEFAULT_LLM_RATE;
+    const rate = getLlmRate(llm.model);
     const perMin =
       TURNS_PER_MIN *
       ((tokens.max / 1e6) * rate.inputPer1M +
@@ -148,7 +161,7 @@ export function estimateLatency(llm: RawLlm | null): Estimate {
     { label: "Transcription", min: STT_LATENCY_MS[0], max: STT_LATENCY_MS[1] },
   ];
   if (llm) {
-    const rate = LLM_RATES[llm.model] ?? DEFAULT_LLM_RATE;
+    const rate = getLlmRate(llm.model);
     rows.push({ label: `LLM: ${llm.model}`, min: rate.ttftMs[0], max: rate.ttftMs[1] });
   }
   rows.push({
@@ -163,9 +176,12 @@ export function estimateLatency(llm: RawLlm | null): Estimate {
 }
 
 export function formatUsdPerMin(v: number): string {
-  return `$${v.toFixed(3)}/min`;
+  return `${formatCost(v)}/min`;
 }
 
 export function formatTokenValue(n: number): string {
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+  // M tier starts where the k tier would round to "1000.0k".
+  if (n >= 999_950) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
 }

@@ -72,12 +72,15 @@ export default function MetaRow({
   const tokens = estimateTokens(llm);
   const cost = estimateCost(llm, tokens);
   const latency = estimateLatency(llm);
+  // Sum the rows as displayed (each rounded to $0.001) so the breakdown
+  // always adds up to the total shown on screen.
+  const costTotal = cost.rows.reduce((s, r) => s + Number(r.max.toFixed(3)), 0);
 
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-sub">
       <span className="font-medium text-ink">Agent Details</span>
-      <HoverCard trigger={<Chip label="Cost" value={formatUsdPerMin(cost.max)} />}>
-        <Headline label="Cost per minute" value={formatUsdPerMin(cost.max)} />
+      <HoverCard trigger={<Chip label="Cost" value={formatUsdPerMin(costTotal)} />}>
+        <Headline label="Estimated Cost per Minute" value={formatUsdPerMin(costTotal)} />
         <Rows estimate={cost} format={(_, max) => formatUsdPerMin(max)} />
       </HoverCard>
       <span aria-hidden>·</span>
@@ -102,8 +105,9 @@ export default function MetaRow({
             />
             {tokens.max > TOKEN_WARNING_THRESHOLD && (
               <p className="mt-2 px-1 text-[12px] font-medium text-amber-600">
-                Prompts exceeding {TOKEN_WARNING_THRESHOLD.toLocaleString("en-US")}{" "}
-                tokens significantly increase hallucination risk.
+                Estimated context exceeding{" "}
+                {TOKEN_WARNING_THRESHOLD.toLocaleString("en-US")} tokens
+                significantly increases hallucination risk.
               </p>
             )}
             <Rows estimate={tokens} format={tokenRange} />
