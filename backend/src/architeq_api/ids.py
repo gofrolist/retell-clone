@@ -66,3 +66,11 @@ def new_alert_id() -> str:
 
 def new_cohort_id() -> str:
     return f"cohort_{_hex(24)}"
+
+
+def new_invite_id() -> str:
+    return f"invite_{_hex(24)}"
+
+
+def new_invite_token() -> str:
+    return secrets.token_urlsafe(32)

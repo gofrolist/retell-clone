@@ -261,6 +261,29 @@ export interface Workspace {
   webhook_url: string | null;
 }
 
+export interface WorkspaceMember {
+  email: string;
+  name: string | null;
+  role: string; // owner | admin | member
+  created_at_ms: number;
+}
+
+export interface WorkspaceInvite {
+  invite_id: string;
+  email: string;
+  role: string;
+  status: string;
+  token: string;
+  invited_by: string | null;
+  created_at_ms: number;
+  expires_at_ms: number;
+}
+
+/** The link an invitee opens; login consumes the token via /auth/google. */
+export function inviteLink(invite: WorkspaceInvite): string {
+  return `${window.location.origin}/login?invite=${encodeURIComponent(invite.token)}`;
+}
+
 // ----------------------------------------------------------------- adapters
 
 function titleCase(s: string): string {
@@ -540,4 +563,12 @@ export const api = {
   getWorkspace: () => request<Workspace>("/workspace"),
   updateWorkspace: (body: { name?: string; webhook_url?: string | null }) =>
     request<Workspace>("/workspace", patch(body)),
+
+  listMembers: () => request<WorkspaceMember[]>("/list-members"),
+  listInvites: () => request<WorkspaceInvite[]>("/list-invites"),
+  createInvite: (body: { email: string; role?: string }) =>
+    request<WorkspaceInvite>("/create-invite", post(body)),
+  revokeInvite: (inviteId: string) =>
+    request<void>(`/revoke-invite/${encodeURIComponent(inviteId)}`, post({})),
+  removeMember: (email: string) => request<void>("/remove-member", post({ email })),
 };

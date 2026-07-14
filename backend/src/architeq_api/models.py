@@ -1,7 +1,19 @@
 import time
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, Boolean, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from .ids import (
@@ -13,6 +25,8 @@ from .ids import (
     new_cohort_id,
     new_contact_id,
     new_conversation_flow_id,
+    new_invite_id,
+    new_invite_token,
     new_knowledge_base_id,
     new_llm_id,
     new_phone_number_id,
@@ -56,6 +70,61 @@ class ApiKey(Base):
     created_at_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
 
     workspace: Mapped[Workspace] = relationship(back_populates="api_keys")
+
+
+class WorkspaceMember(Base):
+    """Dashboard user with access to a workspace.
+
+    Rows are created on first Google login (allowlisted emails become owners)
+    or by accepting an invite. Membership itself grants dashboard login, so
+    invited users don't need to be on the email allowlist.
+    """
+
+    __tablename__ = "workspace_members"
+    __table_args__ = (UniqueConstraint("workspace_id", "email"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    email: Mapped[str] = mapped_column(String(320), index=True)  # stored lowercase
+    name: Mapped[str | None] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(16), default="member")  # owner | admin | member
+    created_at_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+
+
+class WorkspaceInvite(Base):
+    """Pending invitation to join a workspace, redeemed via Google Sign-In.
+
+    Link-based: the dashboard builds /login?invite=<token> for the inviter to
+    share. The token is not the gate — accepting requires signing in with the
+    exact invited email (Google-verified), mirroring usan-voice-engine.
+    Expiry is lazy (checked at accept); accepted/revoked rows are kept as
+    history, and a partial unique index allows one live invite per email.
+    """
+
+    __tablename__ = "workspace_invites"
+    __table_args__ = (
+        Index(
+            "uq_workspace_invites_pending",
+            "workspace_id",
+            "email",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+            sqlite_where=text("status = 'pending'"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_invite_id)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    email: Mapped[str] = mapped_column(String(320))  # stored lowercase
+    role: Mapped[str] = mapped_column(String(16), default="member")  # admin | member
+    token: Mapped[str] = mapped_column(
+        String(64), unique=True, index=True, default=new_invite_token
+    )
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|accepted|revoked
+    invited_by: Mapped[str | None] = mapped_column(String(320))
+    created_at_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+    expires_at_ms: Mapped[int] = mapped_column(BigInteger)
+    accepted_at_ms: Mapped[int | None] = mapped_column(BigInteger)
 
 
 class RetellLLM(Base):

@@ -8,15 +8,18 @@ changes the public Retell-compatible surface.
 
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, NamedTuple
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from pydantic import Field, field_validator
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import hash_key, require_api_key
+from ..config import get_settings
 from ..db import get_session
-from ..ids import new_api_key
+from ..ids import new_api_key, new_invite_token
 from ..models import (
     Alert,
     ApiKey,
@@ -25,9 +28,12 @@ from ..models import (
     QaCohort,
     WebhookDelivery,
     Workspace,
+    WorkspaceInvite,
+    WorkspaceMember,
     now_ms,
 )
 from ..schemas import CompatModel
+from ..sessions import email_from_authorization
 
 router = APIRouter(tags=["dashboard"])
 
@@ -497,3 +503,204 @@ async def update_workspace(
             setattr(ws, field, payload[field])
     await session.commit()
     return {"workspace_id": ws.id, "name": ws.name, "webhook_url": ws.webhook_url}
+
+
+# --------------------------------------------------------- members & invites
+
+_EMAIL_RE = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+
+
+def _member_json(m: WorkspaceMember) -> dict[str, Any]:
+    return {"email": m.email, "name": m.name, "role": m.role, "created_at_ms": m.created_at_ms}
+
+
+def _invite_json(inv: WorkspaceInvite) -> dict[str, Any]:
+    return {
+        "invite_id": inv.id,
+        "email": inv.email,
+        "role": inv.role,
+        "status": inv.status,
+        "token": inv.token,
+        "invited_by": inv.invited_by,
+        "created_at_ms": inv.created_at_ms,
+        "expires_at_ms": inv.expires_at_ms,
+    }
+
+
+class MemberManager(NamedTuple):
+    api_key: ApiKey
+    email: str | None  # None when authenticated with a raw API key
+
+
+async def require_member_manager(
+    authorization: str | None = Header(default=None),
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+) -> MemberManager:
+    """Gate member/invite management to owners and admins.
+
+    A raw API key carries no personal identity and is operator credentials,
+    so it manages members unrestricted (also the dev-mode path). A session
+    JWT must belong to an owner or admin of the workspace.
+    """
+    email = email_from_authorization(authorization)
+    if email is None:
+        return MemberManager(api_key, None)
+    member = await session.scalar(
+        select(WorkspaceMember).where(
+            WorkspaceMember.workspace_id == api_key.workspace_id,
+            WorkspaceMember.email == email,
+        )
+    )
+    if member is None or member.role not in ("owner", "admin"):
+        raise HTTPException(403, detail="Only workspace owners and admins can manage members")
+    return MemberManager(api_key, email)
+
+
+@router.get("/list-members")
+async def list_members(
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    rows = (
+        await session.scalars(
+            select(WorkspaceMember)
+            .where(WorkspaceMember.workspace_id == api_key.workspace_id)
+            .order_by(WorkspaceMember.created_at_ms)
+        )
+    ).all()
+    return [_member_json(m) for m in rows]
+
+
+@router.get("/list-invites")
+async def list_invites(
+    manager: MemberManager = Depends(require_member_manager),
+    session: AsyncSession = Depends(get_session),
+):
+    # Manager-only: the response carries live invite tokens. Expiry is lazy
+    # (nothing flips status), so filter expired rows here — re-inviting the
+    # same email regenerates the hidden row rather than conflicting with it.
+    rows = (
+        await session.scalars(
+            select(WorkspaceInvite)
+            .where(
+                WorkspaceInvite.workspace_id == manager.api_key.workspace_id,
+                WorkspaceInvite.status == "pending",
+                WorkspaceInvite.expires_at_ms > now_ms(),
+            )
+            .order_by(WorkspaceInvite.created_at_ms)
+        )
+    ).all()
+    return [_invite_json(inv) for inv in rows]
+
+
+class CreateInviteRequest(CompatModel):
+    email: str = Field(min_length=3, max_length=320, pattern=_EMAIL_RE)
+    role: str = Field(default="member", pattern="^(admin|member)$")
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _normalize_email(cls, v: Any) -> Any:
+        # Members and invites store emails lowercase; normalize before the
+        # pattern check so validation sees the stored form.
+        return v.strip().lower() if isinstance(v, str) else v
+
+
+@router.post("/create-invite", status_code=201)
+async def create_invite(
+    body: CreateInviteRequest,
+    manager: MemberManager = Depends(require_member_manager),
+    session: AsyncSession = Depends(get_session),
+):
+    email = body.email
+    workspace_id = manager.api_key.workspace_id
+    member = await session.scalar(
+        select(WorkspaceMember).where(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.email == email,
+        )
+    )
+    if member is not None:
+        raise HTTPException(409, detail=f"{email} is already a member of this workspace")
+
+    expires_at_ms = now_ms() + get_settings().invite_ttl_hours * 3_600_000
+
+    # Re-inviting an email with a live invite regenerates that row (fresh
+    # token + expiry) instead of stacking rows. Losing the partial-unique-
+    # index race to a concurrent create lands on the update path on retry.
+    for attempt in (1, 2):
+        invite = await session.scalar(
+            select(WorkspaceInvite).where(
+                WorkspaceInvite.workspace_id == workspace_id,
+                WorkspaceInvite.email == email,
+                WorkspaceInvite.status == "pending",
+            )
+        )
+        if invite is not None:
+            invite.token = new_invite_token()
+            invite.role = body.role
+            invite.expires_at_ms = expires_at_ms
+            invite.invited_by = manager.email or invite.invited_by
+        else:
+            invite = WorkspaceInvite(
+                workspace_id=workspace_id,
+                email=email,
+                role=body.role,
+                invited_by=manager.email,
+                expires_at_ms=expires_at_ms,
+            )
+            session.add(invite)
+        try:
+            await session.commit()
+            return _invite_json(invite)
+        except IntegrityError:
+            await session.rollback()
+            if attempt == 2:
+                raise HTTPException(409, detail="Invite is being modified concurrently") from None
+
+
+@router.post("/revoke-invite/{invite_id}", status_code=204)
+async def revoke_invite(
+    invite_id: str,
+    manager: MemberManager = Depends(require_member_manager),
+    session: AsyncSession = Depends(get_session),
+):
+    invite = await session.get(WorkspaceInvite, invite_id)
+    if invite is None or invite.workspace_id != manager.api_key.workspace_id:
+        raise HTTPException(404, detail="Invite not found")
+    if invite.status != "pending":
+        raise HTTPException(409, detail=f"Invite is already {invite.status}")
+    invite.status = "revoked"
+    await session.commit()
+
+
+class RemoveMemberRequest(CompatModel):
+    email: str = Field(min_length=3, max_length=320)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _normalize_email(cls, v: Any) -> Any:
+        return v.strip().lower() if isinstance(v, str) else v
+
+
+@router.post("/remove-member", status_code=204)
+async def remove_member(
+    body: RemoveMemberRequest,
+    manager: MemberManager = Depends(require_member_manager),
+    session: AsyncSession = Depends(get_session),
+):
+    """Offboarding: membership grants login, so removing the row (plus the
+    allowlist entry, for allowlisted emails) is what actually revokes access.
+    Existing sessions expire on their own TTL."""
+    if manager.email is not None and manager.email == body.email:
+        raise HTTPException(403, detail="You can't remove yourself from the workspace")
+    member = await session.scalar(
+        select(WorkspaceMember).where(
+            WorkspaceMember.workspace_id == manager.api_key.workspace_id,
+            WorkspaceMember.email == body.email,
+        )
+    )
+    if member is None:
+        raise HTTPException(404, detail="Member not found")
+    await session.delete(member)
+    await session.commit()

@@ -43,21 +43,37 @@ export default function LoginPage() {
   const buttonRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  // Already signed in? Straight to the dashboard.
+  // Invite links land here as /login?invite=<token>; the token rides along on
+  // /auth/google, where a matching Google email redeems the invite. Read via
+  // window.location (not useSearchParams) to skip the Suspense requirement.
+  // This state only drives the banner and the redirect guard — the POST reads
+  // the URL directly (see handleCredential).
+  const [inviteToken, setInviteToken] = useState<string | null>(null);
   useEffect(() => {
-    if (getValidSession()) router.replace("/agents");
+    const token = new URLSearchParams(window.location.search).get("invite");
+    setInviteToken(token);
+    // Already signed in? Straight to the dashboard — unless following an
+    // invite link, which may belong to a different Google account.
+    if (!token && getValidSession()) router.replace("/agents");
   }, [router]);
 
   const handleCredential = useCallback(
     async (response: GisCredentialResponse) => {
       setError(null);
       setBusy(true);
+      // Read the invite token from the URL at credential time, not from
+      // state: next/script's onReady fires the first render's initGoogle
+      // exactly once on fresh loads, so a state value captured here would
+      // still be the initial null and the invite would silently be dropped.
+      const inviteParam = new URLSearchParams(window.location.search).get("invite");
       try {
         const res = await fetch(`${API}/auth/google`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id_token: response.credential }),
+          body: JSON.stringify({
+            id_token: response.credential,
+            ...(inviteParam ? { invite_token: inviteParam } : {}),
+          }),
         });
         if (res.ok) {
           const data = (await res.json()) as {
@@ -153,6 +169,14 @@ export default function LoginPage() {
         <p className="mt-1 text-center text-[13px] text-sub">
           Build, deploy and monitor AI voice agents
         </p>
+
+        {inviteToken && (
+          <p className="mt-4 rounded-lg border border-line bg-app px-3 py-2 text-[12.5px] text-sub">
+            <span className="font-medium text-ink">You&apos;ve been invited.</span>{" "}
+            Sign in with the Google account the invite was sent to and
+            you&apos;ll join the workspace automatically.
+          </p>
+        )}
 
         <div className="mt-6 flex min-h-11 items-center justify-center">
           {GOOGLE_CLIENT_ID ? (

@@ -70,8 +70,11 @@ class Settings(BaseSettings):
     session_secret: str = ""
     session_ttl_seconds: int = 12 * 3600
     # Who may log into the dashboard: exact emails and/or whole domains.
+    # Workspace members (created via invites) may log in regardless.
     dashboard_allowed_emails: list[str] = []
     dashboard_allowed_domains: list[str] = []
+    # How long a workspace invite link stays redeemable.
+    invite_ttl_hours: int = 168
 
 
 @lru_cache

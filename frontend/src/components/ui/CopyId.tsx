@@ -1,8 +1,8 @@
 "use client";
 
+import { useCopied } from "@/lib/useCopied";
 import { cn } from "@/lib/utils";
 import { Check, Copy } from "lucide-react";
-import { useState } from "react";
 
 export default function CopyId({
   value,
@@ -13,14 +13,10 @@ export default function CopyId({
   display?: string;
   className?: string;
 }) {
-  const [copied, setCopied] = useState(false);
+  const { copiedKey: copied, copy } = useCopied(1200);
   return (
     <button
-      onClick={() => {
-        navigator.clipboard?.writeText(value).catch(() => {});
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1200);
-      }}
+      onClick={() => copy(value)}
       className={cn(
         "inline-flex items-center gap-1 text-[13px] text-sub hover:text-ink cursor-pointer",
         className,

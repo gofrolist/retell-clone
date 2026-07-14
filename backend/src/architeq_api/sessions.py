@@ -56,3 +56,14 @@ def decode_session(token: str) -> dict[str, Any] | None:
 def workspace_id_from_session(token: str) -> str | None:
     claims = decode_session(token)
     return claims.get("ws") if claims else None
+
+
+def email_from_authorization(authorization: str | None) -> str | None:
+    """Caller email when the Authorization header carries a session JWT.
+
+    Returns None for raw API keys (which carry no personal identity).
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    claims = decode_session(authorization.removeprefix("Bearer ").strip())
+    return claims.get("sub") if claims else None
