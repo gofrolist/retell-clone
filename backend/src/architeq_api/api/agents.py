@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import require_api_key
 from ..db import get_session
-from ..models import Agent, ApiKey, now_ms
+from ..models import Agent, AgentFolder, ApiKey, now_ms
 from ..schemas import CreateAgentRequest, agent_to_dict
 from ._deps import apply_patch, get_owned
 from .chat_agents import CHAT_VOICE_ID
@@ -56,7 +56,17 @@ _MUTABLE_FIELDS = {
     "denoising_mode",
     "opt_out_sensitive_data_storage",
     "response_engine",
+    "folder_id",
 }
+
+
+async def _validate_folder_id(session, folder_id, workspace_id: str) -> None:
+    """422 unless folder_id is null or names a folder in this workspace."""
+    if folder_id is None:
+        return
+    folder = await session.get(AgentFolder, folder_id)
+    if folder is None or folder.workspace_id != workspace_id:
+        raise HTTPException(422, detail="folder_id does not reference a folder in this workspace")
 
 
 @router.post("/create-agent", status_code=201)
@@ -65,6 +75,7 @@ async def create_agent(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
+    await _validate_folder_id(session, body.folder_id, api_key.workspace_id)
     data = body.model_dump(exclude_none=True, exclude={"agent_id"})
     agent = Agent(
         workspace_id=api_key.workspace_id,
@@ -116,7 +127,12 @@ async def update_agent(
 ):
     agent = await _get_voice_agent(session, agent_id, api_key.workspace_id)
     payload = await request.json()
-    apply_patch(agent, payload, _MUTABLE_FIELDS, bump_version=True, touch=True)
+    if "folder_id" in payload:
+        await _validate_folder_id(session, payload["folder_id"], api_key.workspace_id)
+    # A folder move is a dashboard-only regrouping, not a config change: it
+    # must not mint a new agent version (call records stamp agent_version).
+    config_change = bool((set(payload) & _MUTABLE_FIELDS) - {"folder_id"})
+    apply_patch(agent, payload, _MUTABLE_FIELDS, bump_version=config_change, touch=config_change)
     await session.commit()
     return agent_to_dict(agent)
 

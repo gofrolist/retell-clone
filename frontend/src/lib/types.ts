@@ -31,7 +31,14 @@ export interface Agent {
   webhook_url?: string;
   webhook_timeout?: number;
   boosted_keywords?: string[];
-  folder?: string;
+  folder_id?: string | null;
+}
+
+/** Dashboard-only agent grouping (Architeq extra, mirrors Retell's sidebar). */
+export interface AgentFolder {
+  folder_id: string;
+  folder_name: string;
+  last_modification_timestamp: number;
 }
 
 export interface AgentFunction {

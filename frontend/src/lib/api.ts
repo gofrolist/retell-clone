@@ -8,6 +8,7 @@
 import { getValidSession } from "./auth";
 import type {
   Agent,
+  AgentFolder,
   Alert,
   AnalyticsData,
   ApiKey,
@@ -149,6 +150,7 @@ export interface RawAgent {
   boosted_keywords: string[] | null;
   enable_voicemail_detection: boolean;
   last_modification_timestamp: number;
+  folder_id?: string | null;
   [key: string]: unknown;
 }
 
@@ -324,6 +326,7 @@ export function uiAgentFromRaw(a: RawAgent, phones: RawPhoneNumber[] = []): Agen
     reminder_trigger_seconds: a.reminder_trigger_ms ? a.reminder_trigger_ms / 1000 : undefined,
     reminder_max_count: a.reminder_max_count,
     boosted_keywords: a.boosted_keywords ?? undefined,
+    folder_id: a.folder_id ?? null,
   };
 }
 
@@ -455,6 +458,25 @@ export const api = {
 
   publishAgent: (agentId: string) =>
     request<RawAgent>(`/publish-agent/${encodeURIComponent(agentId)}`, post({})),
+
+  // ------------------------------------------------------ agent folders
+  listAgentFolders: () => request<AgentFolder[]>("/list-agent-folders"),
+
+  createAgentFolder: (folderName: string) =>
+    request<AgentFolder>("/create-agent-folder", post({ folder_name: folderName })),
+
+  renameAgentFolder: (folderId: string, folderName: string) =>
+    request<AgentFolder>(
+      `/update-agent-folder/${encodeURIComponent(folderId)}`,
+      patch({ folder_name: folderName }),
+    ),
+
+  deleteAgentFolder: (folderId: string) =>
+    request<void>(`/delete-agent-folder/${encodeURIComponent(folderId)}`, del),
+
+  /** Move an agent into a folder (or out, with folderId = null). */
+  moveAgentToFolder: (agentId: string, folderId: string | null) =>
+    request<RawAgent>(`/update-agent/${encodeURIComponent(agentId)}`, patch({ folder_id: folderId })),
 
   // ------------------------------------------------------------- voices
   listVoices: () => request<Voice[]>("/list-voices"),

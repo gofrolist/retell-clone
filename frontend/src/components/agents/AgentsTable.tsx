@@ -3,8 +3,8 @@
 import Badge from "@/components/ui/Badge";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { Agent } from "@/lib/types";
-import { Bot, Copy, MoreVertical, Trash2 } from "lucide-react";
+import type { Agent, AgentFolder } from "@/lib/types";
+import { Bot, Check, Copy, Folder, FolderMinus, MoreVertical, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 
@@ -31,15 +31,33 @@ export function VoiceAvatar({ name, index }: { name: string; index: number }) {
 
 export default function AgentsTable({
   agents,
+  folders = [],
   onDeleted,
+  onMoved,
 }: {
   agents: Agent[];
+  folders?: AgentFolder[];
   onDeleted?: (agentId: string) => void;
+  onMoved?: (agentId: string, folderId: string | null) => void;
 }) {
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const moveToFolder = async (agent: Agent, folderId: string | null) => {
+    setMenuFor(null);
+    if ((agent.folder_id ?? null) === folderId) return;
+    setDeleteError(null);
+    try {
+      await api.moveAgentToFolder(agent.agent_id, folderId);
+      onMoved?.(agent.agent_id, folderId);
+    } catch (e) {
+      setDeleteError(
+        `Failed to move "${agent.agent_name}": ${e instanceof Error ? e.message : "unknown error"}`,
+      );
+    }
+  };
 
   const copyAgentId = (agentId: string) => {
     navigator.clipboard?.writeText(agentId).catch(() => {});
@@ -159,6 +177,37 @@ export default function AgentsTable({
                         <Copy className="size-3.5 text-sub" />
                         {copiedId === a.agent_id ? "Copied" : "Copy agent ID"}
                       </button>
+                      {folders.length > 0 && (
+                        <>
+                          <div className="my-1 border-t border-line" />
+                          <div className="px-3 pb-1 pt-1.5 text-[11px] font-semibold tracking-wider text-faint">
+                            MOVE TO FOLDER
+                          </div>
+                          {folders.map((f) => (
+                            <button
+                              key={f.folder_id}
+                              onClick={() => moveToFolder(a, f.folder_id)}
+                              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-app cursor-pointer"
+                            >
+                              <Folder className="size-3.5 shrink-0 text-sub" />
+                              <span className="truncate">{f.folder_name}</span>
+                              {a.folder_id === f.folder_id && (
+                                <Check className="ml-auto size-3.5 shrink-0 text-sub" />
+                              )}
+                            </button>
+                          ))}
+                          {a.folder_id && (
+                            <button
+                              onClick={() => moveToFolder(a, null)}
+                              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-app cursor-pointer"
+                            >
+                              <FolderMinus className="size-3.5 text-sub" />
+                              Remove from folder
+                            </button>
+                          )}
+                          <div className="my-1 border-t border-line" />
+                        </>
+                      )}
                       <button
                         onClick={() => deleteAgent(a)}
                         className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] text-bad hover:bg-red-50 cursor-pointer"

@@ -25,6 +25,7 @@ from .ids import (
     new_cohort_id,
     new_contact_id,
     new_conversation_flow_id,
+    new_folder_id,
     new_invite_id,
     new_invite_token,
     new_knowledge_base_id,
@@ -150,6 +151,18 @@ class RetellLLM(Base):
     last_modification_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
 
 
+class AgentFolder(Base):
+    """Dashboard-only grouping for agents (Retell's sidebar folders)."""
+
+    __tablename__ = "agent_folders"
+    __table_args__ = (UniqueConstraint("workspace_id", "folder_name"),)
+
+    folder_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_folder_id)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    folder_name: Mapped[str] = mapped_column(String(255))
+    last_modification_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+
+
 class Agent(Base):
     __tablename__ = "agents"
 
@@ -192,6 +205,9 @@ class Agent(Base):
     last_modification_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
     # Publishing model: single live version; publish-agent flips this on.
     is_published: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Dashboard folder assignment (no FK: added post-launch via the lifespan
+    # column backfill, and a dangling id just means "no folder").
+    folder_id: Mapped[str | None] = mapped_column(String(64), index=True)
 
 
 class PhoneNumber(Base):

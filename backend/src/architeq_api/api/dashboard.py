@@ -12,7 +12,7 @@ from typing import Any, NamedTuple
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +21,8 @@ from ..config import get_settings
 from ..db import get_session
 from ..ids import new_api_key, new_invite_token
 from ..models import (
+    Agent,
+    AgentFolder,
     Alert,
     ApiKey,
     Call,
@@ -34,6 +36,7 @@ from ..models import (
 )
 from ..schemas import CompatModel
 from ..sessions import email_from_authorization
+from ._deps import get_owned
 from .auth_google import _email_allowed
 
 router = APIRouter(tags=["dashboard"])
@@ -117,6 +120,106 @@ async def call_analytics(
         "user_sentiment": _breakdown(sentiments),
         "phone_direction": _breakdown(directions),
     }
+
+
+# -------------------------------------------------------------- agent folders
+
+
+def _folder_to_dict(f: AgentFolder) -> dict[str, Any]:
+    return {
+        "folder_id": f.folder_id,
+        "folder_name": f.folder_name,
+        "last_modification_timestamp": f.last_modification_timestamp,
+    }
+
+
+class FolderRequest(CompatModel):
+    folder_name: str = Field(min_length=1, max_length=255)
+
+    @field_validator("folder_name")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("folder_name must not be blank")
+        return v
+
+
+async def _reject_duplicate_folder_name(
+    session: AsyncSession, workspace_id: str, folder_name: str, exclude_folder_id: str | None = None
+) -> None:
+    query = select(AgentFolder.folder_id).where(
+        AgentFolder.workspace_id == workspace_id,
+        func.lower(AgentFolder.folder_name) == folder_name.lower(),
+    )
+    if exclude_folder_id is not None:
+        query = query.where(AgentFolder.folder_id != exclude_folder_id)
+    if (await session.scalars(query)).first() is not None:
+        raise HTTPException(409, detail="A folder with this name already exists")
+
+
+@router.get("/list-agent-folders")
+async def list_agent_folders(
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    folders = (
+        await session.scalars(
+            select(AgentFolder)
+            .where(AgentFolder.workspace_id == api_key.workspace_id)
+            .order_by(AgentFolder.folder_name)
+        )
+    ).all()
+    return [_folder_to_dict(f) for f in folders]
+
+
+@router.post("/create-agent-folder", status_code=201)
+async def create_agent_folder(
+    body: FolderRequest,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    await _reject_duplicate_folder_name(session, api_key.workspace_id, body.folder_name)
+    folder = AgentFolder(workspace_id=api_key.workspace_id, folder_name=body.folder_name)
+    session.add(folder)
+    await session.commit()
+    return _folder_to_dict(folder)
+
+
+@router.patch("/update-agent-folder/{folder_id}")
+async def update_agent_folder(
+    folder_id: str,
+    body: FolderRequest,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    folder = await get_owned(
+        session, AgentFolder, folder_id, api_key.workspace_id, detail="Folder not found"
+    )
+    await _reject_duplicate_folder_name(
+        session, api_key.workspace_id, body.folder_name, exclude_folder_id=folder_id
+    )
+    folder.folder_name = body.folder_name
+    folder.last_modification_timestamp = now_ms()
+    await session.commit()
+    return _folder_to_dict(folder)
+
+
+@router.delete("/delete-agent-folder/{folder_id}", status_code=204)
+async def delete_agent_folder(
+    folder_id: str,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    folder = await get_owned(
+        session, AgentFolder, folder_id, api_key.workspace_id, detail="Folder not found"
+    )
+    # Agents fall back to "no folder" — deleting a folder never deletes agents.
+    # Unscoped on purpose: folder ids are globally unique PKs, and this also
+    # heals any legacy dangling reference from before folder_id validation.
+    await session.execute(update(Agent).where(Agent.folder_id == folder_id).values(folder_id=None))
+    await session.delete(folder)
+    await session.commit()
 
 
 # ------------------------------------------------------------------- contacts

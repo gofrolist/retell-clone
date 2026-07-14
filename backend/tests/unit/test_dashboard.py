@@ -59,6 +59,140 @@ async def test_contact_crud_and_call_stats(client):
     assert (await client.get("/list-contacts", headers=AUTH_HEADERS)).json() == []
 
 
+async def test_agent_folder_crud_and_assignment(client):
+    created = await client.post(
+        "/create-agent-folder", headers=AUTH_HEADERS, json={"folder_name": "  Template Agents  "}
+    )
+    assert created.status_code == 201
+    folder = created.json()
+    assert folder["folder_name"] == "Template Agents"
+    folder_id = folder["folder_id"]
+    assert folder_id.startswith("folder_")
+
+    listed = (await client.get("/list-agent-folders", headers=AUTH_HEADERS)).json()
+    assert [f["folder_id"] for f in listed] == [folder_id]
+
+    # Agents move into a folder through the normal update-agent PATCH. A move
+    # is a dashboard regrouping, not a config change: the version must not
+    # bump (call records stamp agent_version).
+    before = (await client.get(f"/get-agent/{AGENT_ID}", headers=AUTH_HEADERS)).json()
+    moved = await client.patch(
+        f"/update-agent/{AGENT_ID}", headers=AUTH_HEADERS, json={"folder_id": folder_id}
+    )
+    assert moved.status_code == 200
+    assert moved.json()["folder_id"] == folder_id
+    assert moved.json()["version"] == before["version"]
+
+    # A config field alongside folder_id still bumps.
+    reconfigured = await client.patch(
+        f"/update-agent/{AGENT_ID}",
+        headers=AUTH_HEADERS,
+        json={"folder_id": folder_id, "agent_name": "Sales v2"},
+    )
+    assert reconfigured.json()["version"] == before["version"] + 1
+
+    renamed = await client.patch(
+        f"/update-agent-folder/{folder_id}", headers=AUTH_HEADERS, json={"folder_name": "Prod"}
+    )
+    assert renamed.json()["folder_name"] == "Prod"
+
+    # Deleting the folder unassigns its agents but keeps them.
+    assert (
+        await client.delete(f"/delete-agent-folder/{folder_id}", headers=AUTH_HEADERS)
+    ).status_code == 204
+    assert (await client.get("/list-agent-folders", headers=AUTH_HEADERS)).json() == []
+    agent = (await client.get(f"/get-agent/{AGENT_ID}", headers=AUTH_HEADERS)).json()
+    assert agent["folder_id"] is None
+
+
+async def test_agent_folder_rejects_blank_name(client):
+    resp = await client.post(
+        "/create-agent-folder", headers=AUTH_HEADERS, json={"folder_name": "  "}
+    )
+    assert resp.status_code == 422
+
+
+async def test_agent_folder_rejects_duplicate_name(client):
+    created = await client.post(
+        "/create-agent-folder", headers=AUTH_HEADERS, json={"folder_name": "Prod"}
+    )
+    assert created.status_code == 201
+    dupe = await client.post(
+        "/create-agent-folder", headers=AUTH_HEADERS, json={"folder_name": "prod"}
+    )
+    assert dupe.status_code == 409
+
+    other = await client.post(
+        "/create-agent-folder", headers=AUTH_HEADERS, json={"folder_name": "Staging"}
+    )
+    rename_collision = await client.patch(
+        f"/update-agent-folder/{other.json()['folder_id']}",
+        headers=AUTH_HEADERS,
+        json={"folder_name": "Prod"},
+    )
+    assert rename_collision.status_code == 409
+    # Renaming a folder to its own name (case change) is allowed.
+    self_rename = await client.patch(
+        f"/update-agent-folder/{created.json()['folder_id']}",
+        headers=AUTH_HEADERS,
+        json={"folder_name": "PROD"},
+    )
+    assert self_rename.status_code == 200
+
+
+async def test_update_agent_rejects_unknown_folder_id(client):
+    resp = await client.patch(
+        f"/update-agent/{AGENT_ID}", headers=AUTH_HEADERS, json={"folder_id": "folder_nope"}
+    )
+    assert resp.status_code == 422
+    # Clearing the folder is always allowed.
+    cleared = await client.patch(
+        f"/update-agent/{AGENT_ID}", headers=AUTH_HEADERS, json={"folder_id": None}
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["folder_id"] is None
+
+
+async def test_update_agent_rejects_cross_workspace_folder_id(client, other_workspace):
+    folder_id = (
+        await client.post(
+            "/create-agent-folder", headers=AUTH_HEADERS, json={"folder_name": "Mine"}
+        )
+    ).json()["folder_id"]
+    # The other workspace has no agents seeded; create one to patch.
+    other_agent = await client.post(
+        "/create-agent",
+        headers=OTHER_AUTH_HEADERS,
+        json={"response_engine": {"type": "retell-llm"}, "voice_id": "cartesia-sonic"},
+    )
+    resp = await client.patch(
+        f"/update-agent/{other_agent.json()['agent_id']}",
+        headers=OTHER_AUTH_HEADERS,
+        json={"folder_id": folder_id},
+    )
+    assert resp.status_code == 422
+
+
+async def test_agent_folders_are_workspace_scoped(client, other_workspace):
+    folder_id = (
+        await client.post(
+            "/create-agent-folder", headers=AUTH_HEADERS, json={"folder_name": "Mine"}
+        )
+    ).json()["folder_id"]
+
+    assert (await client.get("/list-agent-folders", headers=OTHER_AUTH_HEADERS)).json() == []
+    assert (
+        await client.patch(
+            f"/update-agent-folder/{folder_id}",
+            headers=OTHER_AUTH_HEADERS,
+            json={"folder_name": "Hijack"},
+        )
+    ).status_code == 404
+    assert (
+        await client.delete(f"/delete-agent-folder/{folder_id}", headers=OTHER_AUTH_HEADERS)
+    ).status_code == 404
+
+
 async def test_alert_crud(client):
     created = await client.post(
         "/create-alert",

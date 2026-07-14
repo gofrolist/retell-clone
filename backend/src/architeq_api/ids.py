@@ -24,6 +24,10 @@ def new_llm_id() -> str:
     return f"llm_{_hex(30)}"
 
 
+def new_folder_id() -> str:
+    return f"folder_{_hex(24)}"
+
+
 def new_phone_number_id() -> str:
     return f"pn_{_hex(30)}"
 
