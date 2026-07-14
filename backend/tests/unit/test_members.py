@@ -323,3 +323,21 @@ async def test_allowlisted_login_prefers_first_workspace_over_invited_one(
 
     plain = await client.post("/auth/google", json={"id_token": "fake"})
     assert plain.json()["workspace_id"] == WORKSPACE_ID
+
+
+async def test_allowlisted_session_can_manage_members_before_member_row_exists(client):
+    """Sessions issued before v0.3.0 predate WorkspaceMember rows (the owner
+    row is only written at login). Allowlisted emails are owner-by-definition
+    and must not be locked out of member management by a stale session."""
+    from architeq_api.sessions import issue_session
+
+    token, _ = issue_session("admin@example.com", WORKSPACE_ID)
+    stale_headers = {"Authorization": f"Bearer {token}"}
+    assert (await client.get("/list-members", headers=AUTH_HEADERS)).json() == []
+
+    resp = await client.post(
+        "/create-invite", json={"email": "invitee@example.com"}, headers=stale_headers
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["invited_by"] == "admin@example.com"
+    assert (await client.get("/list-invites", headers=stale_headers)).status_code == 200
