@@ -160,7 +160,7 @@ export default function AgentEditorPage({
       <div className="flex min-h-0 grow gap-3 p-3">
         {/* left: prompt column */}
         <div className="flex min-w-0 flex-[1.6] flex-col overflow-y-auto rounded-xl border border-line bg-card p-4">
-          <MetaRow agentId={agent.agent_id} />
+          <MetaRow agentId={agent.agent_id} llm={llmView} />
           <div className="mt-3">
             <SelectorRow
               model={llmView?.model ?? ""}
