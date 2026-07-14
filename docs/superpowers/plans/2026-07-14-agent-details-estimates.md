@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Historical note:** executed 2026-07-14. Code blocks below are the plan-time versions; review fix waves superseded some details — STT_COST_PER_MIN is 0.0022 (not 0.0024, commit efb6e9c), HoverCard bridges the trigger→panel gap with inner padding (commit 4d9e9e2), and HoverCard wires aria-describedby. The shipped code in frontend/src is authoritative.
+
 **Goal:** Replace the hardcoded `Cost $0.120/min · Latency 800-1200ms` placeholders in the agent editor header with live, per-component Cost / Latency / Tokens estimate popovers (Retell-style), computed from the agent's draft config.
 
 **Architecture:** Frontend-only. A pure, dependency-free estimation module (`frontend/src/lib/estimates.ts`) holds a rate card of provider constants (Gemini, Cartesia, LiveKit — sourced, dated) and three total functions. A new pure-CSS `HoverCard` UI primitive (modeled on the existing `Tooltip.tsx`) renders breakdowns. `MetaRow.tsx` computes estimates from the page's draft `llmView` on every render, so numbers update live while typing.
