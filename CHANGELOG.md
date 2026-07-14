@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/gofrolist/retell-clone/compare/v0.3.0...v0.3.1) (2026-07-14)
+
+
+### Bug Fixes
+
+* unblock stale sessions from member management, surface 403 reasons ([#66](https://github.com/gofrolist/retell-clone/issues/66)) ([bbee7e5](https://github.com/gofrolist/retell-clone/commit/bbee7e50642a03620d31651ba092f95ddec9b38d))
+
 ## [0.3.0](https://github.com/gofrolist/retell-clone/compare/v0.2.0...v0.3.0) (2026-07-14)
 
 
