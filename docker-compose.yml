@@ -13,7 +13,9 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # postgres 18+ images keep data in /var/lib/postgresql/<major>/docker,
+      # so the volume must cover /var/lib/postgresql (not .../data).
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U architeq -d architeq"]
       interval: 5s
