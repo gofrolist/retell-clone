@@ -44,6 +44,7 @@ const LLM_RATES: Record<string, LlmRate> = {
 // Catalog drift safety net: unknown model ids estimate as gemini-2.5-flash.
 const DEFAULT_LLM_RATE: LlmRate = LLM_RATES["gemini-2.5-flash"];
 
+// Assumption-based turn/prompt model — our own estimates, no external source.
 const CHARS_PER_TOKEN = 4; // standard rough heuristic for English text
 const TURNS_PER_MIN = 4; // assumed LLM requests per call minute
 const OUTPUT_TOKENS_PER_TURN = 150; // assumed visible tokens per response
@@ -51,20 +52,23 @@ const HISTORY_TOKENS: [number, number] = [250, 2200]; // grows over the call
 const KB_TOKENS: [number, number] = [200, 1500]; // retrieved chunks per turn
 
 // Cartesia (https://docs.cartesia.ai/pricing, Scale tier, 2026-07-14):
-// STT ink-whisper 1 credit/sec realtime at $37.375/M credits ~= $0.0024/min.
+// STT ink-whisper 1 credit/sec realtime at $37.375/M credits ~= $0.0022/min.
 // TTS ~1 credit/char, ~750 chars/min of speech ~= $0.028/min of speech;
 // agent speaks ~50% of a call minute -> $0.014 per call minute.
-const STT_COST_PER_MIN = 0.0024;
+const STT_COST_PER_MIN = 0.0022;
 const TTS_COST_PER_MIN = 0.014;
 // LiveKit Cloud (https://livekit.com/pricing, 2026-07-14): $0.0005 per
 // participant-minute overage x 2 connections (caller + worker).
 const INFRA_COST_PER_MIN = 0.001;
-// Embedding/retrieval overhead when a knowledge base is attached; rounded.
+// Embedding/retrieval overhead when a knowledge base is attached — our own rounded estimate, no external source.
 const KB_COST_PER_MIN = 0.001;
 
 // Latency figures (ms). STT: Cartesia's published ink-whisper streaming
-// benchmark (median 66 / P90 98). TTS: published sub-90ms sonic-2 model TTFB
-// plus network. KB: retrieval round-trip estimate.
+// benchmark, median 66 / P90 98
+// (https://www.cartesia.ai/blog/introducing-ink-speech-to-text). TTS:
+// published sub-90ms sonic-2 model TTFB plus network headroom
+// (https://www.cartesia.ai/pricing). KB: retrieval round-trip — our own
+// estimate, no external source.
 const STT_LATENCY_MS: [number, number] = [60, 100];
 const TTS_LATENCY_MS: [number, number] = [90, 200];
 const KB_LATENCY_MS: [number, number] = [75, 125];
