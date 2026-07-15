@@ -132,6 +132,19 @@ def test_nested_with_unknown_inner_stays_literal(frozen_now: datetime) -> None:
     assert resolve_template(text, ResolutionVariables({})) == text
 
 
+def test_value_containing_placeholder_is_not_reexpanded() -> None:
+    # Contract: values reach the agent verbatim — substitution output is
+    # never re-scanned, so {{...}} text inside a value stays literal even
+    # when it names a known variable (incl. captured/system ones).
+    variables = ResolutionVariables(
+        {"notes": "send the {{first_name}} template", "first_name": "Bob"},
+        call_id="call_abc",
+        call_type="phone_call",
+    )
+    assert resolve_template("{{notes}}", variables) == "send the {{first_name}} template"
+    assert resolve_template("{{notes}}", {"notes": "id is {{call_id}}"}) == "id is {{call_id}}"
+
+
 def test_phone_call_variables_inbound() -> None:
     variables = _phone_vars()
     assert (

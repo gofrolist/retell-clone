@@ -178,7 +178,9 @@ export default function AgentEditorPage({
                 <PromptEditor
                   value={llmView.general_prompt ?? ""}
                   onChange={(v) => setLlmField("general_prompt", v)}
-                  agentVariables={Object.keys(llmView.default_dynamic_variables ?? {})}
+                  defaultDynamicVariables={
+                    llmView.default_dynamic_variables as Record<string, unknown> | null
+                  }
                 />
               </div>
               <WelcomeMessage

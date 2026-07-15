@@ -1,10 +1,22 @@
 "use client";
 
-import { type KeyboardEvent, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { promptVariables, SYSTEM_VARIABLES } from "./systemVariables";
+import {
+  promptVariables,
+  SYSTEM_VARIABLES,
+  VARIABLE_NAME_CHARS,
+  VARIABLE_PATTERN,
+} from "./systemVariables";
 
-const VARIABLE_CHIP = /(\{\{[a-zA-Z0-9_./-]+\}\})/g;
+const VARIABLE_CHIP = new RegExp(`(${VARIABLE_PATTERN})`, "g");
+// Open "{{name-so-far" immediately before the caret.
+const TRIGGER = new RegExp(`\\{\\{\\s*(${VARIABLE_NAME_CHARS}*)$`);
+// Remainder of a variable the caret sits inside: trailing name chars plus
+// up to two closing braces — consumed on insert so completion replaces the
+// whole token instead of splicing into it.
+const TOKEN_TAIL = new RegExp(`^${VARIABLE_NAME_CHARS}*\\s*\\}{0,2}`);
+const TIMEZONE_TOKEN = "[timezone]";
 
 type Menu = {
   /** index in value where the partial variable name starts (after "{{") */
@@ -57,26 +69,46 @@ function caretCoords(el: HTMLTextAreaElement, pos: number) {
 export default function PromptEditor({
   value,
   onChange,
-  agentVariables = [],
+  defaultDynamicVariables,
 }: {
   value: string;
   onChange: (v: string) => void;
-  /** Extra completions, e.g. keys of the LLM's default_dynamic_variables. */
-  agentVariables?: string[];
+  /** The LLM's default_dynamic_variables — its keys become "Agent" group
+   * completions. Passed as the (referentially stable) object so the items
+   * memo isn't defeated by a fresh array built on every parent render. */
+  defaultDynamicVariables?: Record<string, unknown> | null;
 }) {
   const backdropRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [menu, setMenu] = useState<Menu | null>(null);
+  // Caret/selection to apply after the next value commit. A layout effect
+  // (not requestAnimationFrame) so it runs deterministically even in
+  // background/frame-throttled tabs.
+  const pendingSelection = useRef<[number, number] | null>(null);
 
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el || !pendingSelection.current) return;
+    const [selStart, selEnd] = pendingSelection.current;
+    pendingSelection.current = null;
+    el.focus();
+    el.setSelectionRange(selStart, selEnd);
+  }, [value]);
+
+  const menuOpen = menu !== null;
   const items = useMemo<Item[]>(() => {
-    const agent = new Set([...agentVariables, ...promptVariables(value)]);
+    if (!menuOpen) return []; // only computed while the picker is showing
+    const agent = new Set([
+      ...Object.keys(defaultDynamicVariables ?? {}),
+      ...promptVariables(value),
+    ]);
     return [
       ...[...agent].sort().map((name): Item => ({ name, group: "Agent" })),
       ...SYSTEM_VARIABLES.map(
         (v): Item => ({ name: v.name, description: v.description, group: "System" }),
       ),
     ];
-  }, [value, agentVariables]);
+  }, [menuOpen, value, defaultDynamicVariables]);
 
   const visible = menu
     ? items.filter((i) => i.name.toLowerCase().includes(menu.query.toLowerCase()))
@@ -92,9 +124,15 @@ export default function PromptEditor({
   const detectTrigger = (el: HTMLTextAreaElement) => {
     if (el.selectionStart !== el.selectionEnd) return setMenu(null);
     const before = el.value.slice(0, el.selectionStart);
-    const match = /\{\{([a-zA-Z0-9_./-]*)$/.exec(before);
+    const match = TRIGGER.exec(before);
     if (!match) return setMenu(null);
     const start = el.selectionStart - match[1].length;
+    if (menu && menu.start === start) {
+      // Same trigger position: reuse the measured coords instead of
+      // rebuilding the DOM mirror on every keystroke of the query.
+      setMenu({ ...menu, query: match[1], index: 0 });
+      return;
+    }
     const { top, left } = caretCoords(el, start);
     // keep the 288px-wide dropdown inside the editor
     const clampedLeft = Math.max(0, Math.min(left, el.clientWidth - 296));
@@ -102,17 +140,21 @@ export default function PromptEditor({
   };
 
   const insert = (name: string) => {
-    const el = textareaRef.current;
-    if (!el || !menu) return;
+    if (!menu) return;
     const end = menu.start + menu.query.length;
-    const closing = value.slice(end).startsWith("}}") ? "" : "}}";
-    onChange(value.slice(0, menu.start) + name + closing + value.slice(end));
+    // Consume the rest of any variable the caret sits inside (remaining
+    // name chars + existing closing braces) so completion replaces the
+    // whole token — never "{{customer_name}}_name}}" splices.
+    const tail = TOKEN_TAIL.exec(value.slice(end))?.[0] ?? "";
+    const tokenAt = name.indexOf(TIMEZONE_TOKEN);
+    pendingSelection.current =
+      tokenAt >= 0
+        ? // Placeholder entries like current_time_[timezone]: select the
+          // token so the author overtypes a real IANA zone immediately.
+          [menu.start + tokenAt, menu.start + tokenAt + TIMEZONE_TOKEN.length]
+        : [menu.start + name.length + 2, menu.start + name.length + 2];
+    onChange(value.slice(0, menu.start) + name + "}}" + value.slice(end + tail.length));
     setMenu(null);
-    const caret = menu.start + name.length + 2;
-    requestAnimationFrame(() => {
-      el.focus();
-      el.setSelectionRange(caret, caret);
-    });
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {

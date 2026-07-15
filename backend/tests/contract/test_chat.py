@@ -28,16 +28,23 @@ async def test_create_chat(client):
 
 def test_chat_prompt_resolves_system_and_user_variables():
     from architeq_api.api.chats import _resolve_chat_prompt
-    from architeq_api.models import Chat
+    from architeq_api.models import Chat, now_ms
 
     chat = Chat(
         chat_id="chat_abc123",
+        start_timestamp=now_ms() - 90_000,
         retell_llm_dynamic_variables={"customer_name": "John", "session_type": "override"},
     )
-    prompt = "id={{chat_id}} type={{session_type}} name={{customer_name}} keep={{unknown}}"
+    # Whitespace inside braces resolves, same as the worker's resolver.
+    prompt = "id={{ chat_id }} type={{session_type}} name={{customer_name}} keep={{unknown}}"
     assert _resolve_chat_prompt(prompt, chat) == (
         "id=chat_abc123 type=override name=John keep={{unknown}}"
     )
+    # Time/session system variables resolve on the chat channel too.
+    resolved = _resolve_chat_prompt("{{current_time}} | {{session_duration}}", chat)
+    assert "{{current_time}}" not in resolved
+    assert "{{session_duration}}" not in resolved
+    assert "1 minute 3" in resolved  # ~90s elapsed, tolerant of test runtime
 
 
 async def test_create_chat_unknown_agent_is_non_2xx(client):

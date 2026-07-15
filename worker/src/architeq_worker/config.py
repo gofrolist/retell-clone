@@ -113,7 +113,11 @@ class CallConfig:
             direction=_str(d.get("direction"), "outbound"),
             from_number=_str(d.get("from_number"), ""),
             to_number=_str(d.get("to_number"), ""),
-            call_type=_str(d.get("call_type"), "phone_call"),
+            # Fail closed: without call_type the phone-vs-web gate cannot
+            # decide, so ResolutionVariables exposes no call_type/direction/
+            # user_number/agent_number and those placeholders stay literal
+            # (matters only while an older control plane omits the field).
+            call_type=_str(d.get("call_type"), ""),
             agent=AgentConfig.from_dict(d.get("agent") or {}),
             llm=LLMConfig.from_dict(d.get("llm") or {}),
             # Already merged control-plane side: defaults < call-level vars.

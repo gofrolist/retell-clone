@@ -2,7 +2,9 @@
 
 CONTRACT (docs/ARCHITECTURE.md rule 5): every dynamic variable — arbitrary
 string keys and values — must reach the agent as a ``{{key}}`` template value
-with no renaming and no dropping. An unknown ``{{var}}`` stays literal.
+with no renaming and no dropping. An unknown ``{{var}}`` stays literal, and
+substituted *values* are never re-scanned: a value containing ``{{...}}``
+text reaches the agent verbatim.
 
 Besides user-supplied variables, Retell provides default system variables
 (https://docs.retellai.com/build/dynamic-variables): time variables in a
@@ -23,15 +25,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
-_PLACEHOLDER = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
+# A placeholder key is brace-free text that may embed ONE inner placeholder
+# (Retell's single level of nesting: {{current_time_{{user_timezone}}}}).
+_PLACEHOLDER = re.compile(r"\{\{\s*((?:[^{}]|\{\{[^{}]+?\}\})+?)\s*\}\}")
+_INNER = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
+_MISSING = object()
 
 # Retell resolves un-suffixed time variables in America/Los_Angeles.
 DEFAULT_TIMEZONE = "America/Los_Angeles"
 _CALENDAR_DAYS = 14
-# Retell supports one level of nesting ({{current_time_{{user_timezone}}}}):
-# pass 1 resolves the inner placeholder, pass 2 the outer. The cap also
-# bounds expansion of ``{{...}}`` text arriving inside variable *values*.
-_MAX_PASSES = 3
 
 
 def resolve_template(text: str, variables: Mapping[str, Any]) -> str:
@@ -41,24 +43,36 @@ def resolve_template(text: str, variables: Mapping[str, Any]) -> str:
     braces (``{{ first_name }}`` == ``{{first_name}}``). Placeholders whose
     key is not present are left untouched (literal).
 
-    Nested placeholders resolve innermost-first: the regex cannot match a
-    braced key containing braces, so ``{{current_time_{{tz}}}}`` resolves
-    ``{{tz}}`` on the first pass and the outer variable on the next.
+    Nesting is resolved inside the placeholder *key* only —
+    ``{{current_time_{{user_timezone}}}}`` first resolves ``user_timezone``
+    to form the outer key. Substituted values are never re-scanned, so
+    ``{{...}}`` text inside a variable's value reaches the output verbatim.
     """
+    if "{{" not in text:
+        return text
+
+    def _lookup(key: str) -> str | None:
+        value = variables.get(key, _MISSING)
+        if value is _MISSING:
+            return None
+        return value if isinstance(value, str) else str(value)
+
+    def _sub_inner(match: re.Match[str]) -> str:
+        resolved = _lookup(match.group(1))
+        return match.group(0) if resolved is None else resolved
 
     def _sub(match: re.Match[str]) -> str:
         key = match.group(1)
-        if key in variables:
-            value = variables[key]
-            return value if isinstance(value, str) else str(value)
-        return match.group(0)
+        if "{{" in key:
+            key = _INNER.sub(_sub_inner, key).strip()
+            if "{" in key or "}" in key:
+                # Inner placeholder unresolved (or resolved to text that is
+                # not a plain key) -> the whole placeholder stays literal.
+                return match.group(0)
+        resolved = _lookup(key)
+        return match.group(0) if resolved is None else resolved
 
-    for _ in range(_MAX_PASSES):
-        resolved = _PLACEHOLDER.sub(_sub, text)
-        if resolved == text:
-            break
-        text = resolved
-    return text
+    return _PLACEHOLDER.sub(_sub, text)
 
 
 def resolve_deep(value: Any, variables: Mapping[str, Any]) -> Any:

@@ -25,19 +25,40 @@ export const SYSTEM_VARIABLES: SystemVariable[] = [
   { name: "agent_number", description: "Agent's phone number (phone calls only)" },
   { name: "call_id", description: "Current call session id" },
   { name: "call_type", description: "web_call or phone_call" },
-  { name: "call.call_id", description: "Call-scoped alias of the call id" },
-  { name: "call.direction", description: "Call-scoped alias of the direction" },
+  { name: "call.call_id", description: "Call record id (all calls)" },
+  {
+    name: "call.direction",
+    description: "Call record direction — web calls always store 'inbound'",
+  },
   { name: "call.from_number", description: "Number the call is from" },
   { name: "call.to_number", description: "Number the call is to" },
 ];
 
+/** Single source for the variable-name grammar shared by the chip
+ * highlighter, the picker trigger, and prompt extraction. Inner whitespace
+ * is tolerated to match the worker's resolver ({{ name }} == {{name}}). */
+export const VARIABLE_NAME_CHARS = "[a-zA-Z0-9_./-]";
+export const VARIABLE_PATTERN = `\\{\\{\\s*${VARIABLE_NAME_CHARS}+\\s*\\}\\}`;
+
 const SYSTEM_NAMES = new Set(SYSTEM_VARIABLES.map((v) => v.name));
+// The worker resolves these families by prefix (any IANA timezone suffix).
+const SYSTEM_PREFIXES = ["current_time_", "current_hour_", "current_calendar_"];
+
+/** Mirrors the worker's _system_value rule: exact names plus the
+ * timezone-suffixed families. */
+export function isSystemVariable(name: string): boolean {
+  return (
+    SYSTEM_NAMES.has(name) ||
+    SYSTEM_PREFIXES.some((p) => name.startsWith(p) && name.length > p.length)
+  );
+}
 
 /** Distinct non-system {{variables}} referenced in a prompt. */
 export function promptVariables(prompt: string): string[] {
   const names = new Set<string>();
-  for (const m of prompt.matchAll(/\{\{\s*([a-zA-Z0-9_./-]+)\s*\}\}/g)) {
-    if (!SYSTEM_NAMES.has(m[1])) names.add(m[1]);
+  const re = new RegExp(`\\{\\{\\s*(${VARIABLE_NAME_CHARS}+)\\s*\\}\\}`, "g");
+  for (const m of prompt.matchAll(re)) {
+    if (!isSystemVariable(m[1])) names.add(m[1]);
   }
   return [...names].sort();
 }
