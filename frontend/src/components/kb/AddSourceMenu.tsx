@@ -80,13 +80,13 @@ export default function AddSourceMenu({
     if (!list?.length) return;
     const files = Array.from(list);
     const oversized = files.filter((f) => f.size > MAX_FILE_MB * 1024 * 1024);
+    const ok = files.filter((f) => f.size <= MAX_FILE_MB * 1024 * 1024);
+    if (ok.length) onAdd(ok.map((file) => ({ kind: "file" as const, file })));
     if (oversized.length) {
       onError?.(
         `${oversized.map((f) => f.name).join(", ")} exceed${oversized.length === 1 ? "s" : ""} the ${MAX_FILE_MB}MB limit.`,
       );
     }
-    const ok = files.filter((f) => f.size <= MAX_FILE_MB * 1024 * 1024);
-    if (ok.length) onAdd(ok.map((file) => ({ kind: "file" as const, file })));
     if (fileRef.current) fileRef.current.value = "";
   }
 
