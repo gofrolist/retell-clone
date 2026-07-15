@@ -5,7 +5,7 @@ import { Field, TextInput } from "@/components/ui/Field";
 import Modal from "@/components/ui/Modal";
 import { useClickOutside } from "@/lib/useClickOutside";
 import { FileText, Link2, Plus, Upload } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef, useState, type CSSProperties } from "react";
 
 export type PendingSource =
   | { kind: "url"; url: string }
@@ -51,6 +51,7 @@ export default function AddSourceMenu({
   label?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [menuPos, setMenuPos] = useState<CSSProperties | null>(null);
   const [panel, setPanel] = useState<"url" | "text" | null>(null);
   const [urlsText, setUrlsText] = useState("");
   const [textTitle, setTextTitle] = useState("");
@@ -108,7 +109,29 @@ export default function AddSourceMenu({
 
   return (
     <div ref={menuRef} className="relative inline-block">
-      <Button size="sm" onClick={() => setOpen((v) => !v)}>
+      <Button
+        size="sm"
+        onClick={(e) => {
+          if (!open) {
+            // Fixed positioning escapes overflow-hidden ancestors (e.g. the
+            // create-KB modal body), unlike absolute positioning.
+            const rect = e.currentTarget.getBoundingClientRect();
+            const estimatedMenuHeight = 200;
+            const openUp =
+              rect.bottom + 4 + estimatedMenuHeight > window.innerHeight;
+            setMenuPos(
+              openUp
+                ? {
+                    top: rect.top - 4,
+                    left: rect.left,
+                    transform: "translateY(-100%)",
+                  }
+                : { top: rect.bottom + 4, left: rect.left },
+            );
+          }
+          setOpen((v) => !v);
+        }}
+      >
         <Plus className="size-3.5" /> {label}
       </Button>
       <input
@@ -119,8 +142,11 @@ export default function AddSourceMenu({
         className="hidden"
         onChange={(e) => onFiles(e.target.files)}
       />
-      {open && (
-        <div className="absolute left-0 top-full z-20 mt-1 w-72 rounded-xl border border-line bg-white p-1.5 shadow-lg">
+      {open && menuPos && (
+        <div
+          style={menuPos}
+          className="fixed z-[60] w-72 rounded-xl border border-line bg-white p-1.5 shadow-lg"
+        >
           {MENU_ITEMS.map(({ key, icon: Icon, title, subtitle }) => (
             <button
               key={key}
