@@ -1,16 +1,16 @@
 "use client";
 
+import AddSourceMenu, { type PendingSource } from "@/components/kb/AddSourceMenu";
 import KbDetail from "@/components/kb/KbDetail";
-import { docsFromRawKb } from "@/lib/api";
 import SecondaryPanel from "@/components/shell/SecondaryPanel";
 import Button from "@/components/ui/Button";
 import EmptyState from "@/components/ui/EmptyState";
 import { Field, TextInput } from "@/components/ui/Field";
 import Modal from "@/components/ui/Modal";
-import { api } from "@/lib/api";
+import { api, docsFromRawKb } from "@/lib/api";
 import type { KnowledgeBase, KnowledgeDocument } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { Library, Plus } from "lucide-react";
+import { FileText, Library, Link2, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 export default function KnowledgeBasePage() {
@@ -24,8 +24,7 @@ export default function KnowledgeBasePage() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
-  const [urlsText, setUrlsText] = useState("");
-  const [pastedText, setPastedText] = useState("");
+  const [pending, setPending] = useState<PendingSource[]>([]);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -53,32 +52,45 @@ export default function KnowledgeBasePage() {
       setCreateError("Name is required.");
       return;
     }
-    const urls = urlsText
-      .split("\n")
-      .map((u) => u.trim())
-      .filter(Boolean);
+    const urls = pending.flatMap((p) => (p.kind === "url" ? [p.url] : []));
+    const texts = pending.flatMap((p) =>
+      p.kind === "text" ? [{ title: p.title, text: p.text }] : [],
+    );
+    const files = pending.flatMap((p) => (p.kind === "file" ? [p.file] : []));
     setCreating(true);
     setCreateError(null);
     try {
-      const raw = await api.createKnowledgeBase({
-        knowledge_base_name: kbName,
-        ...(urls.length ? { knowledge_base_urls: urls } : {}),
-        ...(pastedText.trim()
-          ? { knowledge_base_texts: [{ title: `${kbName} notes`, text: pastedText.trim() }] }
-          : {}),
-      });
+      const raw = await api.createKnowledgeBase(
+        {
+          knowledge_base_name: kbName,
+          ...(urls.length ? { knowledge_base_urls: urls } : {}),
+          ...(texts.length ? { knowledge_base_texts: texts } : {}),
+        },
+        files,
+      );
       setDocsOverride((m) => ({ ...m, [raw.knowledge_base_id]: docsFromRawKb(raw) }));
       await refresh();
       setSelected(raw.knowledge_base_id);
       setName("");
-      setUrlsText("");
-      setPastedText("");
+      setPending([]);
       setCreateOpen(false);
     } catch (e: unknown) {
       setCreateError(e instanceof Error ? e.message : "Failed to create knowledge base");
     } finally {
       setCreating(false);
     }
+  }
+
+  function pendingLabel(p: PendingSource): string {
+    if (p.kind === "url") return p.url;
+    if (p.kind === "text") return p.title;
+    return p.file.name;
+  }
+
+  function pendingMeta(p: PendingSource): string {
+    if (p.kind === "url") return "Web page";
+    if (p.kind === "text") return "Text";
+    return `${Math.max(1, Math.round(p.file.size / 1024))} KB`;
   }
 
   const kbRaw = kbs.find((k) => k.knowledge_base_id === selected);
@@ -152,7 +164,7 @@ export default function KnowledgeBasePage() {
       <Modal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        title="Create Knowledge Base"
+        title="Add Knowledge Base"
         width="max-w-md"
         footer={
           <>
@@ -160,38 +172,54 @@ export default function KnowledgeBasePage() {
               Cancel
             </Button>
             <Button variant="primary" disabled={creating || !name.trim()} onClick={create}>
-              {creating ? "Creating…" : "Create"}
+              {creating ? "Saving…" : "Save"}
             </Button>
           </>
         }
       >
-        <div className="space-y-3">
-          <Field label="Name">
+        <div className="space-y-4">
+          <Field label="Knowledge Base Name">
             <TextInput
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Support docs"
+              placeholder="Enter"
               autoFocus
             />
           </Field>
-          <Field label="URLs (optional)" hint="One URL per line.">
-            <textarea
-              value={urlsText}
-              onChange={(e) => setUrlsText(e.target.value)}
-              rows={3}
-              placeholder={"https://example.com/docs\nhttps://example.com/faq"}
-              className="w-full rounded-lg border border-line bg-white px-3 py-2 text-[13px] outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/15"
+          <div>
+            <div className="mb-1.5 text-[13px] font-medium">Documents</div>
+            <AddSourceMenu
+              onAdd={(sources) => {
+                setPending((prev) => [...prev, ...sources]);
+                setCreateError(null);
+              }}
+              onError={setCreateError}
             />
-          </Field>
-          <Field label="Pasted text (optional)">
-            <textarea
-              value={pastedText}
-              onChange={(e) => setPastedText(e.target.value)}
-              rows={4}
-              placeholder="Paste reference content here…"
-              className="w-full rounded-lg border border-line bg-white px-3 py-2 text-[13px] outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/15"
-            />
-          </Field>
+            {pending.length > 0 && (
+              <div className="mt-3 divide-y divide-line rounded-lg border border-line">
+                {pending.map((p, i) => (
+                  <div key={i} className="flex items-center gap-2.5 px-3 py-2">
+                    {p.kind === "url" ? (
+                      <Link2 className="size-4 shrink-0 text-sub" strokeWidth={1.8} />
+                    ) : (
+                      <FileText className="size-4 shrink-0 text-sub" strokeWidth={1.8} />
+                    )}
+                    <div className="min-w-0 grow">
+                      <div className="truncate text-[13px] font-medium">{pendingLabel(p)}</div>
+                      <div className="text-xs text-sub">{pendingMeta(p)}</div>
+                    </div>
+                    <button
+                      onClick={() => setPending((prev) => prev.filter((_, j) => j !== i))}
+                      className="rounded-md p-1 text-faint hover:bg-app hover:text-ink cursor-pointer"
+                      aria-label={`Remove ${pendingLabel(p)}`}
+                    >
+                      <X className="size-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           {createError && <p className="text-[13px] text-bad">{createError}</p>}
         </div>
       </Modal>
