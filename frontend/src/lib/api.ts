@@ -15,6 +15,7 @@ import type {
   Call,
   Contact,
   KnowledgeBase,
+  KnowledgeDocument,
   ListCallsResponse,
   PhoneNumber,
   QaCohort,
@@ -84,7 +85,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       signal: AbortSignal.timeout(10_000),
       ...init,
       headers: {
-        "Content-Type": "application/json",
+        ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...init?.headers,
       },
@@ -121,6 +122,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 const post = (body: unknown): RequestInit => ({ method: "POST", body: JSON.stringify(body) });
 const patch = (body: unknown): RequestInit => ({ method: "PATCH", body: JSON.stringify(body) });
 const del: RequestInit = { method: "DELETE" };
+
+/** Retell's multipart shape: repeated fields, texts as JSON strings. */
+function kbFormData(
+  fields: {
+    knowledge_base_name?: string;
+    knowledge_base_urls?: string[];
+    knowledge_base_texts?: { title: string; text: string }[];
+  },
+  files: File[],
+): FormData {
+  const fd = new FormData();
+  if (fields.knowledge_base_name) fd.append("knowledge_base_name", fields.knowledge_base_name);
+  for (const url of fields.knowledge_base_urls ?? []) fd.append("knowledge_base_urls", url);
+  for (const t of fields.knowledge_base_texts ?? [])
+    fd.append("knowledge_base_texts", JSON.stringify(t));
+  for (const f of files) fd.append("knowledge_base_files", f, f.name);
+  return fd;
+}
 
 // ------------------------------------------------------- backend raw shapes
 // The backend speaks Retell's wire format; the UI types in lib/types.ts are
@@ -258,6 +277,9 @@ export interface RawKnowledgeBase {
     title?: string;
     url?: string;
     content?: string;
+    filename?: string;
+    file_size?: number;
+    file_url?: string;
   }[];
   last_refreshed_timestamp?: number;
   [key: string]: unknown;
@@ -379,6 +401,30 @@ export function uiPhoneFromRaw(p: RawPhoneNumber): PhoneNumber {
   };
 }
 
+function extFromFilename(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "txt";
+}
+
+function kbDocFromSource(s: RawKnowledgeBase["knowledge_base_sources"][number]): KnowledgeDocument {
+  return {
+    document_id: s.source_id,
+    name: s.title ?? s.url ?? s.filename ?? s.source_id,
+    type:
+      s.type === "url" ? "url" : s.type === "document" ? extFromFilename(s.filename ?? "") : "txt",
+    size_kb: s.file_size
+      ? Math.max(1, Math.round(s.file_size / 1024))
+      : s.content
+        ? Math.max(1, Math.round(s.content.length / 1024))
+        : 0,
+    file_url: s.file_url,
+  };
+}
+
+export function docsFromRawKb(raw: RawKnowledgeBase): KnowledgeDocument[] {
+  return (raw.knowledge_base_sources ?? []).map(kbDocFromSource);
+}
+
 export function uiKbFromRaw(k: RawKnowledgeBase): KnowledgeBase {
   return {
     knowledge_base_id: k.knowledge_base_id,
@@ -387,12 +433,7 @@ export function uiKbFromRaw(k: RawKnowledgeBase): KnowledgeBase {
     uploaded_by: k.last_refreshed_timestamp
       ? new Date(k.last_refreshed_timestamp).toLocaleDateString()
       : "",
-    documents: (k.knowledge_base_sources ?? []).map((s) => ({
-      document_id: s.source_id,
-      name: s.title ?? s.url ?? s.source_id,
-      type: s.type === "url" ? "url" : "txt",
-      size_kb: s.content ? Math.max(1, Math.round(s.content.length / 1024)) : 0,
-    })),
+    documents: docsFromRawKb(k),
   };
 }
 
@@ -530,17 +571,52 @@ export const api = {
   listKnowledgeBases: async (): Promise<KnowledgeBase[]> =>
     (await request<RawKnowledgeBase[]>("/list-knowledge-bases")).map(uiKbFromRaw),
 
-  createKnowledgeBase: (body: {
-    knowledge_base_name: string;
-    knowledge_base_texts?: { title: string; text: string }[];
-    knowledge_base_urls?: string[];
-  }) => request<RawKnowledgeBase>("/create-knowledge-base", post(body)),
+  createKnowledgeBase: (
+    body: {
+      knowledge_base_name: string;
+      knowledge_base_texts?: { title: string; text: string }[];
+      knowledge_base_urls?: string[];
+    },
+    files: File[] = [],
+  ) =>
+    files.length
+      ? request<RawKnowledgeBase>("/create-knowledge-base", {
+          method: "POST",
+          body: kbFormData(body, files),
+        })
+      : request<RawKnowledgeBase>("/create-knowledge-base", post(body)),
 
   deleteKnowledgeBase: (id: string) =>
     request<void>(`/delete-knowledge-base/${encodeURIComponent(id)}`, del),
 
-  addKnowledgeBaseSources: (id: string, body: Record<string, unknown>) =>
-    request<RawKnowledgeBase>(`/add-knowledge-base-sources/${encodeURIComponent(id)}`, post(body)),
+  addKnowledgeBaseSources: (
+    id: string,
+    body: {
+      knowledge_base_texts?: { title: string; text: string }[];
+      knowledge_base_urls?: string[];
+    },
+    files: File[] = [],
+  ) =>
+    files.length
+      ? request<RawKnowledgeBase>(`/add-knowledge-base-sources/${encodeURIComponent(id)}`, {
+          method: "POST",
+          body: kbFormData(body, files),
+        })
+      : request<RawKnowledgeBase>(`/add-knowledge-base-sources/${encodeURIComponent(id)}`, post(body)),
+
+  downloadKnowledgeBaseFile: async (id: string, sourceId: string): Promise<Blob> => {
+    const token = bearerToken();
+    const res = await fetch(
+      `${API_BASE}/get-knowledge-base-file/${encodeURIComponent(id)}/source/${encodeURIComponent(sourceId)}`,
+      {
+        cache: "no-store",
+        signal: AbortSignal.timeout(30_000),
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      },
+    );
+    if (!res.ok) throw new ApiError(`Download failed (${res.status})`, res.status);
+    return res.blob();
+  },
 
   deleteKnowledgeBaseSource: (id: string, sourceId: string) =>
     request<RawKnowledgeBase>(

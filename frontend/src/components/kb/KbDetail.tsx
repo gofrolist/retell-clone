@@ -5,7 +5,7 @@ import CopyId from "@/components/ui/CopyId";
 import { Field, TextInput } from "@/components/ui/Field";
 import Modal from "@/components/ui/Modal";
 import { UnderlineTabs } from "@/components/ui/Tabs";
-import { api, type RawKnowledgeBase } from "@/lib/api";
+import { api, docsFromRawKb } from "@/lib/api";
 import type { KnowledgeBase, KnowledgeDocument } from "@/lib/types";
 import { truncateId } from "@/lib/utils";
 import { CheckCircle2, FileText, Plus, Trash2 } from "lucide-react";
@@ -17,33 +17,6 @@ const TYPE_STYLES: Record<string, string> = {
   txt: "bg-app text-sub border-line",
   url: "bg-violet-50 text-violet-700 border-violet-100",
 };
-
-/**
- * The backend serializes sources as `knowledge_base_sources` (Retell wire
- * shape) with text under `content`, which the lib/api adapter doesn't read
- * yet — map raw responses here so fresh mutations render correctly.
- */
-export function docsFromRawKb(raw: RawKnowledgeBase): KnowledgeDocument[] {
-  const rec = raw as Record<string, unknown>;
-  const sources = (rec.knowledge_base_sources ?? rec.sources ?? []) as {
-    source_id: string;
-    type: string;
-    title?: string;
-    url?: string;
-    content?: string;
-    text?: string;
-    filename?: string;
-  }[];
-  return sources.map((s) => {
-    const text = s.content ?? s.text;
-    return {
-      document_id: s.source_id,
-      name: s.title ?? s.url ?? s.filename ?? s.source_id,
-      type: s.type === "url" ? "url" : "txt",
-      size_kb: text ? Math.max(1, Math.round(text.length / 1024)) : 0,
-    };
-  });
-}
 
 export default function KbDetail({
   kb,

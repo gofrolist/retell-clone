@@ -106,8 +106,11 @@ export interface ListCallsResponse {
 export interface KnowledgeDocument {
   document_id: string;
   name: string;
-  type: "md" | "pdf" | "url" | "txt";
+  /** Badge label: file extension for documents ("pdf", "md", …), "url", or "txt". */
+  type: string;
   size_kb: number;
+  /** Present on uploaded files; download goes through api.downloadKnowledgeBaseFile. */
+  file_url?: string;
 }
 
 export interface KnowledgeBase {

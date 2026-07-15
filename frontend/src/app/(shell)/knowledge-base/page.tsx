@@ -1,6 +1,7 @@
 "use client";
 
-import KbDetail, { docsFromRawKb } from "@/components/kb/KbDetail";
+import KbDetail from "@/components/kb/KbDetail";
+import { docsFromRawKb } from "@/lib/api";
 import SecondaryPanel from "@/components/shell/SecondaryPanel";
 import Button from "@/components/ui/Button";
 import EmptyState from "@/components/ui/EmptyState";
