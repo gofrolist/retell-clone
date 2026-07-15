@@ -6,6 +6,7 @@
 // explicitly run with NEXT_PUBLIC_DEMO_MODE=true, which is labelled in the UI.
 
 import { getValidSession } from "./auth";
+import { kbFromBytes } from "./utils";
 import type {
   Agent,
   AgentFolder,
@@ -406,7 +407,10 @@ export function uiPhoneFromRaw(p: RawPhoneNumber): PhoneNumber {
 
 function extFromFilename(name: string): string {
   const dot = name.lastIndexOf(".");
-  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "txt";
+  const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+  // Real extensions are short (pdf, docx, html, csv…); a long tail after the
+  // last dot is part of the name, not an extension.
+  return ext && ext.length <= 4 ? ext : "txt";
 }
 
 function kbDocFromSource(s: RawKnowledgeBase["knowledge_base_sources"][number]): KnowledgeDocument {
@@ -415,11 +419,12 @@ function kbDocFromSource(s: RawKnowledgeBase["knowledge_base_sources"][number]):
     name: s.title ?? s.url ?? s.filename ?? s.source_id,
     type:
       s.type === "url" ? "url" : s.type === "document" ? extFromFilename(s.filename ?? "") : "txt",
-    size_kb: s.file_size
-      ? Math.max(1, Math.round(s.file_size / 1024))
-      : s.content
-        ? Math.max(1, Math.round(s.content.length / 1024))
-        : 0,
+    size_kb:
+      typeof s.file_size === "number"
+        ? kbFromBytes(s.file_size)
+        : s.content
+          ? kbFromBytes(s.content.length)
+          : 0,
     file_url: s.file_url,
   };
 }
@@ -608,15 +613,27 @@ export const api = {
       : request<RawKnowledgeBase>(`/add-knowledge-base-sources/${encodeURIComponent(id)}`, post(body)),
 
   downloadKnowledgeBaseFile: async (id: string, sourceId: string): Promise<Blob> => {
+    if (DEMO_MODE) throw new ApiError("Downloads are not available in demo mode", 0);
     const token = bearerToken();
-    const res = await fetch(
-      `${API_BASE}/get-knowledge-base-file/${encodeURIComponent(id)}/source/${encodeURIComponent(sourceId)}`,
-      {
-        cache: "no-store",
-        signal: AbortSignal.timeout(30_000),
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      },
-    );
+    let res: Response;
+    try {
+      res = await fetch(
+        `${API_BASE}/get-knowledge-base-file/${encodeURIComponent(id)}/source/${encodeURIComponent(sourceId)}`,
+        {
+          cache: "no-store",
+          signal: AbortSignal.timeout(30_000),
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        },
+      );
+    } catch {
+      setBackendStatus("unreachable");
+      throw new ApiError(`Backend unreachable at ${API_BASE}`, 0);
+    }
+    if (res.status === 401) {
+      setBackendStatus("unauthorized");
+      throw new ApiError("Not authorized — sign in or set NEXT_PUBLIC_API_KEY", res.status);
+    }
+    setBackendStatus("ok");
     if (!res.ok) throw new ApiError(`Download failed (${res.status})`, res.status);
     return res.blob();
   },

@@ -1,15 +1,15 @@
 "use client";
 
-import AddSourceMenu, { type PendingSource } from "@/components/kb/AddSourceMenu";
+import AddSourceMenu, { partitionPendingSources, type PendingSource } from "@/components/kb/AddSourceMenu";
 import KbDetail from "@/components/kb/KbDetail";
 import SecondaryPanel from "@/components/shell/SecondaryPanel";
 import Button from "@/components/ui/Button";
 import EmptyState from "@/components/ui/EmptyState";
 import { Field, TextInput } from "@/components/ui/Field";
 import Modal from "@/components/ui/Modal";
-import { api, docsFromRawKb } from "@/lib/api";
-import type { KnowledgeBase, KnowledgeDocument } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { api } from "@/lib/api";
+import type { KnowledgeBase } from "@/lib/types";
+import { cn, kbFromBytes } from "@/lib/utils";
 import { FileText, Library, Link2, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
@@ -18,9 +18,6 @@ export default function KnowledgeBasePage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // The lib/api list adapter doesn't surface `knowledge_base_sources` yet, so
-  // keep the freshest documents we've seen from raw mutation responses.
-  const [docsOverride, setDocsOverride] = useState<Record<string, KnowledgeDocument[]>>({});
 
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
@@ -52,11 +49,7 @@ export default function KnowledgeBasePage() {
       setCreateError("Name is required.");
       return;
     }
-    const urls = pending.flatMap((p) => (p.kind === "url" ? [p.url] : []));
-    const texts = pending.flatMap((p) =>
-      p.kind === "text" ? [{ title: p.title, text: p.text }] : [],
-    );
-    const files = pending.flatMap((p) => (p.kind === "file" ? [p.file] : []));
+    const { urls, texts, files } = partitionPendingSources(pending);
     setCreating(true);
     setCreateError(null);
     try {
@@ -68,7 +61,6 @@ export default function KnowledgeBasePage() {
         },
         files,
       );
-      setDocsOverride((m) => ({ ...m, [raw.knowledge_base_id]: docsFromRawKb(raw) }));
       await refresh();
       setSelected(raw.knowledge_base_id);
       setName("");
@@ -90,13 +82,10 @@ export default function KnowledgeBasePage() {
   function pendingMeta(p: PendingSource): string {
     if (p.kind === "url") return "Web page";
     if (p.kind === "text") return "Text";
-    return `${Math.max(1, Math.round(p.file.size / 1024))} KB`;
+    return `${kbFromBytes(p.file.size)} KB`;
   }
 
-  const kbRaw = kbs.find((k) => k.knowledge_base_id === selected);
-  const kb = kbRaw
-    ? { ...kbRaw, documents: docsOverride[kbRaw.knowledge_base_id] ?? kbRaw.documents }
-    : undefined;
+  const kb = kbs.find((k) => k.knowledge_base_id === selected);
 
   return (
     <SecondaryPanel
@@ -140,16 +129,14 @@ export default function KnowledgeBasePage() {
         <KbDetail
           kb={kb}
           onDeleted={() => {
-            setDocsOverride((m) => {
-              const { [kb.knowledge_base_id]: _removed, ...rest } = m;
-              return rest;
-            });
             refresh()
               .then((list) => setSelected(list[0]?.knowledge_base_id ?? null))
               .catch(() => {});
           }}
           onSourcesChanged={(kbId, docs) => {
-            setDocsOverride((m) => ({ ...m, [kbId]: docs }));
+            setKbs((prev) =>
+              prev.map((k) => (k.knowledge_base_id === kbId ? { ...k, documents: docs } : k)),
+            );
             refresh().catch(() => {});
           }}
         />

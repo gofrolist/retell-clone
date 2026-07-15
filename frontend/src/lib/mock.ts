@@ -546,12 +546,18 @@ function rawKb(k: KnowledgeBase): Record<string, unknown> {
     knowledge_base_id: k.knowledge_base_id,
     knowledge_base_name: k.knowledge_base_name,
     status: k.status === "ready" ? "complete" : "in_progress",
-    knowledge_base_sources: k.documents.map((d) => ({
-      source_id: d.document_id,
-      type: d.type === "url" ? "url" : "document",
-      title: d.name,
-      content: "x".repeat(d.size_kb * 1024),
-    })),
+    knowledge_base_sources: k.documents.map((d) =>
+      d.type === "url"
+        ? { source_id: d.document_id, type: "url", title: d.name, content: "x".repeat(d.size_kb * 1024) }
+        : {
+            source_id: d.document_id,
+            type: "document",
+            title: d.name,
+            filename: d.name,
+            file_size: d.size_kb * 1024,
+            file_url: `/get-knowledge-base-file/${k.knowledge_base_id}/source/${d.document_id}`,
+          },
+    ),
     last_refreshed_timestamp: NOW,
   };
 }

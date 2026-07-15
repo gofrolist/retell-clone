@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import UploadFile
 
 from ..auth import require_api_key
-from ..config import get_settings
+from ..config import public_base_url
 from ..db import get_session
 from ..ids import new_knowledge_base_id, new_source_id
 from ..models import ApiKey, KnowledgeBase, KnowledgeBaseFile, now_ms
@@ -25,14 +25,17 @@ from ..schemas_extra import knowledge_base_to_dict
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["knowledge-bases"])
 
+_FILENAME_MAX = KnowledgeBaseFile.filename.type.length
+_CONTENT_TYPE_MAX = KnowledgeBaseFile.content_type.type.length
+
+# Mirrored client-side as MAX_FILE_MB in frontend/src/components/kb/AddSourceMenu.tsx.
 MAX_FILE_BYTES = 20 * 1024 * 1024  # 20MB per uploaded file
 
 
 def _file_url(knowledge_base_id: str, source_id: str) -> str:
     # Same convention as preview_audio_url: absolute when public_api_url is
     # configured, relative otherwise.
-    base = get_settings().public_api_url.rstrip("/")
-    return f"{base}/get-knowledge-base-file/{knowledge_base_id}/source/{source_id}"
+    return f"{public_base_url()}/get-knowledge-base-file/{knowledge_base_id}/source/{source_id}"
 
 
 async def _parse_body(request: Request) -> dict[str, Any]:
@@ -62,13 +65,51 @@ async def _parse_body(request: Request) -> dict[str, Any]:
     return out
 
 
+async def _read_capped(file: UploadFile) -> bytes:
+    """Read an upload in 1MB chunks, aborting at MAX_FILE_BYTES.
+
+    Bounds handler memory to the cap; the file is always closed, including
+    on the over-cap path.
+    """
+    chunks: list[bytes] = []
+    size = 0
+    while chunk := await file.read(1024 * 1024):
+        size += len(chunk)
+        if size > MAX_FILE_BYTES:
+            await file.close()
+            raise HTTPException(413, detail="File exceeds the 20MB limit")
+        chunks.append(chunk)
+    await file.close()
+    return b"".join(chunks)
+
+
 async def _build_sources(
     data: dict[str, Any], *, workspace_id: str, knowledge_base_id: str
 ) -> tuple[list[dict[str, Any]], list[KnowledgeBaseFile]]:
-    """Normalize request payload into source dicts + file blob rows."""
+    """Normalize request payload into source dicts + file blob rows.
+
+    On any HTTPException exit every uploaded file is closed (close() is
+    idempotent, so files already drained by _read_capped are fine).
+    """
+    try:
+        return await _build_sources_inner(
+            data, workspace_id=workspace_id, knowledge_base_id=knowledge_base_id
+        )
+    except HTTPException:
+        for file in data.get("knowledge_base_files") or []:
+            if not isinstance(file, str):
+                await file.close()
+        raise
+
+
+async def _build_sources_inner(
+    data: dict[str, Any], *, workspace_id: str, knowledge_base_id: str
+) -> tuple[list[dict[str, Any]], list[KnowledgeBaseFile]]:
     sources: list[dict[str, Any]] = []
     blobs: list[KnowledgeBaseFile] = []
     for text in data.get("knowledge_base_texts") or []:
+        if not isinstance(text, dict):
+            raise HTTPException(422, detail="knowledge_base_texts items must be objects")
         title = text.get("title")
         content = text.get("text")
         if not title or content is None:
@@ -89,17 +130,12 @@ async def _build_sources(
             # metadata-only source for them.
             sources.append({"type": "document", "source_id": new_source_id(), "filename": file})
             continue
-        content_bytes = await file.read()
-        await file.close()
-        if len(content_bytes) > MAX_FILE_BYTES:
-            raise HTTPException(413, detail="File exceeds the 20MB limit")
+        content_bytes = await _read_capped(file)
         source_id = new_source_id()
-        # Clamp to the column widths (String(255)/String(128) in models.py):
-        # SQLite ignores VARCHAR lengths, but Postgres raises DataError on
-        # overflow, so an over-long filename/content_type would 500 in prod
-        # while passing tests unless we clamp before storing.
-        filename = (file.filename or source_id)[:255]
-        content_type = (file.content_type or "application/octet-stream")[:128]
+        # Clamp to the column widths so an over-long filename/content_type
+        # can't trip a Postgres DataError (SQLite ignores VARCHAR lengths).
+        filename = (file.filename or source_id)[:_FILENAME_MAX]
+        content_type = (file.content_type or "application/octet-stream")[:_CONTENT_TYPE_MAX]
         sources.append(
             {
                 "type": "document",
@@ -249,12 +285,14 @@ async def get_knowledge_base_file(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    row = await session.get(KnowledgeBaseFile, source_id)
-    if (
-        row is None
-        or row.workspace_id != api_key.workspace_id
-        or row.knowledge_base_id != knowledge_base_id
-    ):
+    row = await session.scalar(
+        select(KnowledgeBaseFile).where(
+            KnowledgeBaseFile.source_id == source_id,
+            KnowledgeBaseFile.knowledge_base_id == knowledge_base_id,
+            KnowledgeBaseFile.workspace_id == api_key.workspace_id,
+        )
+    )
+    if row is None:
         raise HTTPException(404, detail="File not found")
     return Response(
         content=row.data,

@@ -5,7 +5,7 @@ import { Field, TextInput } from "@/components/ui/Field";
 import Select from "@/components/ui/Select";
 import { api } from "@/lib/api";
 import type { PhoneNumber } from "@/lib/types";
-import { cn, isE164 } from "@/lib/utils";
+import { cn, isE164, triggerBlobDownload } from "@/lib/utils";
 import {
   CalendarClock,
   CheckCircle2,
@@ -102,13 +102,7 @@ function recipientsFromCsv(text: string): { recipients: Recipient[]; error?: str
 }
 
 function downloadTemplate() {
-  const blob = new Blob([TEMPLATE_CSV], { type: "text/csv" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "batch-call-template.csv";
-  a.click();
-  URL.revokeObjectURL(url);
+  triggerBlobDownload(new Blob([TEMPLATE_CSV], { type: "text/csv" }), "batch-call-template.csv");
 }
 
 export default function BatchCallPage() {

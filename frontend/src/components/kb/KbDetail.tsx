@@ -1,11 +1,14 @@
 "use client";
 
-import AddSourceMenu, { type PendingSource } from "@/components/kb/AddSourceMenu";
+import AddSourceMenu, {
+  partitionPendingSources,
+  type PendingSource,
+} from "@/components/kb/AddSourceMenu";
 import Button from "@/components/ui/Button";
 import CopyId from "@/components/ui/CopyId";
 import { api, docsFromRawKb } from "@/lib/api";
 import type { KnowledgeBase, KnowledgeDocument } from "@/lib/types";
-import { truncateId } from "@/lib/utils";
+import { triggerBlobDownload, truncateId } from "@/lib/utils";
 import { CheckCircle2, Download, FileText, Trash2 } from "lucide-react";
 import { useState } from "react";
 
@@ -59,11 +62,7 @@ export default function KbDetail({
   }
 
   async function addSources(sources: PendingSource[]) {
-    const urls = sources.flatMap((p) => (p.kind === "url" ? [p.url] : []));
-    const texts = sources.flatMap((p) =>
-      p.kind === "text" ? [{ title: p.title, text: p.text }] : [],
-    );
-    const files = sources.flatMap((p) => (p.kind === "file" ? [p.file] : []));
+    const { urls, texts, files } = partitionPendingSources(sources);
     setAdding(true);
     setError(null);
     try {
@@ -87,12 +86,7 @@ export default function KbDetail({
     setError(null);
     try {
       const blob = await api.downloadKnowledgeBaseFile(kb.knowledge_base_id, doc.document_id);
-      const href = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = href;
-      a.download = doc.name;
-      a.click();
-      URL.revokeObjectURL(href);
+      triggerBlobDownload(blob, doc.name);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to download file");
     }
@@ -136,7 +130,7 @@ export default function KbDetail({
           {kb.documents.map((doc) => (
             <div key={doc.document_id} className="flex items-center gap-3 px-4 py-3">
               <span
-                className={`flex size-8 items-center justify-center rounded-lg border text-[10px] font-bold uppercase ${TYPE_STYLES[doc.type] ?? TYPE_STYLES.txt}`}
+                className={`flex size-8 shrink-0 items-center justify-center rounded-lg border text-[10px] font-bold uppercase ${TYPE_STYLES[doc.type] ?? TYPE_STYLES.txt}`}
               >
                 {doc.type}
               </span>

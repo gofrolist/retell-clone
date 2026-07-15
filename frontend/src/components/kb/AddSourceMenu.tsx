@@ -1,19 +1,34 @@
 "use client";
 
 import Button from "@/components/ui/Button";
-import { Field, TextInput } from "@/components/ui/Field";
+import { Field, TextInput, Textarea } from "@/components/ui/Field";
 import Modal from "@/components/ui/Modal";
 import { useClickOutside } from "@/lib/useClickOutside";
 import { FileText, Link2, Plus, Upload } from "lucide-react";
-import { useCallback, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 
 export type PendingSource =
   | { kind: "url"; url: string }
   | { kind: "text"; title: string; text: string }
   | { kind: "file"; file: File };
 
+// Mirrored server-side as MAX_FILE_BYTES in backend/src/architeq_api/api/knowledge_bases.py.
 export const MAX_FILE_MB = 20;
+const MENU_WIDTH = 288; // w-72
+const VIEWPORT_MARGIN = 8;
 const ACCEPT = ".pdf,.doc,.docx,.txt,.md,.html,.csv";
+
+export function partitionPendingSources(sources: PendingSource[]): {
+  urls: string[];
+  texts: { title: string; text: string }[];
+  files: File[];
+} {
+  return {
+    urls: sources.flatMap((p) => (p.kind === "url" ? [p.url] : [])),
+    texts: sources.flatMap((p) => (p.kind === "text" ? [{ title: p.title, text: p.text }] : [])),
+    files: sources.flatMap((p) => (p.kind === "file" ? [p.file] : [])),
+  };
+}
 
 const MENU_ITEMS = [
   {
@@ -63,6 +78,19 @@ export default function AddSourceMenu({
     menuRef,
     useCallback(() => setOpen(false), []),
   );
+
+  // Fixed-position menus detach from their trigger on scroll/resize — close
+  // instead of leaving them floating in the wrong spot.
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", close, true); // capture: nested scrollers too
+    return () => {
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [open]);
 
   function pick(key: "url" | "file" | "text") {
     setOpen(false);
@@ -120,14 +148,18 @@ export default function AddSourceMenu({
             const estimatedMenuHeight = 200;
             const openUp =
               rect.bottom + 4 + estimatedMenuHeight > window.innerHeight;
+            const left = Math.min(
+              Math.max(rect.left, VIEWPORT_MARGIN),
+              window.innerWidth - MENU_WIDTH - VIEWPORT_MARGIN,
+            );
             setMenuPos(
               openUp
                 ? {
                     top: rect.top - 4,
-                    left: rect.left,
+                    left,
                     transform: "translateY(-100%)",
                   }
-                : { top: rect.bottom + 4, left: rect.left },
+                : { top: rect.bottom + 4, left },
             );
           }
           setOpen((v) => !v);
@@ -183,13 +215,12 @@ export default function AddSourceMenu({
         }
       >
         <Field label="URLs" hint="One URL per line.">
-          <textarea
+          <Textarea
             value={urlsText}
             onChange={(e) => setUrlsText(e.target.value)}
             rows={4}
             placeholder={"https://example.com/docs\nhttps://example.com/faq"}
             autoFocus
-            className="w-full rounded-lg border border-line bg-white px-3 py-2 text-[13px] outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/15"
           />
         </Field>
       </Modal>
@@ -224,12 +255,11 @@ export default function AddSourceMenu({
             />
           </Field>
           <Field label="Text">
-            <textarea
+            <Textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
               rows={6}
               placeholder="Paste the content here…"
-              className="w-full rounded-lg border border-line bg-white px-3 py-2 text-[13px] outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/15"
             />
           </Field>
         </div>

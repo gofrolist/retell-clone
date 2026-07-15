@@ -44,6 +44,21 @@ export function truncateId(id: string, head = 12): string {
   return id.length > head + 2 ? `${id.slice(0, head)}…` : id;
 }
 
+/** Display size in whole KB with a 1 KB floor. */
+export function kbFromBytes(bytes: number): number {
+  return Math.max(1, Math.round(bytes / 1024));
+}
+
+/** Client-side "save blob as file" via a temporary anchor. */
+export function triggerBlobDownload(blob: Blob, filename: string): void {
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(href);
+}
+
 /**
  * Ensure a select can render a stored value that isn't in the preset list by
  * prepending it (shown as `label`, defaulting to the raw value). Empty values

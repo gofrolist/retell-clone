@@ -192,6 +192,56 @@ async def test_upload_over_size_cap_413(client, monkeypatch):
     assert resp.status_code == 413
 
 
+async def test_mixed_batch_over_cap_413_closes_all(client, monkeypatch):
+    monkeypatch.setattr(kb_module, "MAX_FILE_BYTES", 10)
+    resp = await client.post(
+        "/create-knowledge-base",
+        headers=AUTH_HEADERS,
+        data={"knowledge_base_name": "Mixed"},
+        files=[
+            ("knowledge_base_files", ("ok1.txt", b"tiny", "text/plain")),
+            ("knowledge_base_files", ("big.txt", b"x" * 11, "text/plain")),
+            ("knowledge_base_files", ("ok2.txt", b"tiny", "text/plain")),
+        ],
+    )
+    assert resp.status_code == 413
+
+
+async def test_texts_must_be_objects_json(client):
+    resp = await client.post(
+        "/create-knowledge-base",
+        headers=AUTH_HEADERS,
+        json={"knowledge_base_name": "Bad texts", "knowledge_base_texts": ["hello"]},
+    )
+    assert resp.status_code == 422
+
+
+async def test_texts_must_be_objects_multipart(client):
+    resp = await client.post(
+        "/create-knowledge-base",
+        headers=AUTH_HEADERS,
+        # httpx only emits multipart/form-data when a `files=` part is present
+        # (plain `data=` urlencodes, which would 500 on the JSON-parse
+        # fallback). Filename=None keeps these as plain form fields rather
+        # than UploadFiles, so there's nothing left unclosed when this 422s.
+        files={
+            "knowledge_base_name": (None, "Bad texts"),
+            "knowledge_base_texts": (None, json.dumps("hello")),
+        },
+    )
+    assert resp.status_code == 422
+
+
+async def test_invalid_texts_with_files_closes_uploads(client):
+    resp = await client.post(
+        "/create-knowledge-base",
+        headers=AUTH_HEADERS,
+        data={"knowledge_base_name": "Bad", "knowledge_base_texts": json.dumps("hello")},
+        files={"knowledge_base_files": ("a.txt", b"tiny", "text/plain")},
+    )
+    assert resp.status_code == 422
+
+
 async def test_upload_clamps_long_filename(client):
     long_name = "a" * 300 + ".pdf"
     resp = await client.post(
