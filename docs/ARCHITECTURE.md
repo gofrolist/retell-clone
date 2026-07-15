@@ -77,6 +77,17 @@ LiveKit Agents worker; one job per call.
   variables `{{call.call_id}}`, `{{call.direction}}`, `{{call.from_number}}`,
   `{{call.to_number}}` resolve too (Retell parity — consumer tool specs pass
   `{{call.call_id}}` as `retell_call_id`).
+- Retell **default system variables** resolve underneath user variables
+  (worker `variables.ResolutionVariables`, computed at lookup time so tools
+  see fresh values mid-call): `{{current_time}}` / `{{current_hour}}` /
+  `{{current_calendar}}` in `America/Los_Angeles` plus
+  `{{current_time_<IANA tz>}}`-style suffixed variants; `{{session_type}}`,
+  `{{session_duration}}` (after answer); phone-call-only `{{direction}}`,
+  `{{user_number}}`, `{{agent_number}}`; and `{{call_id}}`, `{{call_type}}`.
+  One level of nesting resolves innermost-first
+  (`{{current_time_{{user_timezone}}}}`). Chat resolves `{{chat_id}}` and
+  `{{session_type}}` control-plane-side. Unknown names and unknown timezone
+  suffixes stay literal.
 - **Custom function tools**: executes agent tool declarations
   (`name/description/url/method/parameters`) by POSTing the **flat** argument
   object (never wrapped in `args`) with header `X-Caller-Secret: <function_secret>`,
@@ -136,7 +147,9 @@ contract test suite in `backend/tests/contract/`:
 5. All `retell_llm_dynamic_variables` (arbitrary string keys/values) reach the
    agent as `{{key}}` template values — no renaming, no dropping. Call-scoped
    `{{call.*}}` system variables are additionally available and win over
-   same-named user variables.
+   same-named user variables. Retell default system variables
+   (`{{current_time}}`, `{{direction}}`, `{{session_duration}}`, …) resolve
+   only when no user variable has that name.
 6. Inbound router response is read as
    `{"call_inbound": {"override_agent_id", "dynamic_variables"}}`; failure
    degrades to default agent, never drops the call.

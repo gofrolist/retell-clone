@@ -101,7 +101,14 @@ a tool set, not a separate agent. Dynamic variables in play (all strings):
 medications_today, trial_status, is_last_day_of_trial, is_day_1,
 needs_evening_setup, time_of_day, consecutive_missed_calls, call_direction,
 is_existing_client, is_new_caller, on_dnc_list, opener_variant, bm_greeting,
-offer_early_payment`.
+offer_early_payment`. These are all consumer-supplied (`time_of_day` and
+`call_direction` included — the dispatchers compute them); Retell *default*
+system variables (`{{current_time}}`, `{{current_time_<tz>}}`,
+`{{current_hour}}`, `{{current_calendar}}`, `{{session_type}}`,
+`{{session_duration}}`, `{{direction}}`, `{{user_number}}`,
+`{{agent_number}}`, `{{call_id}}`, `{{call_type}}`, chat `{{chat_id}}`) are
+also implemented, resolving beneath consumer-supplied names
+(docs/ARCHITECTURE.md § architeq-worker).
 
 ## Consumer env vars
 

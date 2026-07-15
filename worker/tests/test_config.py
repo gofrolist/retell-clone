@@ -32,6 +32,23 @@ def test_resolution_variables_include_call_scoped_keys() -> None:
     assert variables["first_name"] == "John"
 
 
+def test_resolution_variables_expose_retell_system_names() -> None:
+    cfg = CallConfig.from_dict({**CONFIG_DICT, "call_type": "phone_call"})
+    variables = cfg.resolution_variables()
+    assert variables["call_id"] == "call_abc123"
+    assert variables["direction"] == "outbound"
+    assert variables["call_type"] == "phone_call"
+    assert variables["user_number"] == "+15551234567"  # outbound: user == to_number
+    assert variables["agent_number"] == "+19499195585"
+    assert variables["session_type"] == "voice"
+    assert "current_time" in variables
+
+
+def test_call_type_defaults_to_phone_call() -> None:
+    # Older control planes omit call_type from the config payload.
+    assert CallConfig.from_dict(CONFIG_DICT).call_type == "phone_call"
+
+
 def test_call_scoped_keys_win_over_user_variables() -> None:
     poisoned = dict(CONFIG_DICT)
     poisoned["dynamic_variables"] = {"call.call_id": "stale_id"}

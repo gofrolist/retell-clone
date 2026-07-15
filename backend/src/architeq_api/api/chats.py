@@ -43,6 +43,19 @@ def _message(role: str, content: str) -> dict[str, Any]:
     }
 
 
+def _resolve_chat_prompt(general_prompt: str, chat: Chat) -> str:
+    # Retell chat system variables resolve underneath user-supplied dynamic
+    # variables (docs.retellai.com/build/dynamic-variables).
+    variables = {
+        "chat_id": chat.chat_id,
+        "session_type": "chat",
+        **{str(k): str(v) for k, v in (chat.retell_llm_dynamic_variables or {}).items()},
+    }
+    for key, value in variables.items():
+        general_prompt = general_prompt.replace("{{" + key + "}}", value)
+    return general_prompt
+
+
 async def _agent_reply(chat: Chat, session: AsyncSession) -> str:
     """Generate the agent's next turn via Gemini; canned reply without a key."""
     settings = get_settings()
@@ -54,9 +67,7 @@ async def _agent_reply(chat: Chat, session: AsyncSession) -> str:
     if agent and (llm_id := (agent.response_engine or {}).get("llm_id")):
         llm = await session.get(RetellLLM, llm_id)
         if llm and llm.general_prompt:
-            general_prompt = llm.general_prompt
-            for key, value in (chat.retell_llm_dynamic_variables or {}).items():
-                general_prompt = general_prompt.replace("{{" + key + "}}", str(value))
+            general_prompt = _resolve_chat_prompt(llm.general_prompt, chat)
 
     history = "".join(
         f"{'Agent' if m.get('role') == 'agent' else 'User'}: {m.get('content', '')}\n"

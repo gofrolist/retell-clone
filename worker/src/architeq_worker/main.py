@@ -524,9 +524,11 @@ async def entrypoint(ctx: JobContext) -> None:
 
     state.answered_at_ms = now_ms()
 
-    # Dynamic variables + call-scoped {{call.*}} system variables
-    # (consumer tool specs pass {{call.call_id}} as retell_call_id).
-    variables = cfg.resolution_variables()
+    # Dynamic variables + Retell system variables: call-scoped {{call.*}}
+    # (consumer tool specs pass {{call.call_id}} as retell_call_id) and
+    # defaults like {{current_time}} / {{session_duration}}, computed lazily
+    # at each template resolution.
+    variables = cfg.resolution_variables(answered_at_ms=state.answered_at_ms)
     runtime = CallRuntime(ctx, lkapi, state)
     runtime.sip_participant_identity = (
         participant.identity if _is_sip_participant(participant) else None

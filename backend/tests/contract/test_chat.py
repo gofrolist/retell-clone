@@ -26,6 +26,20 @@ async def test_create_chat(client):
     assert body["message_with_tool_calls"] == []
 
 
+def test_chat_prompt_resolves_system_and_user_variables():
+    from architeq_api.api.chats import _resolve_chat_prompt
+    from architeq_api.models import Chat
+
+    chat = Chat(
+        chat_id="chat_abc123",
+        retell_llm_dynamic_variables={"customer_name": "John", "session_type": "override"},
+    )
+    prompt = "id={{chat_id}} type={{session_type}} name={{customer_name}} keep={{unknown}}"
+    assert _resolve_chat_prompt(prompt, chat) == (
+        "id=chat_abc123 type=override name=John keep={{unknown}}"
+    )
+
+
 async def test_create_chat_unknown_agent_is_non_2xx(client):
     resp = await client.post("/create-chat", headers=AUTH_HEADERS, json={"agent_id": "agent_nope"})
     assert resp.status_code == 422
