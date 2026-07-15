@@ -90,6 +90,7 @@ async def _build_sources(
             sources.append({"type": "document", "source_id": new_source_id(), "filename": file})
             continue
         content_bytes = await file.read()
+        await file.close()
         if len(content_bytes) > MAX_FILE_BYTES:
             raise HTTPException(413, detail="File exceeds the 20MB limit")
         source_id = new_source_id()
