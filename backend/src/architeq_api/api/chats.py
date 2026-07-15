@@ -10,6 +10,7 @@ from ..auth import require_api_key
 from ..config import get_settings
 from ..db import get_session
 from ..models import Agent, ApiKey, Chat, RetellLLM, now_ms
+from ..services.template_variables import ChatVariables, resolve_template
 from ..schemas_extra import (
     CreateChatCompletionRequest,
     CreateChatRequest,
@@ -43,6 +44,18 @@ def _message(role: str, content: str) -> dict[str, Any]:
     }
 
 
+def _resolve_chat_prompt(general_prompt: str, chat: Chat) -> str:
+    # Retell chat system variables (chat_id, session_type, session_duration,
+    # the current_time family) resolve underneath user-supplied dynamic
+    # variables, with the same template semantics as voice calls.
+    variables = ChatVariables(
+        {str(k): str(v) for k, v in (chat.retell_llm_dynamic_variables or {}).items()},
+        chat_id=chat.chat_id,
+        start_timestamp_ms=chat.start_timestamp,
+    )
+    return resolve_template(general_prompt, variables)
+
+
 async def _agent_reply(chat: Chat, session: AsyncSession) -> str:
     """Generate the agent's next turn via Gemini; canned reply without a key."""
     settings = get_settings()
@@ -54,9 +67,7 @@ async def _agent_reply(chat: Chat, session: AsyncSession) -> str:
     if agent and (llm_id := (agent.response_engine or {}).get("llm_id")):
         llm = await session.get(RetellLLM, llm_id)
         if llm and llm.general_prompt:
-            general_prompt = llm.general_prompt
-            for key, value in (chat.retell_llm_dynamic_variables or {}).items():
-                general_prompt = general_prompt.replace("{{" + key + "}}", str(value))
+            general_prompt = _resolve_chat_prompt(llm.general_prompt, chat)
 
     history = "".join(
         f"{'Agent' if m.get('role') == 'agent' else 'User'}: {m.get('content', '')}\n"

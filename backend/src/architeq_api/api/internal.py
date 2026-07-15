@@ -46,6 +46,9 @@ async def _call_config(call: Call, session: AsyncSession) -> dict[str, Any]:
         "direction": call.direction,
         "from_number": call.from_number,
         "to_number": call.to_number,
+        # The worker gates phone-call-only system variables ({{direction}},
+        # {{user_number}}, {{agent_number}}) on this.
+        "call_type": call.call_type,
         "agent": agent_to_dict(agent),
         "llm": llm_to_dict(llm) if llm is not None else None,
         "dynamic_variables": dyn,

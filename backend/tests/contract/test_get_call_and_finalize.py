@@ -42,6 +42,15 @@ async def test_get_call_exposes_consumer_read_fields(client):
     assert body["call_status"] == "ended"
 
 
+async def test_internal_call_config_includes_call_type(client):
+    # The worker gates phone-call-only system variables ({{direction}},
+    # {{user_number}}, {{agent_number}}) on call_type.
+    call_id = await _create_call(client)
+    resp = await client.get(f"/internal/calls/{call_id}/config", headers=INTERNAL_HEADERS)
+    assert resp.status_code == 200
+    assert resp.json()["call_type"] == "phone_call"
+
+
 async def test_finalize_is_idempotent(client):
     call_id = await _create_call(client)
     payload = {"duration_ms": 5000, "call_status": "ended", "disconnection_reason": "user_hangup"}

@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from architeq_worker.variables import ResolutionVariables
+
 
 def _num(value: Any, default: float) -> float:
     try:
@@ -96,6 +98,7 @@ class CallConfig:
     direction: str
     from_number: str
     to_number: str
+    call_type: str
     agent: AgentConfig
     llm: LLMConfig
     dynamic_variables: dict[str, Any]
@@ -110,6 +113,11 @@ class CallConfig:
             direction=_str(d.get("direction"), "outbound"),
             from_number=_str(d.get("from_number"), ""),
             to_number=_str(d.get("to_number"), ""),
+            # Fail closed: without call_type the phone-vs-web gate cannot
+            # decide, so ResolutionVariables exposes no call_type/direction/
+            # user_number/agent_number and those placeholders stay literal
+            # (matters only while an older control plane omits the field).
+            call_type=_str(d.get("call_type"), ""),
             agent=AgentConfig.from_dict(d.get("agent") or {}),
             llm=LLMConfig.from_dict(d.get("llm") or {}),
             # Already merged control-plane side: defaults < call-level vars.
@@ -119,21 +127,32 @@ class CallConfig:
             raw=d,
         )
 
-    def resolution_variables(self) -> dict[str, Any]:
-        """Dynamic variables plus Retell call-scoped system variables.
+    def resolution_variables(self, answered_at_ms: int | None = None) -> ResolutionVariables:
+        """Dynamic variables plus Retell system variables.
 
         Retell resolves ``{{call.call_id}}``-style placeholders from the live
         call object, and consumer tool specs depend on it (log_outcome
         requires ``retell_call_id={{call.call_id}}``). Call-scoped values are
         facts about the call, so they win over same-named user variables.
+        Retell default system variables ({{current_time}}, {{direction}},
+        {{session_duration}}, …) resolve lazily underneath user variables —
+        see ResolutionVariables.
         """
-        return {
-            **self.dynamic_variables,
-            "call.call_id": self.call_id,
-            "call.direction": self.direction,
-            "call.from_number": self.from_number,
-            "call.to_number": self.to_number,
-        }
+        return ResolutionVariables(
+            {
+                **self.dynamic_variables,
+                "call.call_id": self.call_id,
+                "call.direction": self.direction,
+                "call.from_number": self.from_number,
+                "call.to_number": self.to_number,
+            },
+            call_id=self.call_id,
+            direction=self.direction,
+            from_number=self.from_number,
+            to_number=self.to_number,
+            call_type=self.call_type,
+            answered_at_ms=answered_at_ms,
+        )
 
     def tool_call_object(self) -> dict[str, Any]:
         """The ``call`` object Retell sends alongside custom-function args.

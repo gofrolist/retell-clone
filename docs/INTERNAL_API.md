@@ -29,6 +29,9 @@ Full call execution config:
   "call_id": "call_…",
   "direction": "outbound",
   "from_number": "+1…", "to_number": "+1…",
+  "call_type": "phone_call" | "web_call",  // gates phone-call-only system vars
+      // ({{direction}}, {{user_number}}, {{agent_number}}) worker-side;
+      // absent -> fail closed (those placeholders stay literal)
   "agent": { /* full agent row: voice_id, language, interruption_sensitivity,
                responsiveness, enable_backchannel, reminder_trigger_ms,
                reminder_max_count, max_call_duration_ms,

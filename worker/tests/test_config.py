@@ -32,6 +32,30 @@ def test_resolution_variables_include_call_scoped_keys() -> None:
     assert variables["first_name"] == "John"
 
 
+def test_resolution_variables_expose_retell_system_names() -> None:
+    cfg = CallConfig.from_dict({**CONFIG_DICT, "call_type": "phone_call"})
+    variables = cfg.resolution_variables()
+    assert variables["call_id"] == "call_abc123"
+    assert variables["direction"] == "outbound"
+    assert variables["call_type"] == "phone_call"
+    assert variables["user_number"] == "+15551234567"  # outbound: user == to_number
+    assert variables["agent_number"] == "+19499195585"
+    assert variables["session_type"] == "voice"
+    assert "current_time" in variables
+
+
+def test_missing_call_type_fails_closed() -> None:
+    # Older control planes omit call_type: the phone-vs-web gate cannot
+    # decide, so the phone-call-only system variables stay literal.
+    cfg = CallConfig.from_dict(CONFIG_DICT)
+    assert cfg.call_type == ""
+    variables = cfg.resolution_variables()
+    for name in ("call_type", "direction", "user_number", "agent_number"):
+        assert name not in variables
+    assert variables["call_id"] == "call_abc123"  # not phone-gated
+    assert variables["call.direction"] == "outbound"  # call.* unaffected
+
+
 def test_call_scoped_keys_win_over_user_variables() -> None:
     poisoned = dict(CONFIG_DICT)
     poisoned["dynamic_variables"] = {"call.call_id": "stale_id"}
