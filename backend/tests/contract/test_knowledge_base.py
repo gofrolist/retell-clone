@@ -121,3 +121,60 @@ async def test_delete_knowledge_base(client):
 async def test_knowledge_base_requires_auth(client):
     resp = await client.post("/create-knowledge-base", json={"knowledge_base_name": "KB"})
     assert resp.status_code == 401
+
+
+async def test_uploaded_file_roundtrip(client):
+    payload = b"%PDF-1.4 round trip content"
+    resp = await client.post(
+        "/create-knowledge-base",
+        headers=AUTH_HEADERS,
+        data={"knowledge_base_name": "Files KB"},
+        files={"knowledge_base_files": ("guide.pdf", payload, "application/pdf")},
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    doc = next(s for s in body["knowledge_base_sources"] if s["type"] == "document")
+    assert doc["filename"] == "guide.pdf"
+    assert doc["file_size"] == len(payload)
+    assert doc["file_url"].endswith(
+        f"/get-knowledge-base-file/{body['knowledge_base_id']}/source/{doc['source_id']}"
+    )
+
+    dl = await client.get(
+        f"/get-knowledge-base-file/{body['knowledge_base_id']}/source/{doc['source_id']}",
+        headers=AUTH_HEADERS,
+    )
+    assert dl.status_code == 200
+    assert dl.content == payload
+    assert dl.headers["content-type"].startswith("application/pdf")
+    assert "attachment" in dl.headers["content-disposition"]
+    assert "guide.pdf" in dl.headers["content-disposition"]
+
+
+async def test_add_sources_uploads_file(client):
+    kb = await _create_kb(client)
+    payload = b"# notes\nadded later"
+    resp = await client.post(
+        f"/add-knowledge-base-sources/{kb['knowledge_base_id']}",
+        headers=AUTH_HEADERS,
+        files={"knowledge_base_files": ("notes.md", payload, "text/markdown")},
+    )
+    assert resp.status_code == 201
+    doc = next(s for s in resp.json()["knowledge_base_sources"] if s["type"] == "document")
+    assert doc["file_size"] == len(payload)
+
+    dl = await client.get(
+        f"/get-knowledge-base-file/{kb['knowledge_base_id']}/source/{doc['source_id']}",
+        headers=AUTH_HEADERS,
+    )
+    assert dl.status_code == 200
+    assert dl.content == payload
+
+
+async def test_download_missing_file_404(client):
+    kb = await _create_kb(client)
+    resp = await client.get(
+        f"/get-knowledge-base-file/{kb['knowledge_base_id']}/source/src_missing",
+        headers=AUTH_HEADERS,
+    )
+    assert resp.status_code == 404

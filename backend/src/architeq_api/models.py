@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -315,6 +316,24 @@ class KnowledgeBase(Base):
     status: Mapped[str] = mapped_column(String(24), default="complete")
     enable_auto_refresh: Mapped[bool] = mapped_column(Boolean, default=False)
     last_refreshed_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+    created_at_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+
+
+class KnowledgeBaseFile(Base):
+    """Uploaded document blobs, kept out of KnowledgeBase.sources JSON so
+    list/get endpoints never load file bytes."""
+
+    __tablename__ = "knowledge_base_files"
+
+    source_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    knowledge_base_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_bases.knowledge_base_id"), index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(128), default="application/octet-stream")
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    data: Mapped[bytes] = mapped_column(LargeBinary)
     created_at_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
 
 
