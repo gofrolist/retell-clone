@@ -82,6 +82,7 @@ export default function AddSourceMenu({
     const files = Array.from(list);
     const oversized = files.filter((f) => f.size > MAX_FILE_MB * 1024 * 1024);
     const ok = files.filter((f) => f.size <= MAX_FILE_MB * 1024 * 1024);
+    // Emit adds before errors: consumers may clear their error state on add.
     if (ok.length) onAdd(ok.map((file) => ({ kind: "file" as const, file })));
     if (oversized.length) {
       onError?.(

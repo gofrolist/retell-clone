@@ -94,7 +94,12 @@ async def _build_sources(
         if len(content_bytes) > MAX_FILE_BYTES:
             raise HTTPException(413, detail="File exceeds the 20MB limit")
         source_id = new_source_id()
-        filename = file.filename or source_id
+        # Clamp to the column widths (String(255)/String(128) in models.py):
+        # SQLite ignores VARCHAR lengths, but Postgres raises DataError on
+        # overflow, so an over-long filename/content_type would 500 in prod
+        # while passing tests unless we clamp before storing.
+        filename = (file.filename or source_id)[:255]
+        content_type = (file.content_type or "application/octet-stream")[:128]
         sources.append(
             {
                 "type": "document",
@@ -110,7 +115,7 @@ async def _build_sources(
                 knowledge_base_id=knowledge_base_id,
                 workspace_id=workspace_id,
                 filename=filename,
-                content_type=file.content_type or "application/octet-stream",
+                content_type=content_type,
                 size_bytes=len(content_bytes),
                 data=content_bytes,
             )

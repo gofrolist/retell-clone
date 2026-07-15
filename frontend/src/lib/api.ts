@@ -78,14 +78,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     return demoResponse<T>(path, init);
   }
   const token = bearerToken();
+  const isForm = init?.body instanceof FormData;
   let res: Response;
   try {
     res = await fetch(`${API_BASE}${path}`, {
       cache: "no-store",
-      signal: AbortSignal.timeout(10_000),
+      // Multipart uploads (e.g. 20MB KB files) can take far longer than a
+      // typical JSON round-trip on real uplinks; give them more room.
+      signal: AbortSignal.timeout(isForm ? 120_000 : 10_000),
       ...init,
       headers: {
-        ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+        ...(isForm ? {} : { "Content-Type": "application/json" }),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...init?.headers,
       },

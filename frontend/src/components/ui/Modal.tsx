@@ -7,6 +7,11 @@ import { useEffect, useRef, type ReactNode } from "react";
 const FOCUSABLE =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+// Stack of currently-open modal ids (topmost = last). Lets nested modals
+// (e.g. AddSourceMenu's panels inside the create-KB modal) figure out which
+// one should react to Escape, instead of every open modal closing at once.
+const openDialogs: symbol[] = [];
+
 export default function Modal({
   open,
   onClose,
@@ -26,6 +31,8 @@ export default function Modal({
 
   useEffect(() => {
     if (!open) return;
+    const id = Symbol();
+    openDialogs.push(id);
     // Restore focus to whatever was focused before the dialog opened.
     const previouslyFocused = document.activeElement as HTMLElement | null;
     const dialog = dialogRef.current;
@@ -45,6 +52,9 @@ export default function Modal({
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        // Only the topmost open modal should react to Escape.
+        if (openDialogs[openDialogs.length - 1] !== id) return;
+        e.stopPropagation();
         onClose();
         return;
       }
@@ -72,6 +82,8 @@ export default function Modal({
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
+      const idx = openDialogs.indexOf(id);
+      if (idx !== -1) openDialogs.splice(idx, 1);
       previouslyFocused?.focus?.();
     };
   }, [open, onClose]);

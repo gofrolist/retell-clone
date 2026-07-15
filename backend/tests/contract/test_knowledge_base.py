@@ -192,6 +192,19 @@ async def test_upload_over_size_cap_413(client, monkeypatch):
     assert resp.status_code == 413
 
 
+async def test_upload_clamps_long_filename(client):
+    long_name = "a" * 300 + ".pdf"
+    resp = await client.post(
+        "/create-knowledge-base",
+        headers=AUTH_HEADERS,
+        data={"knowledge_base_name": "Long name KB"},
+        files={"knowledge_base_files": (long_name, b"x", "application/pdf")},
+    )
+    assert resp.status_code == 201
+    doc = next(s for s in resp.json()["knowledge_base_sources"] if s["type"] == "document")
+    assert len(doc["filename"]) == 255
+
+
 async def test_download_scoped_to_workspace(client, other_workspace):
     resp = await client.post(
         "/create-knowledge-base",
