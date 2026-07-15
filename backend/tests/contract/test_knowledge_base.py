@@ -3,6 +3,7 @@
 import json
 
 from tests.conftest import AUTH_HEADERS, OTHER_AUTH_HEADERS
+from architeq_api.api import knowledge_bases as kb_module
 
 
 async def _create_kb(client):
@@ -178,3 +179,72 @@ async def test_download_missing_file_404(client):
         headers=AUTH_HEADERS,
     )
     assert resp.status_code == 404
+
+
+async def test_upload_over_size_cap_413(client, monkeypatch):
+    monkeypatch.setattr(kb_module, "MAX_FILE_BYTES", 10)
+    resp = await client.post(
+        "/create-knowledge-base",
+        headers=AUTH_HEADERS,
+        data={"knowledge_base_name": "Too big"},
+        files={"knowledge_base_files": ("big.pdf", b"x" * 11, "application/pdf")},
+    )
+    assert resp.status_code == 413
+
+
+async def test_download_scoped_to_workspace(client, other_workspace):
+    resp = await client.post(
+        "/create-knowledge-base",
+        headers=AUTH_HEADERS,
+        data={"knowledge_base_name": "Scoped"},
+        files={"knowledge_base_files": ("a.txt", b"secret", "text/plain")},
+    )
+    body = resp.json()
+    doc = next(s for s in body["knowledge_base_sources"] if s["type"] == "document")
+    dl = await client.get(
+        f"/get-knowledge-base-file/{body['knowledge_base_id']}/source/{doc['source_id']}",
+        headers=OTHER_AUTH_HEADERS,
+    )
+    assert dl.status_code == 404
+
+
+async def test_delete_source_removes_blob(client):
+    resp = await client.post(
+        "/create-knowledge-base",
+        headers=AUTH_HEADERS,
+        data={"knowledge_base_name": "Cleanup"},
+        files={"knowledge_base_files": ("a.txt", b"bye", "text/plain")},
+    )
+    body = resp.json()
+    kb_id = body["knowledge_base_id"]
+    doc = next(s for s in body["knowledge_base_sources"] if s["type"] == "document")
+
+    deleted = await client.delete(
+        f"/delete-knowledge-base-source/{kb_id}/source/{doc['source_id']}",
+        headers=AUTH_HEADERS,
+    )
+    assert deleted.status_code == 204
+    dl = await client.get(
+        f"/get-knowledge-base-file/{kb_id}/source/{doc['source_id']}", headers=AUTH_HEADERS
+    )
+    assert dl.status_code == 404
+
+
+async def test_delete_kb_removes_blobs(client):
+    resp = await client.post(
+        "/create-knowledge-base",
+        headers=AUTH_HEADERS,
+        data={"knowledge_base_name": "Cleanup KB"},
+        files={"knowledge_base_files": ("a.txt", b"bye", "text/plain")},
+    )
+    body = resp.json()
+    kb_id = body["knowledge_base_id"]
+    doc = next(s for s in body["knowledge_base_sources"] if s["type"] == "document")
+
+    await client.delete(f"/delete-knowledge-base/{kb_id}", headers=AUTH_HEADERS)
+    # The download route checks the blob row directly, so a 404 here proves
+    # the row went away with the KB (not merely that the KB is gone).
+    dl = await client.get(
+        f"/get-knowledge-base-file/{kb_id}/source/{doc['source_id']}", headers=AUTH_HEADERS
+    )
+    assert dl.status_code == 404

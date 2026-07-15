@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import UploadFile
 
@@ -90,6 +90,8 @@ async def _build_sources(
             sources.append({"type": "document", "source_id": new_source_id(), "filename": file})
             continue
         content_bytes = await file.read()
+        if len(content_bytes) > MAX_FILE_BYTES:
+            raise HTTPException(413, detail="File exceeds the 20MB limit")
         source_id = new_source_id()
         filename = file.filename or source_id
         sources.append(
@@ -185,6 +187,11 @@ async def delete_knowledge_base(
     session: AsyncSession = Depends(get_session),
 ):
     kb = await _get_workspace_kb(session, api_key.workspace_id, knowledge_base_id)
+    await session.execute(
+        sa_delete(KnowledgeBaseFile).where(
+            KnowledgeBaseFile.knowledge_base_id == kb.knowledge_base_id
+        )
+    )
     await session.delete(kb)
     await session.commit()
 
@@ -223,6 +230,9 @@ async def delete_knowledge_base_source(
         raise HTTPException(404, detail="Source not found")
     kb.sources = remaining
     kb.last_refreshed_timestamp = now_ms()
+    await session.execute(
+        sa_delete(KnowledgeBaseFile).where(KnowledgeBaseFile.source_id == source_id)
+    )
     await session.commit()
 
 
