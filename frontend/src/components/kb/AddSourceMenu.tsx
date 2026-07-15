@@ -69,6 +69,13 @@ export default function AddSourceMenu({
     else setPanel(key);
   }
 
+  function closePanel() {
+    setUrlsText("");
+    setTextTitle("");
+    setText("");
+    setPanel(null);
+  }
+
   function onFiles(list: FileList | null) {
     if (!list?.length) return;
     const files = Array.from(list);
@@ -90,16 +97,13 @@ export default function AddSourceMenu({
       .filter(Boolean);
     if (!urls.length) return;
     onAdd(urls.map((url) => ({ kind: "url" as const, url })));
-    setUrlsText("");
-    setPanel(null);
+    closePanel();
   }
 
   function submitText() {
     if (!textTitle.trim() || !text.trim()) return;
     onAdd([{ kind: "text", title: textTitle.trim(), text: text.trim() }]);
-    setTextTitle("");
-    setText("");
-    setPanel(null);
+    closePanel();
   }
 
   return (
@@ -137,12 +141,12 @@ export default function AddSourceMenu({
 
       <Modal
         open={panel === "url"}
-        onClose={() => setPanel(null)}
+        onClose={closePanel}
         title="Add Web Pages"
         width="max-w-md"
         footer={
           <>
-            <Button variant="ghost" onClick={() => setPanel(null)}>
+            <Button variant="ghost" onClick={closePanel}>
               Cancel
             </Button>
             <Button variant="primary" disabled={!urlsText.trim()} onClick={submitUrls}>
@@ -165,12 +169,12 @@ export default function AddSourceMenu({
 
       <Modal
         open={panel === "text"}
-        onClose={() => setPanel(null)}
+        onClose={closePanel}
         title="Add Text"
         width="max-w-md"
         footer={
           <>
-            <Button variant="ghost" onClick={() => setPanel(null)}>
+            <Button variant="ghost" onClick={closePanel}>
               Cancel
             </Button>
             <Button
