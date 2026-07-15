@@ -80,3 +80,8 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def public_base_url() -> str:
+    """Public API base for absolute links; empty string → relative URLs."""
+    return get_settings().public_api_url.rstrip("/")

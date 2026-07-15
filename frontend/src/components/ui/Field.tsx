@@ -40,3 +40,18 @@ export function TextInput({
     />
   );
 }
+
+export function Textarea({
+  className,
+  ...props
+}: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return (
+    <textarea
+      className={cn(
+        "w-full rounded-lg border border-line bg-white px-3 py-2 text-[13px] outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/15",
+        className,
+      )}
+      {...props}
+    />
+  );
+}

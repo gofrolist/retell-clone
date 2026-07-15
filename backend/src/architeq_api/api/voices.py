@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..auth import require_api_key
-from ..config import get_settings
+from ..config import public_base_url
 from ..models import ApiKey
 from ..voices import VOICES, VOICES_BY_ID
 
@@ -23,10 +23,6 @@ def _previews_on_disk() -> set[str]:
     return {p.stem for p in PREVIEWS_DIR.glob("*.mp3")}
 
 
-def _public_base() -> str:
-    return get_settings().public_api_url.rstrip("/")
-
-
 def _with_preview(voice: dict[str, Any], available: set[str], base: str) -> dict[str, Any]:
     """Fill preview_audio_url when the voice's sample file exists on disk."""
     if voice["voice_id"] not in available:
@@ -39,7 +35,7 @@ def _with_preview(voice: dict[str, Any], available: set[str], base: str) -> dict
 
 @router.get("/list-voices")
 async def list_voices(api_key: ApiKey = Depends(require_api_key)):
-    available, base = _previews_on_disk(), _public_base()
+    available, base = _previews_on_disk(), public_base_url()
     return [_with_preview(v, available, base) for v in VOICES]
 
 
@@ -48,4 +44,4 @@ async def get_voice(voice_id: str, api_key: ApiKey = Depends(require_api_key)):
     voice = VOICES_BY_ID.get(voice_id)
     if voice is None:
         raise HTTPException(404, detail="Voice not found")
-    return _with_preview(voice, _previews_on_disk(), _public_base())
+    return _with_preview(voice, _previews_on_disk(), public_base_url())
