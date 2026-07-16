@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.1](https://github.com/gofrolist/retell-clone/compare/v0.5.0...v0.5.1) (2026-07-16)
+
+
+### Bug Fixes
+
+* cap dev-server heap to survive Next 16.2.10 RSC leak ([#77](https://github.com/gofrolist/retell-clone/issues/77)) ([bf81eb8](https://github.com/gofrolist/retell-clone/commit/bf81eb80d69706e716602d9a8ae263d9e31c56b5))
+* keep focus in modal inputs while typing ([#74](https://github.com/gofrolist/retell-clone/issues/74)) ([f296217](https://github.com/gofrolist/retell-clone/commit/f2962172f2306112c09cf76b5b36e1f3f22ef64a))
+* match Retell panel widths on agent editor ([#75](https://github.com/gofrolist/retell-clone/issues/75)) ([97fd956](https://github.com/gofrolist/retell-clone/commit/97fd956adf49b11e6b2df8e4f33c8fe0e6ea8120))
+
 ## [0.5.0](https://github.com/gofrolist/retell-clone/compare/v0.4.0...v0.5.0) (2026-07-15)
 
 
