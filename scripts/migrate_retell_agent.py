@@ -32,7 +32,7 @@ Usage:
   # every agent in the Retell account, for real
   python scripts/migrate_retell_agent.py \
       --retell-key key_xxx \
-      --arhiteq-base https://api.usanretirement.com \
+      --arhiteq-base https://api.arhiteq.com \
       --arhiteq-key  <ARHITEQ_API_KEY> \
       --all
 

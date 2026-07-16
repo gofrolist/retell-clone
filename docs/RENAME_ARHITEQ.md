@@ -67,7 +67,36 @@ Run from `infra/terraform/` unless noted.
 The GitHub WIF deployer is recreated as `arhiteq-deployer`; confirm the repo's
 `deploy.yml` OIDC binding resolves (keyless auth, no key to rotate).
 
-## Domain migration
+## Domain migration → arhiteq.com
 
-The move to **arhiteq.com** is tracked separately — see the domain-migration PR
-and `terraform.tfvars` (`domain`, `cloudflare_zone_id`, `cloudflare_api_token`).
+Replaces `usanretirement.com`. arhiteq.com is registered at Cloudflare
+(status Active — nameservers already authoritative there, no NS change needed).
+DNS is managed by Terraform against the Cloudflare zone (`dns_zone_create=false`);
+records are written `proxied=false` (WebRTC UDP / SIP / GCP HTTP-01 can't pass
+the CF proxy).
+
+New records (A, → the Terraform-created static IPs): `api`, `dashboard`,
+`livekit` → web/livekit global IPs; `sip` → regional SIP IP.
+
+Operator-local values (gitignored) already updated on disk:
+- `terraform.tfvars`: `domain = "arhiteq.com"`, `cloudflare_zone_id = 1cba2f52cfd926e699e2875a3c58cdde`
+- `infra/private/arhiteq-prod.yaml` (`domain`, `corsOrigins`), `livekit-managed-cert.yaml`, `livekit-server-values.yaml`
+
+Committed: `deploy.yml` `NEXT_PUBLIC_API_URL=https://api.arhiteq.com` (baked into
+the dashboard image at build), plus doc/comment examples.
+
+### Cutover steps
+
+1. **Cloudflare API token** — done: the existing "usan custom access" token was
+   re-scoped to cover the arhiteq.com zone (DNS:Edit), so `terraform.tfvars`
+   `cloudflare_api_token` already authorizes writes to this zone.
+2. `terraform apply` — writes the api/dashboard/livekit/sip A records to the
+   Cloudflare zone and provisions the GCP managed certs for `*.arhiteq.com`.
+3. Wait for the GCE managed certificates to go `ACTIVE` (HTTP-01, can take
+   10–60 min after the A records resolve).
+4. Release/deploy so the dashboard image carries `NEXT_PUBLIC_API_URL=https://api.arhiteq.com`.
+5. Verify `https://api.arhiteq.com/health`, dashboard login, and a test call
+   (SIP/LiveKit) end to end.
+6. Google OAuth: add `https://dashboard.arhiteq.com` to Authorized JS origins /
+   redirect URIs. Update the workspace webhook/consumer base URLs to arhiteq.com.
+7. Decommission the old usanretirement.com records once traffic has moved.

@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # Recordings
     recordings_gcs_bucket: str = Field("", validation_alias=_shared("RECORDINGS_GCS_BUCKET"))
 
-    # Public base URL of this API (e.g. https://api.usanretirement.com), used
+    # Public base URL of this API (e.g. https://api.arhiteq.com), used
     # to build absolute preview_audio_url links; empty = relative /static/...
     public_api_url: str = ""
 
