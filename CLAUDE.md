@@ -50,7 +50,7 @@ names match project names:
   hand. Rollback = run Deploy via workflow_dispatch with an older tag.
   Runbook + one-time setup: `infra/README.md` § Releasing.
 - Prod: GKE cluster `arhiteq` (GCP project `usan-retirement`, us-east1);
-  `api.` / `dashboard.usanretirement.com`. Operator values and secrets live
+  `api.` / `dashboard.arhiteq.com`. Operator values and secrets live
   ONLY in gitignored `infra/private/` (not backed up — don't `git clean -fdx`)
   and must never be committed.
 
