@@ -157,7 +157,7 @@ export default function AgentEditorPage({
         onPublish={handlePublish}
         error={actionError}
       />
-      <div className="flex min-h-0 grow gap-2 p-2">
+      <div className="flex min-h-0 grow gap-2 overflow-x-auto p-2">
         {/* left: prompt column */}
         <div className="flex min-w-[420px] flex-[2] flex-col overflow-y-auto rounded-xl border border-line bg-card p-4">
           <MetaRow agentId={agent.agent_id} llm={llmView} />
