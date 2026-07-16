@@ -25,7 +25,7 @@ env:
   GKE_LOCATION: us-east1
   GCP_PROJECT: usan-retirement
   # Baked into the public JS bundle at build time — not secrets.
-  NEXT_PUBLIC_API_URL: https://api.usanretirement.com
+  NEXT_PUBLIC_API_URL: https://api.arhiteq.com
 
 jobs:
   deploy:
