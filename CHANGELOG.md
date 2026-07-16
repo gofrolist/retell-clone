@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/gofrolist/retell-clone/compare/v0.4.0...v0.5.0) (2026-07-15)
+
+
+### Features
+
+* Retell default system dynamic variables ([#71](https://github.com/gofrolist/retell-clone/issues/71)) ([e92d21b](https://github.com/gofrolist/retell-clone/commit/e92d21b83daf85bb46d191aba5c7204827f097d9))
+* Retell-style knowledge base UI with file upload ([#73](https://github.com/gofrolist/retell-clone/issues/73)) ([1825808](https://github.com/gofrolist/retell-clone/commit/182580877cd376d3fb76a865dddc4581c697eab4))
+
 ## [0.4.0](https://github.com/gofrolist/retell-clone/compare/v0.3.1...v0.4.0) (2026-07-14)
 
 
