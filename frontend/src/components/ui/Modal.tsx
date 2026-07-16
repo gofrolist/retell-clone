@@ -31,6 +31,15 @@ export default function Modal({
   const dialogId = useRef<symbol | null>(null);
   if (dialogId.current === null) dialogId.current = Symbol("modal");
 
+  // Keep the latest onClose in a ref so the focus/keydown effect below can call
+  // it without listing onClose in its deps. Parents often pass an inline arrow
+  // (new identity every render); depending on it would re-run — and re-cleanup —
+  // the effect on every keystroke, stealing focus back to previouslyFocused.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
+
   // Keyed on [open] only: an inline onClose prop re-identity on parent
   // re-render must not re-push this modal above a still-open inner one.
   useEffect(() => {
@@ -68,7 +77,7 @@ export default function Modal({
         // Only the topmost open modal should react to Escape.
         if (openDialogs[openDialogs.length - 1] !== id) return;
         e.stopPropagation();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key !== "Tab") return;
@@ -97,7 +106,7 @@ export default function Modal({
       window.removeEventListener("keydown", onKey);
       previouslyFocused?.focus?.();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 
