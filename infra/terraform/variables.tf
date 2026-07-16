@@ -12,11 +12,11 @@ variable "region" {
 variable "cluster_name" {
   description = "GKE cluster name."
   type        = string
-  default     = "architeq"
+  default     = "arhiteq"
 }
 
 variable "domain" {
-  description = "Base domain for the platform (e.g. architeq.example.com). Records created: api.<domain>, app.<domain>, livekit.<domain>, sip.<domain>."
+  description = "Base domain for the platform (e.g. arhiteq.example.com). Records created: api.<domain>, app.<domain>, livekit.<domain>, sip.<domain>."
   type        = string
 }
 

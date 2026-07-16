@@ -1,7 +1,7 @@
 """Pure-logic tests for the Retell built-in tool helpers (no livekit stack)."""
 
-from architeq_worker.state import CallState
-from architeq_worker.tools import (
+from arhiteq_worker.state import CallState
+from arhiteq_worker.tools import (
     DTMF_CODES,
     cal_default_end_date,
     cal_event_type_id,

@@ -25,8 +25,8 @@
 ### Task 1: Backend — persist uploaded file blobs + download endpoint
 
 **Files:**
-- Modify: `backend/src/architeq_api/models.py` (add `KnowledgeBaseFile` after `KnowledgeBase`, ~line 319; add `LargeBinary` import)
-- Modify: `backend/src/architeq_api/api/knowledge_bases.py` (whole flow: `_parse_body`, `_build_sources`, create/add handlers, new download route)
+- Modify: `backend/src/arhiteq_api/models.py` (add `KnowledgeBaseFile` after `KnowledgeBase`, ~line 319; add `LargeBinary` import)
+- Modify: `backend/src/arhiteq_api/api/knowledge_bases.py` (whole flow: `_parse_body`, `_build_sources`, create/add handlers, new download route)
 - Test: `backend/tests/contract/test_knowledge_base.py`
 
 **Interfaces:**
@@ -102,7 +102,7 @@ Expected: the three new tests FAIL (`KeyError: 'file_size'` and 404/405 on the d
 
 - [ ] **Step 3: Add the `KnowledgeBaseFile` model**
 
-In `backend/src/architeq_api/models.py`, add `LargeBinary` to the existing `from sqlalchemy import (...)` block (alphabetical order, after `JSON`/`Integer`), then add after the `KnowledgeBase` class (~line 319):
+In `backend/src/arhiteq_api/models.py`, add `LargeBinary` to the existing `from sqlalchemy import (...)` block (alphabetical order, after `JSON`/`Integer`), then add after the `KnowledgeBase` class (~line 319):
 
 ```python
 class KnowledgeBaseFile(Base):
@@ -342,7 +342,7 @@ Expected: PASS (no other module touches `_build_sources`).
 - [ ] **Step 7: Commit**
 
 ```bash
-git add backend/src/architeq_api/models.py backend/src/architeq_api/api/knowledge_bases.py backend/tests/contract/test_knowledge_base.py
+git add backend/src/arhiteq_api/models.py backend/src/arhiteq_api/api/knowledge_bases.py backend/tests/contract/test_knowledge_base.py
 git commit -m "feat: persist knowledge base file uploads and serve downloads"
 ```
 
@@ -351,7 +351,7 @@ git commit -m "feat: persist knowledge base file uploads and serve downloads"
 ### Task 2: Backend — 20MB cap, blob cleanup on delete, workspace scoping
 
 **Files:**
-- Modify: `backend/src/architeq_api/api/knowledge_bases.py`
+- Modify: `backend/src/arhiteq_api/api/knowledge_bases.py`
 - Test: `backend/tests/contract/test_knowledge_base.py`
 
 **Interfaces:**
@@ -363,7 +363,7 @@ git commit -m "feat: persist knowledge base file uploads and serve downloads"
 Append to `backend/tests/contract/test_knowledge_base.py` (note the module import for monkeypatching):
 
 ```python
-from architeq_api.api import knowledge_bases as kb_module
+from arhiteq_api.api import knowledge_bases as kb_module
 
 
 async def test_upload_over_size_cap_413(client, monkeypatch):
@@ -435,7 +435,7 @@ async def test_delete_kb_removes_blobs(client):
     assert dl.status_code == 404
 ```
 
-Place the `from architeq_api.api import knowledge_bases as kb_module` import at the top of the file with the other imports.
+Place the `from arhiteq_api.api import knowledge_bases as kb_module` import at the top of the file with the other imports.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -483,7 +483,7 @@ Run: `cd backend && uv run pytest`
 Expected: PASS.
 
 ```bash
-git add backend/src/architeq_api/api/knowledge_bases.py backend/tests/contract/test_knowledge_base.py
+git add backend/src/arhiteq_api/api/knowledge_bases.py backend/tests/contract/test_knowledge_base.py
 git commit -m "feat: enforce 20MB KB upload cap and clean up file blobs on delete"
 ```
 

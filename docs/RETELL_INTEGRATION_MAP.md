@@ -1,6 +1,6 @@
 # Consumer integration map (usan-retirement-backend / -crm)
 
-What the existing consumers actually call and read. Architeq must satisfy this
+What the existing consumers actually call and read. Arhiteq must satisfy this
 exactly. Source: exploration of both repos, 2026-07-10. Binding spec:
 `usan-retirement-backend/VOICE_PROVIDER_MIGRATION_SPEC.md`.
 
@@ -15,11 +15,11 @@ createPhoneCallUrl() => `${VOICE_API_BASE}/v2/create-phone-call`   // POST
 getCallUrl(callId)   => `${VOICE_API_BASE}/v2/get-call/${callId}`  // GET
 ```
 
-Cutover = set `VOICE_API_BASE` to Architeq + swap `RETELL_API_KEY`.
+Cutover = set `VOICE_API_BASE` to Arhiteq + swap `RETELL_API_KEY`.
 **usan-retirement-crm never calls Retell** (pure Supabase RPC frontend reading
 the `calls` table) → zero CRM changes needed.
 
-## Surface 1 — REST (consumer → Architeq)
+## Surface 1 — REST (consumer → Arhiteq)
 
 - `POST /v2/create-phone-call` — callers: morning-call-dispatcher (3 loops),
   evening-call-dispatcher, trigger-care-call, signup-lead (+metadata),
@@ -28,7 +28,7 @@ the `calls` table) → zero CRM changes needed.
   retell_llm_dynamic_variables{string:string}, metadata?`.
   All callers read only `call_id` from the response; non-2xx = call not placed
   (lead marked `retell_error`). Exception: `run-test-scenario` treats HTTP 429
-  / body matching `/concurrency limit|429/i` as "busy, re-queue" — Architeq
+  / body matching `/concurrency limit|429/i` as "busy, re-queue" — Arhiteq
   returns `429 {"detail":"Concurrency limit reached (20)"}` when live
   (registered+ongoing) workspace calls hit the limit.
 - `GET /v2/get-call/{call_id}` — callers and fields read:
@@ -36,7 +36,7 @@ the `calls` table) → zero CRM changes needed.
   - schedule-callback, send-family-sms, create-trial →
     `direction, from_number, to_number` (counterparty = `from` if inbound else `to`)
 
-## Surface 2A — inbound router (Architeq → consumer, sync)
+## Surface 2A — inbound router (Arhiteq → consumer, sync)
 
 POST `{supabase}/functions/v1/inbound-call-router` with
 `{"event":"call_inbound","call_inbound":{"from_number","to_number"}}`.
@@ -45,7 +45,7 @@ values strings). 400/500 or malformed → fall back to the DID's default agent;
 never drop the call. Reserved: `?caller_secret=<RETELL_FUNCTION_SECRET>` query
 param (not enforced yet — router currently verifies nothing).
 
-## Surface 2B — call-ended webhook (Architeq → consumer)
+## Surface 2B — call-ended webhook (Arhiteq → consumer)
 
 POST `{supabase}/functions/v1/retell-call-ended`, header
 `x-retell-signature: v={unix_ms},d={hex hmac_sha256(rawBody+ts, RETELL_API_KEY)}`,
@@ -58,7 +58,7 @@ call_analysis.{summary, in_voicemail, user_sentiment, call_successful,
 custom_analysis_data}`.
 
 > ⚠️ Consumer reads `call_analysis.summary` — Retell's canonical field is
-> `call_summary`. Architeq emits **both**.
+> `call_summary`. Arhiteq emits **both**.
 
 `determineStatus` (order matters): `in_voicemail===true` → voicemail;
 `disconnection_reason==="machine_detected"` → voicemail;
@@ -66,7 +66,7 @@ custom_analysis_data}`.
 `user_sentiment` matched case-insensitively by substring:
 positive/happy → positive; negative/sad/concern → concerning; else neutral.
 
-## Surface 3 — agent tools (Architeq agent → consumer edge functions)
+## Surface 3 — agent tools (Arhiteq agent → consumer edge functions)
 
 56 JSON declarations in `retell/{companion(27),inbound(13),sales(16)}/`, shape
 `{name, description, url, method:"POST", parameters:{type:"object",properties,required}}`.
@@ -81,7 +81,7 @@ Execution contract:
   Includes call-scoped `{{call.call_id}}` etc. — `log_outcome` and
   `log_churn_reason` specs REQUIRE `retell_call_id={{call.call_id}}`.
 - Feed the JSON response back to the model as the tool result.
-- `kb_lookup` is a Retell built-in KB tool (no URL) → Architeq knowledge-base
+- `kb_lookup` is a Retell built-in KB tool (no URL) → Arhiteq knowledge-base
   retrieval feature.
 - Quirks: `log_outcome` and `end_call` both post to `/end-call`;
   `set_evening_call_preference` posts to `/set-evening-preference`;
@@ -108,7 +108,7 @@ system variables (`{{current_time}}`, `{{current_time_<tz>}}`,
 `{{session_duration}}`, `{{direction}}`, `{{user_number}}`,
 `{{agent_number}}`, `{{call_id}}`, `{{call_type}}`, chat `{{chat_id}}`) are
 also implemented, resolving beneath consumer-supplied names
-(docs/ARCHITECTURE.md § architeq-worker).
+(docs/ARCHITECTURE.md § arhiteq-worker).
 
 ## Consumer env vars
 
@@ -125,5 +125,5 @@ also implemented, resolving beneath consumer-supplied names
   "Custom telephony") and `+1(415)707-8561` (Betty). Port/SIP-trunk lead time
   is the longest pole.
 - Knowledge base "UsanRetirement kb" (13 docs) lives only in the Retell
-  dashboard — export and import into Architeq KB.
+  dashboard — export and import into Arhiteq KB.
 - Recordings: archive old Retell `recording_url`s before shutdown.

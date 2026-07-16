@@ -2,8 +2,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from architeq_worker import variables as variables_mod
-from architeq_worker.variables import ResolutionVariables, resolve_deep, resolve_template
+from arhiteq_worker import variables as variables_mod
+from arhiteq_worker.variables import ResolutionVariables, resolve_deep, resolve_template
 
 
 def test_basic_substitution() -> None:

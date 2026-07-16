@@ -24,7 +24,7 @@ edited. Ours should too.
 ## Runtime facts the estimates model
 
 - Worker pipeline is **Cartesia STT (ink-whisper) → Gemini → Cartesia TTS
-  (sonic-2)** (`worker/src/architeq_worker/main.py`); all voice ids resolve
+  (sonic-2)** (`worker/src/arhiteq_worker/main.py`); all voice ids resolve
   to Cartesia voices regardless of UI prefix.
 - The system prompt sent to the LLM is the agent's `general_prompt` with
   variables resolved, plus at most a ~40-token backchannel suffix — there is

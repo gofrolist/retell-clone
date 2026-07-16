@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Architeq Dashboard",
+  title: "Arhiteq Dashboard",
   description: "Build, deploy and monitor AI voice agents",
 };
 

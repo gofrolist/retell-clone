@@ -25,11 +25,11 @@ livekit:
   redis:
     address: REDIS_HOST:6379
 
-  # API keys shared with architeq-api / worker / livekit-sip.
+  # API keys shared with arhiteq-api / worker / livekit-sip.
   # Generate once: `openssl rand -hex 16` (key) / `openssl rand -hex 32` (secret),
-  # keep in sync with the architeq chart's LIVEKIT_API_KEY/SECRET.
+  # keep in sync with the arhiteq chart's LIVEKIT_API_KEY/SECRET.
   keys:
-    APIArchiteqKey: "LIVEKIT_API_SECRET_CHANGE_ME"
+    APIArhiteqKey: "LIVEKIT_API_SECRET_CHANGE_ME"
 
   # TLS terminates at the LoadBalancer/Ingress layer or via turn/domain
   # config; for GKE the simplest is wss:// via the LB below + cert on a
@@ -41,7 +41,7 @@ loadBalancer:
   # (kubectl apply livekit-managed-cert.yaml — the chart only references it
   # by name). Ingress rules are generated from tls[].hosts.
   type: gke-managed-cert
-  staticIpName: architeq-livekit-ip # global; terraform output `livekit_ip`
+  staticIpName: arhiteq-livekit-ip # global; terraform output `livekit_ip`
   certificateName: livekit-server-cert
   servicePort: 443
   tls:

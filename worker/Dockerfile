@@ -34,4 +34,4 @@ EXPOSE 9090
 # livekit-agents worker health check port (default 8081)
 EXPOSE 8081
 
-CMD ["python", "-m", "architeq_worker.main", "start"]
+CMD ["python", "-m", "arhiteq_worker.main", "start"]

@@ -14,8 +14,8 @@ Placeholders to replace before installing (from `terraform output`):
 | `LIVEKIT_API_SECRET_CHANGE_ME` | generate: `openssl rand -hex 32` |
 | `PROJECT_ID` | GCP project id (egress-values.yaml WI annotation) |
 
-The API key name is `APIArchiteqKey`; key + secret must be identical in
-`livekit-server-values.yaml`, `livekit-sip-values.yaml`, and the architeq
+The API key name is `APIArhiteqKey`; key + secret must be identical in
+`livekit-server-values.yaml`, `livekit-sip-values.yaml`, and the arhiteq
 chart's `secrets.values.LIVEKIT_API_KEY/SECRET`.
 
 ## Install
@@ -48,7 +48,7 @@ Verify: `kubectl -n livekit get pods,svc` — the sip Service must show the
 reserved static IP as EXTERNAL-IP.
 
 Recording smoke test: place a call, then
-`gsutil ls gs://<project>-architeq-recordings/calls/` should show a fresh
+`gsutil ls gs://<project>-arhiteq-recordings/calls/` should show a fresh
 `call_<id>.ogg` and the call's `recording_url` should play from the
 dashboard Call History drawer.
 
@@ -59,11 +59,11 @@ the CLI (`brew install livekit-cli`) and export:
 
 ```bash
 export LIVEKIT_URL=wss://livekit.<domain>      # or port-forward ws://localhost:7880
-export LIVEKIT_API_KEY=APIArchiteqKey
+export LIVEKIT_API_KEY=APIArhiteqKey
 export LIVEKIT_API_SECRET=<secret>
 ```
 
-### Outbound trunk (Architeq -> Telnyx -> PSTN)
+### Outbound trunk (Arhiteq -> Telnyx -> PSTN)
 
 `outbound-trunk.json`:
 
@@ -81,8 +81,8 @@ export LIVEKIT_API_SECRET=<secret>
 
 ```bash
 lk sip outbound create outbound-trunk.json
-# note the returned trunk id (ST_...) — architeq-api needs it as
-# ARCHITEQ_SIP_OUTBOUND_TRUNK_ID to place calls
+# note the returned trunk id (ST_...) — arhiteq-api needs it as
+# ARHITEQ_SIP_OUTBOUND_TRUNK_ID to place calls
 ```
 
 ### Inbound trunk (Telnyx DID -> livekit-sip)
@@ -103,21 +103,21 @@ lk sip outbound create outbound-trunk.json
 lk sip inbound create inbound-trunk.json
 ```
 
-### Dispatch rule (inbound call -> architeq worker)
+### Dispatch rule (inbound call -> arhiteq worker)
 
 `dispatch-rule.json` — one room per call, dispatched to the agent the
-worker registers as (`architeq-agent`):
+worker registers as (`arhiteq-agent`):
 
 ```json
 {
   "dispatch_rule": {
-    "name": "architeq-inbound",
+    "name": "arhiteq-inbound",
     "trunk_ids": ["<INBOUND_TRUNK_ID>"],
     "rule": {
       "dispatchRuleIndividual": { "roomPrefix": "call_" }
     },
     "room_config": {
-      "agents": [{ "agent_name": "architeq-agent" }]
+      "agents": [{ "agent_name": "arhiteq-agent" }]
     }
   }
 }

@@ -2,7 +2,7 @@
 // Pure functions over the draft agent config — no fetches, no side effects.
 //
 // The rate card models our actual runtime pipeline (see worker/src/
-// architeq_worker/main.py): Cartesia STT (ink-whisper) -> Gemini LLM ->
+// arhiteq_worker/main.py): Cartesia STT (ink-whisper) -> Gemini LLM ->
 // Cartesia TTS (sonic-2), on LiveKit. All voice ids resolve to Cartesia
 // voices, so STT/TTS rates don't depend on the selected voice.
 //

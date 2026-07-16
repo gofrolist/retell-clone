@@ -1,7 +1,7 @@
 # Retell API coverage matrix
 
 Status of every resource group in https://docs.retellai.com/api-references/overview
-as implemented by Architeq. "Full" = same path, method, status code, and field
+as implemented by Arhiteq. "Full" = same path, method, status code, and field
 names; extra fields may be present (allowed by the compatibility policy).
 
 | Resource | Endpoints | Status |
@@ -20,7 +20,7 @@ names; extra fields may be present (allowed by the compatibility policy).
 | **Concurrency** | `GET /get-concurrency` | Full (static limit of 20 until billing exists; `create-phone-call` returns 429 "Concurrency limit reached" when live calls — registered+ongoing — hit the limit) |
 | **Webhooks (outbound)** | `call_started`, `call_ended`, `call_analyzed` + inbound `call_inbound` routing webhook | Full incl. `x-retell-signature` |
 
-Dashboard-only endpoints (Architeq additions, `backend/src/architeq_api/api/dashboard.py`;
+Dashboard-only endpoints (Arhiteq additions, `backend/src/arhiteq_api/api/dashboard.py`;
 Retell serves these from its private dashboard API): `GET /analytics/calls`,
 contacts CRUD (`/list-contacts`, `/create-contact`, `/update-contact/{id}`,
 `/delete-contact/{id}`), alerts CRUD, QA-cohort CRUD, API-key management
@@ -30,7 +30,7 @@ contacts CRUD (`/list-contacts`, `/create-contact`, `/update-contact/{id}`,
 Known intentional deviations (all additive or dashboard-only):
 - `call_analysis` carries **both** `summary` and `call_summary` (consumer compat).
 - Optional `agent_id` on create-agent / create-chat-agent (id-preserving import).
-- Auth additionally accepts Architeq dashboard session JWTs (Google Sign-In).
+- Auth additionally accepts Arhiteq dashboard session JWTs (Google Sign-In).
 - Not implemented (no consumer, dashboard-only in Retell): SIP-trunk
   self-serve endpoints, phone-number A/B tests, Retell billing endpoints.
 

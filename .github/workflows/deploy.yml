@@ -20,8 +20,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  REGISTRY: us-east1-docker.pkg.dev/usan-retirement/architeq
-  GKE_CLUSTER: architeq
+  REGISTRY: us-east1-docker.pkg.dev/usan-retirement/arhiteq
+  GKE_CLUSTER: arhiteq
   GKE_LOCATION: us-east1
   GCP_PROJECT: usan-retirement
   # Baked into the public JS bundle at build time — not secrets.
@@ -52,9 +52,9 @@ jobs:
       - name: Build images
         run: |
           V="$VERSION"
-          docker build -t "$REGISTRY/architeq-api:$V" backend/
-          docker build -t "$REGISTRY/architeq-worker:$V" worker/
-          docker build -t "$REGISTRY/architeq-dashboard:$V" \
+          docker build -t "$REGISTRY/arhiteq-api:$V" backend/
+          docker build -t "$REGISTRY/arhiteq-worker:$V" worker/
+          docker build -t "$REGISTRY/arhiteq-dashboard:$V" \
             --build-arg NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
             --build-arg NEXT_PUBLIC_GOOGLE_CLIENT_ID="${{ vars.NEXT_PUBLIC_GOOGLE_CLIENT_ID }}" \
             frontend/
@@ -62,9 +62,9 @@ jobs:
       - name: Push images
         run: |
           V="$VERSION"
-          docker push "$REGISTRY/architeq-api:$V"
-          docker push "$REGISTRY/architeq-worker:$V"
-          docker push "$REGISTRY/architeq-dashboard:$V"
+          docker push "$REGISTRY/arhiteq-api:$V"
+          docker push "$REGISTRY/arhiteq-worker:$V"
+          docker push "$REGISTRY/arhiteq-dashboard:$V"
 
       - uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395 # v3.0.0
         with:
@@ -81,12 +81,12 @@ jobs:
         # --reuse-values: re-render the (possibly updated) chart with the
         # values already live in the cluster, so secret values from
         # infra/private/ never enter CI. A chart change that ADDS a required
-        # secret value needs one local `helm upgrade architeq
-        # infra/helm/architeq -n architeq -f infra/private/architeq-prod.yaml
+        # secret value needs one local `helm upgrade arhiteq
+        # infra/helm/arhiteq -n arhiteq -f infra/private/arhiteq-prod.yaml
         # --reuse-values` first (see infra/README.md).
         run: |
           V="$VERSION"
-          helm upgrade architeq infra/helm/architeq -n architeq \
+          helm upgrade arhiteq infra/helm/arhiteq -n arhiteq \
             --reuse-values \
             --set "api.image.tag=$V,worker.image.tag=$V,dashboard.image.tag=$V" \
             --rollback-on-failure --wait --timeout 10m

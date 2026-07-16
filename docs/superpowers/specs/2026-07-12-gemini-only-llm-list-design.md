@@ -9,7 +9,7 @@ The agent editor's LLM dropdown offers GPT-4o, GPT-4o mini, and Claude 3.7
 Sonnet alongside two Gemini models, but the deployment only provisions Google
 API keys and the worker runs conversation exclusively on Gemini — any
 non-Gemini model id silently falls back to the default Gemini model
-(`worker/src/architeq_worker/main.py`, `_gemini_model()`). Offering models
+(`worker/src/arhiteq_worker/main.py`, `_gemini_model()`). Offering models
 that can never run is misleading. The list should be Gemini-only for now,
 structured so more providers/models can be added later without rework.
 
@@ -72,7 +72,7 @@ Retell-style picker.
   with no allow-list. The Retell wire contract accepts arbitrary model values;
   we never reject a value Retell would accept (prime directive).
 - **Worker** — `_gemini_model()` keeps mapping any non-Gemini id to
-  `ARCHITEQ_GEMINI_MODEL` (default `gemini-2.5-flash`). No behavior change.
+  `ARHITEQ_GEMINI_MODEL` (default `gemini-2.5-flash`). No behavior change.
 - **`MetaRow.tsx` cost/latency** — stays a hardcoded estimate; per-model
   pricing belongs to a future richer picker.
 - **Post-call analysis runtime** — analysis actually uses the global

@@ -34,8 +34,8 @@ contains.
 3. Merging the release PR makes release-please create the git tag `vX.Y.Z`
    and the GitHub release with the changelog section as its notes.
 4. `release: published` triggers the deploy workflow: GCP auth via Workload
-   Identity Federation → build + push `architeq-api`, `architeq-worker`,
-   `architeq-dashboard` tagged `vX.Y.Z` → `helm upgrade` on GKE.
+   Identity Federation → build + push `arhiteq-api`, `arhiteq-worker`,
+   `arhiteq-dashboard` tagged `vX.Y.Z` → `helm upgrade` on GKE.
 
 Version bootstrap: `.release-please-manifest.json` starts at `0.1.7` (highest
 tag currently deployed), so the first release is `v0.2.0`.
@@ -76,17 +76,17 @@ Steps:
    passes `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_GOOGLE_CLIENT_ID` build args;
    these are baked into the public JS bundle, not secrets, and live as
    workflow `env` alongside registry/cluster coordinates.
-3. `helm upgrade architeq infra/helm/architeq -n architeq --reuse-values
+3. `helm upgrade arhiteq infra/helm/arhiteq -n arhiteq --reuse-values
    --set api.image.tag=vX.Y.Z,worker.image.tag=vX.Y.Z,dashboard.image.tag=vX.Y.Z
    --atomic --wait --timeout 10m`.
 
 `--reuse-values` re-renders the chart with the values already live in the
-cluster (originally from `infra/private/architeq-prod.yaml`), so CI never
+cluster (originally from `infra/private/arhiteq-prod.yaml`), so CI never
 sees secret values. `--atomic` rolls back automatically if the rollout fails.
 A concurrency group (`deploy-prod`, no cancel-in-progress) serializes deploys.
 
 **Known limitation:** a chart change that introduces a *new required secret
-value* needs one local `helm upgrade -f infra/private/architeq-prod.yaml
+value* needs one local `helm upgrade -f infra/private/arhiteq-prod.yaml
 --reuse-values` to seed it before (or instead of) the CI deploy. Routine
 releases never need this. Documented in the runbook.
 
@@ -94,7 +94,7 @@ releases never need this. Documented in the runbook.
 
 - Workload Identity Pool + GitHub OIDC provider, attribute condition locked
   to this repository.
-- `architeq-deployer` service account with `roles/artifactregistry.writer`
+- `arhiteq-deployer` service account with `roles/artifactregistry.writer`
   and `roles/container.developer`, impersonable only by this repo's
   workflows via the WIF provider.
 - Outputs for the provider resource name + SA email (referenced by

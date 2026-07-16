@@ -52,7 +52,7 @@ function PlayButton({
   onToggle: (voiceId: string, previewUrl: string | null | undefined) => void;
 }) {
   // Mirror the hook's actual playability check, or the button looks live
-  // while clicks silently no-op (e.g. a scheme-less ARCHITEQ_PUBLIC_API_URL).
+  // while clicks silently no-op (e.g. a scheme-less ARHITEQ_PUBLIC_API_URL).
   const canPlay = resolvePreviewUrl(voice.preview_audio_url) !== null;
   const playing = playingId === voice.voice_id;
   return (

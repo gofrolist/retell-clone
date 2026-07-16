@@ -1,9 +1,9 @@
 ---
 name: verify
-description: Build/launch/drive recipe for verifying Architeq changes locally (API + dashboard + worker resolution paths)
+description: Build/launch/drive recipe for verifying Arhiteq changes locally (API + dashboard + worker resolution paths)
 ---
 
-# Verifying Architeq changes locally
+# Verifying Arhiteq changes locally
 
 ## Backing services
 `docker compose up -d --wait` wants ports 5432/6379/7880. On this machine
@@ -14,13 +14,13 @@ postgres, so skip compose if it fails on redis.
 ## API (control plane)
 ```bash
 set -a; . ./.env; set +a          # root .env has DB URL + internal token
-cd backend && uv run uvicorn architeq_api.main:app --port 8080
+cd backend && uv run uvicorn arhiteq_api.main:app --port 8080
 ```
 - Seed a workspace/API key/LLM/agent with a small script through
-  `architeq_api.db` + models (commit the Workspace BEFORE dependent rows —
+  `arhiteq_api.db` + models (commit the Workspace BEFORE dependent rows —
   the unit of work does not order these FKs correctly).
 - Auth: `Authorization: Bearer <key_material>`; internal endpoints take
-  `X-Internal-Token: $ARCHITEQ_INTERNAL_TOKEN` (in root .env).
+  `X-Internal-Token: $ARHITEQ_INTERNAL_TOKEN` (in root .env).
 - Useful surfaces: `POST /v2/register-phone-call` (no dial),
   `POST /v2/create-web-call`, `GET /internal/calls/{id}/config`.
 
@@ -30,7 +30,7 @@ cd frontend && NEXT_PUBLIC_API_KEY=<seeded key> bun run dev
 ```
 - Port 3000 is usually occupied by an unrelated app → Next falls back to
   3001, which is NOT in the backend CORS allowlist. Restart the API with
-  `ARCHITEQ_CORS_ORIGINS='["http://localhost:3000","http://localhost:3001"]'`.
+  `ARHITEQ_CORS_ORIGINS='["http://localhost:3000","http://localhost:3001"]'`.
 - `NEXT_PUBLIC_API_KEY` is the dev auth fallback — no login needed.
 - Agent editor lives at `/agents/{agent_id}`.
 

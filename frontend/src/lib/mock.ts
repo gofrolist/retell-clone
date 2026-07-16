@@ -75,7 +75,7 @@ Continue with RESPONSE 1 => RESPONSE 2 => demo => LEAD INFO COLLECTION => trial 
     response_eagerness: 1,
     reminder_trigger_seconds: 10,
     reminder_max_count: 1,
-    webhook_url: "https://api.architeq.dev/hooks/agent-events",
+    webhook_url: "https://api.arhiteq.dev/hooks/agent-events",
     webhook_timeout: 5,
     boosted_keywords: ["check-in", "companion", "medicare"],
   },
@@ -95,7 +95,7 @@ Continue with RESPONSE 1 => RESPONSE 2 => demo => LEAD INFO COLLECTION => trial 
     latency_ms: [745, 1125],
     token_range: [9900, 13300],
     general_prompt:
-      "## IDENTITY\n\nYou are Clara, a warm automated sales assistant for Architeq. Qualify the lead, present the value proposition, then collect lead info: {{lead_name}}, {{lead_phone}}.",
+      "## IDENTITY\n\nYou are Clara, a warm automated sales assistant for Arhiteq. Qualify the lead, present the value proposition, then collect lead info: {{lead_name}}, {{lead_phone}}.",
     begin_message_mode: "ai_first",
     begin_message: "{{bm_greeting}}",
     pause_before_speaking: 0.6,
@@ -426,7 +426,7 @@ export const mockAlerts: Alert[] = [
     metric: "Number of Calls",
     condition: "is above",
     threshold: 2,
-    notify_emails: ["ops@architeq.dev"],
+    notify_emails: ["ops@arhiteq.dev"],
     enabled: true,
   },
   {
@@ -438,7 +438,7 @@ export const mockAlerts: Alert[] = [
     condition: "is above",
     threshold: 5,
     notify_emails: ["gmrnsk@gmail.com"],
-    webhook_url: "https://hooks.architeq.dev/alerts",
+    webhook_url: "https://hooks.arhiteq.dev/alerts",
     enabled: true,
   },
 ];

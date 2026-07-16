@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  labels:
+    {{- include "arhiteq.labels" . | nindent 4 }}
+data:
+  # Bare canonical name: the livekit-agents worker SDK hard-reads LIVEKIT_URL;
+  # the backend accepts it as a fallback to ARHITEQ_LIVEKIT_URL.
+  LIVEKIT_URL: {{ .Values.config.livekitUrl | quote }}
+  ARHITEQ_REDIS_URL: {{ .Values.config.redisUrl | quote }}
+  RECORDINGS_GCS_BUCKET: {{ .Values.config.recordingsGcsBucket | quote }}
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  # Worker -> api internal endpoints (in-cluster service).
+  ARHITEQ_API_URL: "http://{{ .Release.Name }}-api"
+  ARHITEQ_PUBLIC_API_URL: "https://api.{{ .Values.global.domain }}"
+  ARHITEQ_PUBLIC_APP_URL: "https://dashboard.{{ .Values.global.domain }}"
+  ARHITEQ_PUBLIC_LIVEKIT_URL: "wss://livekit.{{ .Values.global.domain }}"
+  # Dashboard auth + browser security
+  ARHITEQ_GOOGLE_OAUTH_CLIENT_ID: {{ .Values.config.googleOauthClientId | quote }}
+  ARHITEQ_DASHBOARD_ALLOWED_EMAILS: {{ .Values.config.dashboardAllowedEmails | quote }}
+  ARHITEQ_DASHBOARD_ALLOWED_DOMAINS: {{ .Values.config.dashboardAllowedDomains | quote }}
+  ARHITEQ_CORS_ORIGINS: {{ .Values.config.corsOrigins | default (printf "[\"https://dashboard.%s\"]" .Values.global.domain) | quote }}

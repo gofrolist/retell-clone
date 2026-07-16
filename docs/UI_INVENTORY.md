@@ -1,7 +1,7 @@
-# Architeq dashboard — UI inventory
+# Arhiteq dashboard — UI inventory
 
 Derived from the 22 reference screenshots in `screenshots/` (Retell dashboard,
-light theme). Rebrand everything "Retell" → **Architeq**.
+light theme). Rebrand everything "Retell" → **Arhiteq**.
 
 ## Visual style
 
@@ -15,7 +15,7 @@ toggles dark when on; thin sliders with round thumb + right-aligned value.
 ## Navigation tree
 
 ```
-[Architeq logo]
+[Arhiteq logo]
 [Workspace switcher: avatar + name + chevrons]
 BUILD:    Agents (/agents), Knowledge Base (/knowledgeBase)
 DEPLOY:   Phone Numbers (/phoneNumbers), Batch Call (/batchCall)

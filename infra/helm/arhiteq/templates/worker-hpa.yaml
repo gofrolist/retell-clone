@@ -1,0 +1,41 @@
+{{- if .Values.worker.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}-worker
+  labels:
+    {{- include "arhiteq.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Release.Name }}-worker
+  minReplicas: {{ .Values.worker.hpa.minReplicas }}
+  maxReplicas: {{ .Values.worker.hpa.maxReplicas }}
+  behavior:
+    scaleDown:
+      # Workers hold live calls: scale down slowly.
+      stabilizationWindowSeconds: 600
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.worker.hpa.targetCPUUtilizationPercentage }}
+    {{- if .Values.worker.hpa.customMetric.enabled }}
+    # Requires prometheus-adapter exposing this series via custom.metrics.k8s.io.
+    - type: Pods
+      pods:
+        metric:
+          name: {{ .Values.worker.hpa.customMetric.name }}
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.worker.hpa.customMetric.targetAverageValue | quote }}
+    {{- end }}
+{{- end }}

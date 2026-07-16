@@ -57,7 +57,7 @@ export default function WebhooksPage() {
           >
             <div className="flex items-center gap-2">
               <TextInput
-                placeholder="https://api.example.com/hooks/architeq"
+                placeholder="https://api.example.com/hooks/arhiteq"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
               />

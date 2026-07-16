@@ -1,12 +1,12 @@
-# Architeq — repo guide
+# Arhiteq — repo guide
 
-Retell-AI-compatible voice agent platform (brand: **Architeq**). Monorepo:
+Retell-AI-compatible voice agent platform (brand: **Arhiteq**). Monorepo:
 `backend/` FastAPI control plane · `worker/` LiveKit voice worker ·
 `frontend/` Next.js dashboard · `infra/` Terraform + Helm · `docs/` specs.
 
 ## The prime directive
 
-Architeq is a **drop-in Retell replacement**. The wire contract (field names,
+Arhiteq is a **drop-in Retell replacement**. The wire contract (field names,
 nesting, headers, signature format, status codes) is frozen by:
 - `docs/RETELL_INTEGRATION_MAP.md` — what consumers actually call/read
 - `~/gofrolist/usan-retirement-backend/VOICE_PROVIDER_MIGRATION_SPEC.md`
@@ -23,8 +23,8 @@ agent; `call_analysis` carries both `summary` and `call_summary`.
 App code lives under `src/` in every app. Python apps use Python 3.14, uv
 (uv.lock, PEP 735 `[dependency-groups]`), and the `uv_build` backend; package
 names match project names:
-- `backend/src/architeq_api/` — serve with `uvicorn architeq_api.main:app`
-- `worker/src/architeq_worker/` — run with `python -m architeq_worker.main`
+- `backend/src/arhiteq_api/` — serve with `uvicorn arhiteq_api.main:app`
+- `worker/src/arhiteq_worker/` — run with `python -m arhiteq_worker.main`
 - `frontend/src/{app,components,lib}` — `@/*` resolves to `./src/*`; bun is
   the package manager
 
@@ -49,7 +49,7 @@ names match project names:
   deploys prod (`deploy.yml`, keyless WIF auth). Never bump image tags by
   hand. Rollback = run Deploy via workflow_dispatch with an older tag.
   Runbook + one-time setup: `infra/README.md` § Releasing.
-- Prod: GKE cluster `architeq` (GCP project `usan-retirement`, us-east1);
+- Prod: GKE cluster `arhiteq` (GCP project `usan-retirement`, us-east1);
   `api.` / `dashboard.usanretirement.com`. Operator values and secrets live
   ONLY in gitignored `infra/private/` (not backed up — don't `git clean -fdx`)
   and must never be committed.

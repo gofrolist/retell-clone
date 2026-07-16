@@ -15,8 +15,8 @@ import pytest
 
 pytest.importorskip("livekit.agents")
 
-from architeq_worker.state import CallState
-from architeq_worker.tools import build_tools
+from arhiteq_worker.state import CallState
+from arhiteq_worker.tools import build_tools
 
 
 class _Control:

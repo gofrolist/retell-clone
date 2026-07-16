@@ -4,7 +4,7 @@ One-time, manual, idempotent:
 
     cd backend && CARTESIA_API_KEY=... uv run python scripts/generate_voice_previews.py
 
-Writes src/architeq_api/static/voice_previews/{voice_id}.mp3 (committed to
+Writes src/arhiteq_api/static/voice_previews/{voice_id}.mp3 (committed to
 git; ~50 KB each). The API fills preview_audio_url only for files that exist,
 so a partial run is safe. Re-run with a voice removed from the skip check to
 regenerate it.
@@ -23,13 +23,13 @@ sys.path.insert(0, str(_REPO / "backend" / "src"))
 # previews stop matching what callers hear.
 sys.path.insert(0, str(_REPO / "worker" / "src"))
 
-from architeq_api.voices import VOICES  # noqa: E402
-from architeq_worker.voices import VOICE_UUIDS  # noqa: E402
+from arhiteq_api.voices import VOICES  # noqa: E402
+from arhiteq_worker.voices import VOICE_UUIDS  # noqa: E402
 
 OUT_DIR = (
-    Path(__file__).resolve().parent.parent / "src" / "architeq_api" / "static" / "voice_previews"
+    Path(__file__).resolve().parent.parent / "src" / "arhiteq_api" / "static" / "voice_previews"
 )
-TTS_MODEL = os.getenv("ARCHITEQ_CARTESIA_TTS_MODEL", "sonic-2")  # match the worker
+TTS_MODEL = os.getenv("ARHITEQ_CARTESIA_TTS_MODEL", "sonic-2")  # match the worker
 
 
 def main() -> int:

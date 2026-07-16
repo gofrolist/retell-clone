@@ -1,4 +1,4 @@
-# Architeq local development.
+# Arhiteq local development.
 #   make up      start postgres/redis/livekit (docker compose)
 #   make dev     start the compose stack + api/worker/web together
 #   make api     run the FastAPI control plane with reload
@@ -31,10 +31,10 @@ dev: up
 	$(MAKE) -j3 api worker web
 
 api:
-	$(LOAD_ENV); cd backend && uv run uvicorn architeq_api.main:app --reload --port 8080
+	$(LOAD_ENV); cd backend && uv run uvicorn arhiteq_api.main:app --reload --port 8080
 
 worker:
-	$(LOAD_ENV); cd worker && uv run python -m architeq_worker.main dev
+	$(LOAD_ENV); cd worker && uv run python -m arhiteq_worker.main dev
 
 web:
 	# Cap the dev-server V8 heap: Next 16.2.10's dev RSC flight client leaks

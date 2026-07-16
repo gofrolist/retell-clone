@@ -13,7 +13,7 @@
 - All GitHub Actions MUST be SHA-pinned with a `# vX.Y.Z` comment (repo convention, see `.github/workflows/ci.yml`).
 - `main` is protected; all changes land via PR. Squash-merge uses the PR title as the commit message.
 - No secret values in the repo. `infra/private/` is gitignored and stays that way.
-- Registry: `us-east1-docker.pkg.dev/usan-retirement/architeq`. GKE cluster `architeq`, region `us-east1`, project `usan-retirement`. Helm release `architeq` in namespace `architeq`, chart `infra/helm/architeq`.
+- Registry: `us-east1-docker.pkg.dev/usan-retirement/arhiteq`. GKE cluster `arhiteq`, region `us-east1`, project `usan-retirement`. Helm release `arhiteq` in namespace `arhiteq`, chart `infra/helm/arhiteq`.
 - Version bootstrap: `0.1.7` (highest currently-deployed image tag), so the first release is `v0.2.0`.
 - Work happens on the existing `feat/release-process` branch.
 
@@ -197,7 +197,7 @@ resource "google_iam_workload_identity_pool_provider" "github" {
 }
 
 resource "google_service_account" "deployer" {
-  account_id   = "architeq-deployer"
+  account_id   = "arhiteq-deployer"
   display_name = "GitHub Actions release deployer"
 }
 
@@ -280,8 +280,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  REGISTRY: us-east1-docker.pkg.dev/usan-retirement/architeq
-  GKE_CLUSTER: architeq
+  REGISTRY: us-east1-docker.pkg.dev/usan-retirement/arhiteq
+  GKE_CLUSTER: arhiteq
   GKE_LOCATION: us-east1
   GCP_PROJECT: usan-retirement
   # Baked into the public JS bundle at build time — not secrets.
@@ -314,9 +314,9 @@ jobs:
       - name: Build images
         run: |
           V="${{ steps.v.outputs.version }}"
-          docker build -t "$REGISTRY/architeq-api:$V" backend/
-          docker build -t "$REGISTRY/architeq-worker:$V" worker/
-          docker build -t "$REGISTRY/architeq-dashboard:$V" \
+          docker build -t "$REGISTRY/arhiteq-api:$V" backend/
+          docker build -t "$REGISTRY/arhiteq-worker:$V" worker/
+          docker build -t "$REGISTRY/arhiteq-dashboard:$V" \
             --build-arg NEXT_PUBLIC_API_URL="$NEXT_PUBLIC_API_URL" \
             --build-arg NEXT_PUBLIC_GOOGLE_CLIENT_ID="${{ vars.NEXT_PUBLIC_GOOGLE_CLIENT_ID }}" \
             frontend/
@@ -324,9 +324,9 @@ jobs:
       - name: Push images
         run: |
           V="${{ steps.v.outputs.version }}"
-          docker push "$REGISTRY/architeq-api:$V"
-          docker push "$REGISTRY/architeq-worker:$V"
-          docker push "$REGISTRY/architeq-dashboard:$V"
+          docker push "$REGISTRY/arhiteq-api:$V"
+          docker push "$REGISTRY/arhiteq-worker:$V"
+          docker push "$REGISTRY/arhiteq-dashboard:$V"
 
       - uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395 # v3.0.0
         with:
@@ -341,10 +341,10 @@ jobs:
         # values already live in the cluster, so secret values from
         # infra/private/ never enter CI. A chart change that ADDS a required
         # secret value needs one local `helm upgrade -f
-        # infra/private/architeq-prod.yaml --reuse-values` first (see infra/README.md).
+        # infra/private/arhiteq-prod.yaml --reuse-values` first (see infra/README.md).
         run: |
           V="${{ steps.v.outputs.version }}"
-          helm upgrade architeq infra/helm/architeq -n architeq \
+          helm upgrade arhiteq infra/helm/arhiteq -n arhiteq \
             --reuse-values \
             --set "api.image.tag=$V,worker.image.tag=$V,dashboard.image.tag=$V" \
             --atomic --wait --timeout 10m
@@ -375,7 +375,7 @@ git commit -m "ci: build, push, and helm-deploy on release publish"
 
 - [ ] **Step 1: Add a "Releasing" section to `infra/README.md`**
 
-Add the new section directly ABOVE the current "## 6. Build & push images" header, and reframe the manual path by appending " (manual / break-glass)" to both the "## 6. Build & push images" and "## 7. Deploy Architeq" headers. New section content:
+Add the new section directly ABOVE the current "## 6. Build & push images" header, and reframe the manual path by appending " (manual / break-glass)" to both the "## 6. Build & push images" and "## 7. Deploy Arhiteq" headers. New section content:
 
 ```markdown
 ## Releasing (normal path)
@@ -388,7 +388,7 @@ Releases are automated — never bump image tags by hand:
    Merging it tags `vX.Y.Z` and publishes a GitHub release.
 3. The release triggers `.github/workflows/deploy.yml`: builds + pushes all
    three images at `vX.Y.Z`, then
-   `helm upgrade architeq --reuse-values --set …image.tag=vX.Y.Z --atomic`.
+   `helm upgrade arhiteq --reuse-values --set …image.tag=vX.Y.Z --atomic`.
 
 Redeploy/rollback: run the Deploy workflow manually (workflow_dispatch) with
 any existing release tag.
@@ -396,11 +396,11 @@ any existing release tag.
 Caveat: `--reuse-values` re-renders the chart with the values already in the
 cluster. A chart change that introduces a NEW required value (e.g. a new
 secret) must first be applied locally once:
-`helm upgrade architeq infra/helm/architeq -n architeq -f infra/private/architeq-prod.yaml --reuse-values`.
+`helm upgrade arhiteq infra/helm/arhiteq -n arhiteq -f infra/private/arhiteq-prod.yaml --reuse-values`.
 
 One-time setup (already done, recorded for rebuild-from-scratch):
 
-- `terraform apply` creates the WIF pool/provider + `architeq-deployer` SA
+- `terraform apply` creates the WIF pool/provider + `arhiteq-deployer` SA
   (`infra/terraform/github-deploy.tf`).
 - Repo variables: `GCP_WIF_PROVIDER` / `GCP_DEPLOYER_SA` (from the terraform
   outputs `deploy_workload_identity_provider` / `deploy_service_account`) and
@@ -449,7 +449,7 @@ Expected plan: 6 new resources (`google_iam_workload_identity_pool.github`, `…
 gh variable set GCP_WIF_PROVIDER --body "$(terraform -chdir=infra/terraform output -raw deploy_workload_identity_provider)"
 gh variable set GCP_DEPLOYER_SA --body "$(terraform -chdir=infra/terraform output -raw deploy_service_account)"
 # OAuth client id (public, baked into the JS bundle) — grab from the private helm values:
-gh variable set NEXT_PUBLIC_GOOGLE_CLIENT_ID --body "$(grep googleOauthClientId infra/private/architeq-prod.yaml | awk -F'"' '{print $2}')"
+gh variable set NEXT_PUBLIC_GOOGLE_CLIENT_ID --body "$(grep googleOauthClientId infra/private/arhiteq-prod.yaml | awk -F'"' '{print $2}')"
 gh variable list   # verify all three
 ```
 
@@ -499,7 +499,7 @@ Merging it makes release-please create tag `v0.2.0` + the GitHub release; the De
 - [ ] **Step 8: Verify prod**
 
 ```bash
-kubectl -n architeq get deploy -o custom-columns='NAME:.metadata.name,IMAGE:.spec.template.spec.containers[*].image'
+kubectl -n arhiteq get deploy -o custom-columns='NAME:.metadata.name,IMAGE:.spec.template.spec.containers[*].image'
 ```
 
 Expected: all three images at `:v0.2.0`. Then open `https://dashboard.usanretirement.com`, check the agent LLM dropdown shows the Gemini-only list (this release ships the pending fix from PR #56).

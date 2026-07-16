@@ -63,7 +63,7 @@ async def test_list_voices_includes_recommended_flags(client):
 
 
 async def test_preview_audio_url_null_when_sample_missing(client, tmp_path, monkeypatch):
-    from architeq_api.api import voices as voices_api
+    from arhiteq_api.api import voices as voices_api
 
     monkeypatch.setattr(voices_api, "PREVIEWS_DIR", tmp_path)  # empty dir
     resp = await client.get("/get-voice/cartesia-sonic", headers=AUTH_HEADERS)
@@ -71,7 +71,7 @@ async def test_preview_audio_url_null_when_sample_missing(client, tmp_path, monk
 
 
 async def test_preview_audio_url_relative_when_sample_exists(client, tmp_path, monkeypatch):
-    from architeq_api.api import voices as voices_api
+    from arhiteq_api.api import voices as voices_api
 
     (tmp_path / "cartesia-sonic.mp3").write_bytes(b"ID3 fake mp3")
     monkeypatch.setattr(voices_api, "PREVIEWS_DIR", tmp_path)
@@ -84,8 +84,8 @@ async def test_preview_audio_url_relative_when_sample_exists(client, tmp_path, m
 
 
 async def test_preview_audio_url_absolute_with_public_api_url(client, tmp_path, monkeypatch):
-    from architeq_api.api import voices as voices_api
-    from architeq_api.config import get_settings
+    from arhiteq_api.api import voices as voices_api
+    from arhiteq_api.config import get_settings
 
     (tmp_path / "cartesia-sonic.mp3").write_bytes(b"ID3 fake mp3")
     monkeypatch.setattr(voices_api, "PREVIEWS_DIR", tmp_path)
@@ -98,7 +98,7 @@ async def test_preview_audio_url_absolute_with_public_api_url(client, tmp_path, 
 
 
 async def test_static_mount_serves_preview_files_without_auth(client):
-    from architeq_api.api.voices import PREVIEWS_DIR
+    from arhiteq_api.api.voices import PREVIEWS_DIR
 
     sample = PREVIEWS_DIR / f"test-sample-{uuid.uuid4().hex}.mp3"
     sample.write_bytes(b"ID3 test bytes")
@@ -111,8 +111,8 @@ async def test_static_mount_serves_preview_files_without_auth(client):
 
 
 async def test_preview_audio_url_absolute_without_trailing_slash(client, tmp_path, monkeypatch):
-    from architeq_api.api import voices as voices_api
-    from architeq_api.config import get_settings
+    from arhiteq_api.api import voices as voices_api
+    from arhiteq_api.config import get_settings
 
     (tmp_path / "cartesia-sonic.mp3").write_bytes(b"ID3 fake mp3")
     monkeypatch.setattr(voices_api, "PREVIEWS_DIR", tmp_path)

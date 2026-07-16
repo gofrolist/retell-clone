@@ -3,7 +3,7 @@
 import time
 
 
-from architeq_api.api import auth_google
+from arhiteq_api.api import auth_google
 from tests.conftest import AUTH_HEADERS, OTHER_AUTH_HEADERS, WORKSPACE_ID
 
 INVITED_CLAIMS = {
@@ -154,8 +154,8 @@ async def test_invite_rejects_bad_revoked_and_expired_tokens(client, monkeypatch
     assert resp.status_code == 403
 
     expired = await _create_invite(client)
-    from architeq_api import db as db_module
-    from architeq_api.models import WorkspaceInvite
+    from arhiteq_api import db as db_module
+    from arhiteq_api.models import WorkspaceInvite
 
     async with db_module.session_factory()() as session:
         row = await session.get(WorkspaceInvite, expired["invite_id"])
@@ -287,8 +287,8 @@ async def test_cannot_remove_yourself(client, monkeypatch):
 
 async def test_expired_invites_are_not_listed_and_reinvite_regenerates(client):
     invite = await _create_invite(client)
-    from architeq_api import db as db_module
-    from architeq_api.models import WorkspaceInvite
+    from arhiteq_api import db as db_module
+    from arhiteq_api.models import WorkspaceInvite
 
     async with db_module.session_factory()() as session:
         row = await session.get(WorkspaceInvite, invite["invite_id"])
@@ -329,7 +329,7 @@ async def test_allowlisted_session_can_manage_members_before_member_row_exists(c
     """Sessions issued before v0.3.0 predate WorkspaceMember rows (the owner
     row is only written at login). Allowlisted emails are owner-by-definition
     and must not be locked out of member management by a stale session."""
-    from architeq_api.sessions import issue_session
+    from arhiteq_api.sessions import issue_session
 
     token, _ = issue_session("admin@example.com", WORKSPACE_ID)
     stale_headers = {"Authorization": f"Bearer {token}"}

@@ -1,15 +1,15 @@
 # Service accounts + Workload Identity bindings.
-# Kubernetes ServiceAccounts (namespace `architeq`) are annotated by the
+# Kubernetes ServiceAccounts (namespace `arhiteq`) are annotated by the
 # Helm chart with these GSA emails.
 
 locals {
-  wi_namespace = "architeq"
+  wi_namespace = "arhiteq"
 }
 
 # ---------------------------------------------------------------- api ----
 resource "google_service_account" "api" {
-  account_id   = "architeq-api"
-  display_name = "Architeq API control plane"
+  account_id   = "arhiteq-api"
+  display_name = "Arhiteq API control plane"
 }
 
 resource "google_project_iam_member" "api_cloudsql" {
@@ -48,13 +48,13 @@ resource "google_service_account_iam_member" "api_self_token_creator" {
 resource "google_service_account_iam_member" "api_wi" {
   service_account_id = google_service_account.api.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "serviceAccount:${var.project_id}.svc.id.goog[${local.wi_namespace}/architeq-api]"
+  member             = "serviceAccount:${var.project_id}.svc.id.goog[${local.wi_namespace}/arhiteq-api]"
 }
 
 # ------------------------------------------------------------- worker ----
 resource "google_service_account" "worker" {
-  account_id   = "architeq-worker"
-  display_name = "Architeq voice worker"
+  account_id   = "arhiteq-worker"
+  display_name = "Arhiteq voice worker"
 }
 
 resource "google_storage_bucket_iam_member" "worker_recordings" {
@@ -66,13 +66,13 @@ resource "google_storage_bucket_iam_member" "worker_recordings" {
 resource "google_service_account_iam_member" "worker_wi" {
   service_account_id = google_service_account.worker.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "serviceAccount:${var.project_id}.svc.id.goog[${local.wi_namespace}/architeq-worker]"
+  member             = "serviceAccount:${var.project_id}.svc.id.goog[${local.wi_namespace}/arhiteq-worker]"
 }
 
 # ------------------------------------------------------------ livekit ----
 # LiveKit Egress uploads recordings straight to GCS.
 resource "google_service_account" "livekit_egress" {
-  account_id   = "architeq-livekit-egress"
+  account_id   = "arhiteq-livekit-egress"
   display_name = "LiveKit Egress recordings uploader"
 }
 

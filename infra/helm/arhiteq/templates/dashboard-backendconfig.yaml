@@ -1,0 +1,15 @@
+# Health check for the dashboard NEG backend. Next.js answers "/" with a
+# 307 redirect, which GCE health checks count as failure; /login is a
+# stable unauthenticated 200.
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: {{ .Release.Name }}-dashboard
+  labels:
+    {{- include "arhiteq.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dashboard
+spec:
+  healthCheck:
+    type: HTTP
+    requestPath: /login
+    port: {{ .Values.dashboard.containerPort }}

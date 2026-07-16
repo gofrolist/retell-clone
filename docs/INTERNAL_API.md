@@ -1,8 +1,8 @@
-# Internal API — architeq-api ⇄ architeq-worker
+# Internal API — arhiteq-api ⇄ arhiteq-worker
 
 Private contract between the control plane and the LiveKit voice worker.
 Not exposed publicly; every request carries `X-Internal-Token: <shared token>`
-(`ARCHITEQ_INTERNAL_TOKEN` on both sides). Base path `/internal`.
+(`ARHITEQ_INTERNAL_TOKEN` on both sides). Base path `/internal`.
 
 ## Job dispatch (api → worker, via LiveKit)
 

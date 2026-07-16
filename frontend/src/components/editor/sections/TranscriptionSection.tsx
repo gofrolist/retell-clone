@@ -83,7 +83,7 @@ export default function TranscriptionSection({
                 .filter(Boolean),
             );
           }}
-          placeholder="e.g. Architeq, check-in, medicare"
+          placeholder="e.g. Arhiteq, check-in, medicare"
         />
       </Field>
     </div>

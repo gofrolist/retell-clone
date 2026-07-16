@@ -77,7 +77,7 @@ export default function ApiKeysPage() {
           </div>
         )}
 
-        <SettingsCard title="Keys" description="Authenticate server-side requests to the Architeq API.">
+        <SettingsCard title="Keys" description="Authenticate server-side requests to the Arhiteq API.">
           {loading && (
             <p className="py-6 text-center text-[13px] text-sub">Loading API keys…</p>
           )}

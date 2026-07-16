@@ -26,7 +26,7 @@
 ### Task 1: Backend — `recommended` flag on the voice catalog
 
 **Files:**
-- Modify: `backend/src/architeq_api/voices.py`
+- Modify: `backend/src/arhiteq_api/voices.py`
 - Test: `backend/tests/contract/test_voices.py`
 
 **Interfaces:**
@@ -59,7 +59,7 @@ Expected: FAIL — `assert all(...)` is False (no voice has `recommended`).
 
 - [ ] **Step 3: Add the field to the catalog**
 
-In `backend/src/architeq_api/voices.py`, add `"recommended": ...` to every entry (after `"preview_audio_url"`): `True` for `cartesia-sonic`, `cartesia-savannah`, `cartesia-blake`, `cartesia-jacqueline`; `False` for the other eight. Example for the first entry:
+In `backend/src/arhiteq_api/voices.py`, add `"recommended": ...` to every entry (after `"preview_audio_url"`): `True` for `cartesia-sonic`, `cartesia-savannah`, `cartesia-blake`, `cartesia-jacqueline`; `False` for the other eight. Example for the first entry:
 
 ```python
     {
@@ -84,7 +84,7 @@ Expected: all PASS (existing tests only assert a field *subset*, so additive is 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add backend/src/architeq_api/voices.py backend/tests/contract/test_voices.py
+git add backend/src/arhiteq_api/voices.py backend/tests/contract/test_voices.py
 git commit -m "feat(api): add recommended flag to voice catalog"
 ```
 
@@ -93,17 +93,17 @@ git commit -m "feat(api): add recommended flag to voice catalog"
 ### Task 2: Backend — `/static` mount and preview URL building
 
 **Files:**
-- Modify: `backend/src/architeq_api/config.py` (add `public_api_url` setting)
-- Modify: `backend/src/architeq_api/main.py` (mount StaticFiles)
-- Modify: `backend/src/architeq_api/api/voices.py` (fill `preview_audio_url`)
-- Create: `backend/src/architeq_api/static/voice_previews/.gitkeep` (empty file)
+- Modify: `backend/src/arhiteq_api/config.py` (add `public_api_url` setting)
+- Modify: `backend/src/arhiteq_api/main.py` (mount StaticFiles)
+- Modify: `backend/src/arhiteq_api/api/voices.py` (fill `preview_audio_url`)
+- Create: `backend/src/arhiteq_api/static/voice_previews/.gitkeep` (empty file)
 - Test: `backend/tests/contract/test_voices.py`
 
 **Interfaces:**
 - Consumes: `VOICES` / `VOICES_BY_ID` from Task 1 (shape unchanged apart from `recommended`).
 - Produces:
-  - `Settings.public_api_url: str = ""` (env `ARCHITEQ_PUBLIC_API_URL`).
-  - `architeq_api.api.voices.PREVIEWS_DIR: Path` — module-level, monkeypatchable in tests.
+  - `Settings.public_api_url: str = ""` (env `ARHITEQ_PUBLIC_API_URL`).
+  - `arhiteq_api.api.voices.PREVIEWS_DIR: Path` — module-level, monkeypatchable in tests.
   - `GET /list-voices` / `GET /get-voice/{id}` return `preview_audio_url` as `"{public_api_url}/static/voice_previews/{voice_id}.mp3"` when `PREVIEWS_DIR/{voice_id}.mp3` exists on disk (relative `/static/...` path when the setting is empty), else `None`.
   - `GET /static/voice_previews/*.mp3` serves committed files without auth.
 
@@ -113,7 +113,7 @@ Append to `backend/tests/contract/test_voices.py`:
 
 ```python
 async def test_preview_audio_url_null_when_sample_missing(client, tmp_path, monkeypatch):
-    from architeq_api.api import voices as voices_api
+    from arhiteq_api.api import voices as voices_api
 
     monkeypatch.setattr(voices_api, "PREVIEWS_DIR", tmp_path)  # empty dir
     resp = await client.get("/get-voice/cartesia-sonic", headers=AUTH_HEADERS)
@@ -121,7 +121,7 @@ async def test_preview_audio_url_null_when_sample_missing(client, tmp_path, monk
 
 
 async def test_preview_audio_url_relative_when_sample_exists(client, tmp_path, monkeypatch):
-    from architeq_api.api import voices as voices_api
+    from arhiteq_api.api import voices as voices_api
 
     (tmp_path / "cartesia-sonic.mp3").write_bytes(b"ID3 fake mp3")
     monkeypatch.setattr(voices_api, "PREVIEWS_DIR", tmp_path)
@@ -134,8 +134,8 @@ async def test_preview_audio_url_relative_when_sample_exists(client, tmp_path, m
 
 
 async def test_preview_audio_url_absolute_with_public_api_url(client, tmp_path, monkeypatch):
-    from architeq_api.api import voices as voices_api
-    from architeq_api.config import get_settings
+    from arhiteq_api.api import voices as voices_api
+    from arhiteq_api.config import get_settings
 
     (tmp_path / "cartesia-sonic.mp3").write_bytes(b"ID3 fake mp3")
     monkeypatch.setattr(voices_api, "PREVIEWS_DIR", tmp_path)
@@ -148,7 +148,7 @@ async def test_preview_audio_url_absolute_with_public_api_url(client, tmp_path, 
 
 
 async def test_static_mount_serves_preview_files_without_auth(client):
-    from architeq_api.api.voices import PREVIEWS_DIR
+    from arhiteq_api.api.voices import PREVIEWS_DIR
 
     sample = PREVIEWS_DIR / "test-sample.mp3"
     sample.write_bytes(b"ID3 test bytes")
@@ -167,7 +167,7 @@ Expected: the four new tests FAIL (`PREVIEWS_DIR` doesn't exist → AttributeErr
 
 - [ ] **Step 3: Implement**
 
-`backend/src/architeq_api/config.py` — add after the `recordings_gcs_bucket` field:
+`backend/src/arhiteq_api/config.py` — add after the `recordings_gcs_bucket` field:
 
 ```python
     # Public base URL of this API (e.g. https://api.usanretirement.com), used
@@ -175,7 +175,7 @@ Expected: the four new tests FAIL (`PREVIEWS_DIR` doesn't exist → AttributeErr
     public_api_url: str = ""
 ```
 
-`backend/src/architeq_api/api/voices.py` — replace the whole file:
+`backend/src/arhiteq_api/api/voices.py` — replace the whole file:
 
 ```python
 from pathlib import Path
@@ -218,7 +218,7 @@ async def get_voice(voice_id: str, api_key: ApiKey = Depends(require_api_key)):
     return _with_preview(voice)
 ```
 
-`backend/src/architeq_api/main.py` — add imports and the mount. New imports at the top:
+`backend/src/arhiteq_api/main.py` — add imports and the mount. New imports at the top:
 
 ```python
 from pathlib import Path
@@ -241,8 +241,8 @@ app.mount(
 Create the directory with an empty keep-file so StaticFiles (and git) see it:
 
 ```bash
-mkdir -p backend/src/architeq_api/static/voice_previews
-touch backend/src/architeq_api/static/voice_previews/.gitkeep
+mkdir -p backend/src/arhiteq_api/static/voice_previews
+touch backend/src/arhiteq_api/static/voice_previews/.gitkeep
 ```
 
 - [ ] **Step 4: Run the backend test suite**
@@ -253,13 +253,13 @@ Expected: all PASS (full suite too — the new mount must not break other contra
 - [ ] **Step 5: Confirm the Docker image will contain the static dir**
 
 Run: `grep -n "COPY" backend/Dockerfile`
-Expected: a `COPY` that includes `src/` (or the whole backend dir). If `src/` is copied, the mp3s ship automatically. If the Dockerfile copies narrower paths, add `COPY src/architeq_api/static ...` accordingly and note it in the commit.
+Expected: a `COPY` that includes `src/` (or the whole backend dir). If `src/` is copied, the mp3s ship automatically. If the Dockerfile copies narrower paths, add `COPY src/arhiteq_api/static ...` accordingly and note it in the commit.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add backend/src/architeq_api/config.py backend/src/architeq_api/main.py \
-  backend/src/architeq_api/api/voices.py backend/src/architeq_api/static/voice_previews/.gitkeep \
+git add backend/src/arhiteq_api/config.py backend/src/arhiteq_api/main.py \
+  backend/src/arhiteq_api/api/voices.py backend/src/arhiteq_api/static/voice_previews/.gitkeep \
   backend/tests/contract/test_voices.py
 git commit -m "feat(api): serve voice preview audio from /static with public_api_url links"
 ```
@@ -272,7 +272,7 @@ git commit -m "feat(api): serve voice preview audio from /static with public_api
 - Create: `backend/scripts/generate_voice_previews.py`
 
 **Interfaces:**
-- Consumes: `VOICES` from `architeq_api.voices`; writes into Task 2's `backend/src/architeq_api/static/voice_previews/`.
+- Consumes: `VOICES` from `arhiteq_api.voices`; writes into Task 2's `backend/src/arhiteq_api/static/voice_previews/`.
 - Produces: `{voice_id}.mp3` per catalog voice. Manual, one-time: `cd backend && CARTESIA_API_KEY=... uv run python scripts/generate_voice_previews.py`. Idempotent (skips existing files).
 
 There is no automated test for this script (it needs a live Cartesia key); ruff lints it at commit time. **Do not run it during plan execution unless `CARTESIA_API_KEY` is available in the environment** — if it is, run it and commit the mp3s in this task's commit; otherwise commit the script alone and leave mp3 generation as a documented operator step (the UI degrades gracefully: play buttons stay disabled).
@@ -288,7 +288,7 @@ One-time, manual, idempotent:
 
     cd backend && CARTESIA_API_KEY=... uv run python scripts/generate_voice_previews.py
 
-Writes src/architeq_api/static/voice_previews/{voice_id}.mp3 (committed to
+Writes src/arhiteq_api/static/voice_previews/{voice_id}.mp3 (committed to
 git; ~50 KB each). The API fills preview_audio_url only for files that exist,
 so a partial run is safe. Re-run with a voice removed from the skip check to
 regenerate it.
@@ -302,9 +302,9 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from architeq_api.voices import VOICES  # noqa: E402
+from arhiteq_api.voices import VOICES  # noqa: E402
 
-# Mirrors worker/src/architeq_worker/voices.py VOICE_UUIDS — keep in sync so
+# Mirrors worker/src/arhiteq_worker/voices.py VOICE_UUIDS — keep in sync so
 # previews are synthesized with the exact voice used on live calls.
 VOICE_UUIDS: dict[str, str] = {
     "cartesia-sonic": "694f9389-aac1-45b6-b726-9d9369183238",
@@ -321,8 +321,8 @@ VOICE_UUIDS: dict[str, str] = {
     "cartesia-luca": "e019ed7e-6079-4467-bc7f-b599a5dccf6f",
 }
 
-OUT_DIR = Path(__file__).resolve().parent.parent / "src" / "architeq_api" / "static" / "voice_previews"
-TTS_MODEL = os.getenv("ARCHITEQ_CARTESIA_TTS_MODEL", "sonic-2")  # match the worker
+OUT_DIR = Path(__file__).resolve().parent.parent / "src" / "arhiteq_api" / "static" / "voice_previews"
+TTS_MODEL = os.getenv("ARHITEQ_CARTESIA_TTS_MODEL", "sonic-2")  # match the worker
 
 
 def main() -> int:
@@ -389,7 +389,7 @@ If `CARTESIA_API_KEY` is set in the environment: `cd backend && uv run python sc
 
 ```bash
 git add backend/scripts/generate_voice_previews.py
-# plus, only if generated: git add backend/src/architeq_api/static/voice_previews/*.mp3
+# plus, only if generated: git add backend/src/arhiteq_api/static/voice_previews/*.mp3
 git commit -m "feat(api): script to generate Cartesia voice preview mp3s"
 ```
 
@@ -413,7 +413,7 @@ git commit -m "feat(api): script to generate Cartesia voice preview mp3s"
 In `frontend/src/lib/types.ts`, below the `Agent` interface, add:
 
 ```ts
-/** /list-voices catalog entry (Retell voice shape + Architeq extras). */
+/** /list-voices catalog entry (Retell voice shape + Arhiteq extras). */
 export interface Voice {
   voice_id: string;
   voice_name: string;
@@ -510,7 +510,7 @@ import { useEffect, useRef, useState } from "react";
 
 /**
  * Same guard as AudioPlayer's safeSrc: only http(s) plays. The API returns a
- * relative /static/... path when ARCHITEQ_PUBLIC_API_URL is unset (local
+ * relative /static/... path when ARHITEQ_PUBLIC_API_URL is unset (local
  * dev); resolve it against the API origin, not the dashboard origin.
  */
 export function resolvePreviewUrl(url: string | null | undefined): string | null {

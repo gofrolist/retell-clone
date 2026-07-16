@@ -27,8 +27,8 @@ async def test_create_chat(client):
 
 
 def test_chat_prompt_resolves_system_and_user_variables():
-    from architeq_api.api.chats import _resolve_chat_prompt
-    from architeq_api.models import Chat, now_ms
+    from arhiteq_api.api.chats import _resolve_chat_prompt
+    from arhiteq_api.models import Chat, now_ms
 
     chat = Chat(
         chat_id="chat_abc123",
@@ -66,7 +66,7 @@ async def test_chat_completion_appends_user_and_agent_messages(client):
     agent_msg = messages[0]
     assert agent_msg["role"] == "agent"
     assert agent_msg["message_id"].startswith("msg_")
-    assert agent_msg["content"]  # canned reply without ARCHITEQ_GOOGLE_API_KEY
+    assert agent_msg["content"]  # canned reply without ARHITEQ_GOOGLE_API_KEY
 
     got = (await client.get(f"/get-chat/{chat['chat_id']}", headers=AUTH_HEADERS)).json()
     history = got["message_with_tool_calls"]

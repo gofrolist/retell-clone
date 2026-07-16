@@ -3,9 +3,9 @@ requires = ["uv_build>=0.11.28,<0.12.0"]
 build-backend = "uv_build"
 
 [project]
-name = "architeq-worker"
+name = "arhiteq-worker"
 version = "0.1.0"
-description = "Architeq voice worker — LiveKit Agents pipeline (Cartesia STT/TTS + Gemini)"
+description = "Arhiteq voice worker — LiveKit Agents pipeline (Cartesia STT/TTS + Gemini)"
 requires-python = ">=3.14"
 dependencies = [
     "livekit-agents[cartesia,google]>=1.6.5,<2.0",

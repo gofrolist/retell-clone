@@ -1,4 +1,4 @@
-# Local development dependencies for Architeq.
+# Local development dependencies for Arhiteq.
 # App processes (api / worker / dashboard) run on the host via `make api`,
 # `make worker`, `make web` for fast reload; this file provides the backing
 # services only.
@@ -7,9 +7,9 @@ services:
   postgres:
     image: postgres:18@sha256:22c89fe0d0f507606260237fd55e51f6137f58b2d5bcf6152242b96d9fe8f9a4
     environment:
-      POSTGRES_USER: architeq
-      POSTGRES_PASSWORD: architeq
-      POSTGRES_DB: architeq
+      POSTGRES_USER: arhiteq
+      POSTGRES_PASSWORD: arhiteq
+      POSTGRES_DB: arhiteq
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
@@ -17,7 +17,7 @@ services:
       # so the volume must cover /var/lib/postgresql (not .../data).
       - pgdata:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U architeq -d architeq"]
+      test: ["CMD-SHELL", "pg_isready -U arhiteq -d arhiteq"]
       interval: 5s
       timeout: 3s
       retries: 10

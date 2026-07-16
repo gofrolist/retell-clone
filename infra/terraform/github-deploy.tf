@@ -30,7 +30,7 @@ resource "google_iam_workload_identity_pool_provider" "github" {
 }
 
 resource "google_service_account" "deployer" {
-  account_id   = "architeq-deployer"
+  account_id   = "arhiteq-deployer"
   display_name = "GitHub Actions release deployer"
 }
 

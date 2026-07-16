@@ -1,11 +1,11 @@
-// Dashboard session management (Google Sign-In → Architeq session JWT).
+// Dashboard session management (Google Sign-In → Arhiteq session JWT).
 // The session is issued by POST /auth/google on the backend and stored in
 // localStorage; lib/api.ts sends it as `Authorization: Bearer <token>`.
 
-export const SESSION_KEY = "architeq_session";
+export const SESSION_KEY = "arhiteq_session";
 
 export interface Session {
-  /** Architeq session JWT. */
+  /** Arhiteq session JWT. */
   token: string;
   /** Unix seconds. */
   expires_at: number;

@@ -2,10 +2,10 @@
 #   helm install egress livekit/egress -n livekit -f egress-values.yaml
 #
 # The worker starts an audio-only room-composite egress per call
-# (worker/src/architeq_worker/main.py `_start_recording`) with a GCS
+# (worker/src/arhiteq_worker/main.py `_start_recording`) with a GCS
 # file output and no inline credentials — the egress pod authenticates
 # to GCS via Workload Identity: the KSA below is bound to
-# architeq-livekit-egress@PROJECT_ID.iam.gserviceaccount.com
+# arhiteq-livekit-egress@PROJECT_ID.iam.gserviceaccount.com
 # (terraform iam.tf `egress_wi`; the binding expects exactly
 # livekit/livekit-egress, so keep the name and namespace).
 
@@ -15,7 +15,7 @@ serviceAccount:
   create: true
   name: livekit-egress
   annotations:
-    iam.gke.io/gcp-service-account: architeq-livekit-egress@PROJECT_ID.iam.gserviceaccount.com
+    iam.gke.io/gcp-service-account: arhiteq-livekit-egress@PROJECT_ID.iam.gserviceaccount.com
 
 egress:
   log_level: info
@@ -23,7 +23,7 @@ egress:
   prometheus_port: 9090
 
   # Same key/secret as livekit-server-values.yaml.
-  api_key: APIArchiteqKey
+  api_key: APIArhiteqKey
   api_secret: LIVEKIT_API_SECRET_CHANGE_ME
   ws_url: ws://livekit-server.livekit.svc.cluster.local:443
 

@@ -1,12 +1,12 @@
 import pytest
 
-from architeq_api import security
-from architeq_api.config import Settings
+from arhiteq_api import security
+from arhiteq_api.config import Settings
 
 
 @pytest.fixture
 def strict_settings(monkeypatch):
-    """SSRF checks on (conftest sets ARCHITEQ_ALLOW_PRIVATE_WEBHOOKS=true)."""
+    """SSRF checks on (conftest sets ARHITEQ_ALLOW_PRIVATE_WEBHOOKS=true)."""
     monkeypatch.setattr(security, "get_settings", lambda: Settings(allow_private_webhooks=False))
 
 

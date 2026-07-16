@@ -43,8 +43,8 @@ resource "google_sql_database_instance" "postgres" {
   depends_on = [google_service_networking_connection.private_services]
 }
 
-resource "google_sql_database" "architeq" {
-  name     = "architeq"
+resource "google_sql_database" "arhiteq" {
+  name     = "arhiteq"
   instance = google_sql_database_instance.postgres.name
 }
 
@@ -53,14 +53,14 @@ resource "random_password" "db" {
   special = false
 }
 
-resource "google_sql_user" "architeq" {
-  name     = "architeq"
+resource "google_sql_user" "arhiteq" {
+  name     = "arhiteq"
   instance = google_sql_database_instance.postgres.name
   password = random_password.db.result
 }
 
 resource "google_secret_manager_secret" "db_password" {
-  secret_id = "architeq-db-password"
+  secret_id = "arhiteq-db-password"
 
   replication {
     auto {}
@@ -74,9 +74,9 @@ resource "google_secret_manager_secret_version" "db_password" {
   secret_data = random_password.db.result
 }
 
-# Full async DSN, ready to mount as ARCHITEQ_DATABASE_URL.
+# Full async DSN, ready to mount as ARHITEQ_DATABASE_URL.
 resource "google_secret_manager_secret" "database_url" {
-  secret_id = "architeq-database-url"
+  secret_id = "arhiteq-database-url"
 
   replication {
     auto {}
@@ -87,5 +87,5 @@ resource "google_secret_manager_secret" "database_url" {
 
 resource "google_secret_manager_secret_version" "database_url" {
   secret      = google_secret_manager_secret.database_url.id
-  secret_data = "postgresql+asyncpg://architeq:${random_password.db.result}@${google_sql_database_instance.postgres.private_ip_address}:5432/architeq"
+  secret_data = "postgresql+asyncpg://arhiteq:${random_password.db.result}@${google_sql_database_instance.postgres.private_ip_address}:5432/arhiteq"
 }

@@ -1,4 +1,4 @@
-// Typed client for the Architeq backend (Retell-shaped REST).
+// Typed client for the Arhiteq backend (Retell-shaped REST).
 //
 // Requests NEVER silently fall back to fake data. A failed request throws
 // ApiError and flips the backend-status store (rendered as a banner by

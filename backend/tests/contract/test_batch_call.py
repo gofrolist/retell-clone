@@ -66,7 +66,7 @@ async def test_scheduled_batch_call_is_stored_without_dialing(client, monkeypatc
     async def _boom(call):
         raise AssertionError("scheduled batch must not dial immediately")
 
-    monkeypatch.setattr("architeq_api.services.telephony.start_outbound_call", _boom)
+    monkeypatch.setattr("arhiteq_api.services.telephony.start_outbound_call", _boom)
     resp = await client.post(
         "/create-batch-call",
         headers=AUTH_HEADERS,
@@ -86,7 +86,7 @@ async def test_batch_call_tolerates_per_task_telephony_failure(client, monkeypat
         if call.to_number == "+12137774445":
             raise RuntimeError("trunk rejected")
 
-    monkeypatch.setattr("architeq_api.services.telephony.start_outbound_call", _flaky)
+    monkeypatch.setattr("arhiteq_api.services.telephony.start_outbound_call", _flaky)
     resp = await client.post(
         "/create-batch-call",
         headers=AUTH_HEADERS,

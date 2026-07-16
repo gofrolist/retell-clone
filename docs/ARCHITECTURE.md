@@ -1,6 +1,6 @@
-# Architeq — Architecture
+# Arhiteq — Architecture
 
-Architeq is a voice-AI phone-agent platform, API-compatible with Retell AI
+Arhiteq is a voice-AI phone-agent platform, API-compatible with Retell AI
 (https://docs.retellai.com). It is a drop-in replacement: existing Retell
 integrations migrate by changing the base URL and API key only
 (see `usan-retirement-backend/VOICE_PROVIDER_MIGRATION_SPEC.md`).
@@ -10,14 +10,14 @@ integrations migrate by changing the base URL and API key only
 ```
                             ┌────────────────────────────────────────────┐
                             │                  GKE                       │
- Customer backend ──HTTP──▶ │  architeq-api   (FastAPI control plane)    │
+ Customer backend ──HTTP──▶ │  arhiteq-api   (FastAPI control plane)    │
    (Supabase edge fns)      │     │  ▲                                   │
         ▲                   │     │  │ dispatch / call state             │
         │ webhooks          │     ▼  │                                   │
         │ (call_ended,      │  Postgres (Cloud SQL)   Redis (Memorystore)│
         │  call_inbound)    │     ▲  │                                   │
         └───────────────────│─────┘  ▼                                   │
-                            │  architeq-worker (LiveKit Agents, Python)  │
+                            │  arhiteq-worker (LiveKit Agents, Python)  │
                             │     STT ─ Cartesia Ink-Whisper             │
                             │     LLM ─ Gemini (Google GenAI)            │
                             │     TTS ─ Cartesia Sonic                   │
@@ -36,13 +36,13 @@ integrations migrate by changing the base URL and API key only
 | STT                | Cartesia Ink-Whisper |
 | LLM                | Google GenAI — Gemini (live conversation + post-call analysis) |
 | TTS                | Cartesia Sonic |
-| Dashboard          | Next.js ("Architeq" branding), talks to control plane |
+| Dashboard          | Next.js ("Arhiteq" branding), talks to control plane |
 | Infra              | GCP: GKE, Cloud SQL, Memorystore, Artifact Registry; Terraform + Helm |
 | Observability      | kube-prometheus-stack (Prometheus + Grafana), per-service /metrics |
 
 ## Services
 
-### architeq-api (backend/)
+### arhiteq-api (backend/)
 The control plane. Owns all persistent state and the public API.
 
 - **Retell-compatible API** (`/v2/*` and top-level resource routes):
@@ -67,7 +67,7 @@ The control plane. Owns all persistent state and the public API.
   (`Positive|Negative|Neutral`), `in_voicemail`, `call_successful`), then
   emits `call_analyzed`.
 
-### architeq-worker (worker/)
+### arhiteq-worker (worker/)
 LiveKit Agents worker; one job per call.
 
 - Joins the LiveKit room for the call; runs the Cartesia-STT → Gemini →
@@ -109,9 +109,9 @@ LiveKit Agents worker; one job per call.
   recording), which triggers `call_ended`.
 - Recordings via LiveKit Egress to GCS; `recording_url` is a signed URL.
 
-### architeq-dashboard (frontend/)
+### arhiteq-dashboard (frontend/)
 Next.js app cloned from dashboard.retellai.com layout (see `screenshots/`),
-rebranded **Architeq**. Talks to architeq-api with a session (dashboard) token.
+rebranded **Arhiteq**. Talks to arhiteq-api with a session (dashboard) token.
 
 ## Call flows
 
@@ -168,10 +168,10 @@ contract test suite in `backend/tests/contract/`:
 ```
 backend/    FastAPI control plane (+ alembic migrations, contract tests)
 worker/     LiveKit Agents voice worker
-frontend/   Next.js dashboard (Architeq branding)
+frontend/   Next.js dashboard (Arhiteq branding)
 infra/
   terraform/  GCP: GKE, Cloud SQL, Memorystore, Artifact Registry, DNS/IPs
-  helm/       architeq umbrella chart (api, worker, frontend),
+  helm/       arhiteq umbrella chart (api, worker, frontend),
               livekit + livekit-sip values, kube-prometheus-stack values
 docs/       architecture, compatibility, migration runbook
 screenshots/  Retell dashboard reference for the UI clone
@@ -180,11 +180,11 @@ screenshots/  Retell dashboard reference for the UI clone
 ## Observability
 
 - Every service exposes `/metrics` (Prometheus). Key series:
-  `architeq_calls_total{direction,status}`, `architeq_call_duration_seconds`,
-  `architeq_webhook_deliveries_total{event,outcome}`,
-  `architeq_tool_calls_total{tool,outcome}`,
-  `architeq_llm_ttfb_seconds` / `architeq_tts_ttfb_seconds` (latency SLO:
+  `arhiteq_calls_total{direction,status}`, `arhiteq_call_duration_seconds`,
+  `arhiteq_webhook_deliveries_total{event,outcome}`,
+  `arhiteq_tool_calls_total{tool,outcome}`,
+  `arhiteq_llm_ttfb_seconds` / `arhiteq_tts_ttfb_seconds` (latency SLO:
   p95 agent response — acceptance criterion from the migration spec §8),
-  `architeq_amd_detections_total{result}`.
+  `arhiteq_amd_detections_total{result}`.
 - kube-prometheus-stack installed via Helm; ServiceMonitors per service;
   Grafana dashboards in `infra/helm/monitoring/dashboards/`.
