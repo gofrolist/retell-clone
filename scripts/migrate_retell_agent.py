@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Migrate agents + their custom functions from a live Retell account to Architeq.
+"""Migrate agents + their custom functions from a live Retell account to Arhiteq.
 
 Pulls straight from Retell's public API (no local JSON needed) and recreates each
-agent in Architeq via the wire-compatible endpoints:
+agent in Arhiteq via the wire-compatible endpoints:
 
-  Retell (source)                     Architeq (dest)
+  Retell (source)                     Arhiteq (dest)
   ────────────────                    ────────────────
   GET  /get-agent/{id}          ->    POST /create-retell-llm   (general_tools,
   GET  /get-retell-llm/{id}     ->                               states, prompt…)
@@ -24,32 +24,32 @@ Usage:
   # one agent, preview only
   python scripts/migrate_retell_agent.py \
       --retell-key   key_xxx \
-      --architeq-base http://localhost:8080 \
-      --architeq-key  <ARCHITEQ_API_KEY> \
+      --arhiteq-base http://localhost:8080 \
+      --arhiteq-key  <ARHITEQ_API_KEY> \
       --agent-id agent_175ad5d9bfe5ce919271b539ea \
       --dry-run
 
   # every agent in the Retell account, for real
   python scripts/migrate_retell_agent.py \
       --retell-key key_xxx \
-      --architeq-base https://api.usanretirement.com \
-      --architeq-key  <ARCHITEQ_API_KEY> \
+      --arhiteq-base https://api.usanretirement.com \
+      --arhiteq-key  <ARHITEQ_API_KEY> \
       --all
 
 Options of note:
   --all                 migrate every agent returned by Retell /list-agents.
   --agent-id ID         migrate one agent (repeatable). Mutually fine with --all.
-  --new-ids             let Architeq assign fresh ids instead of preserving
+  --new-ids             let Arhiteq assign fresh ids instead of preserving
                         Retell's (use when importing into a workspace that must
                         not collide with the originals).
   --rewrite-url OLD=NEW rewrite custom-function webhook hosts, e.g.
                         --rewrite-url https://old.example.com=https://new.example.com
                         (repeatable; substring match on each tool `url`).
   --voice-id ID         override every agent's voice_id (Retell voice ids may not
-                        exist in Architeq; defaults to passing the source value
+                        exist in Arhiteq; defaults to passing the source value
                         through unchanged).
   --keep-kb-ids         keep the source `knowledge_base_ids` (they reference
-                        Retell KB ids that won't exist in Architeq; dropped by
+                        Retell KB ids that won't exist in Arhiteq; dropped by
                         default).
   --dry-run             fetch + plan + print a summary, but write nothing.
 """
@@ -120,7 +120,7 @@ def strip_keys(obj: dict, keys: set[str]) -> dict:
 def migrate_llm(
     dst: httpx.Client, src_llm: dict, rules, keep_kb: bool, dry: bool
 ) -> tuple[str, int]:
-    """Recreate a Retell LLM in Architeq. Returns (new_llm_id, tools_migrated)."""
+    """Recreate a Retell LLM in Arhiteq. Returns (new_llm_id, tools_migrated)."""
     body = strip_keys(src_llm, LLM_READONLY)
     if not keep_kb:
         body.pop("knowledge_base_ids", None)
@@ -185,7 +185,7 @@ def migrate_agent(
         body.pop("agent_id", None)
     if args.voice_id:
         body["voice_id"] = args.voice_id
-    body.setdefault("voice_id", "cartesia-sonic")  # required by Architeq
+    body.setdefault("voice_id", "cartesia-sonic")  # required by Arhiteq
 
     if args.dry_run:
         print(
@@ -208,8 +208,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--retell-key", required=True, help="Retell API key (source)")
     ap.add_argument("--retell-base", default=RETELL_BASE)
-    ap.add_argument("--architeq-base", default="http://localhost:8080")
-    ap.add_argument("--architeq-key", required=True, help="Architeq API key (dest)")
+    ap.add_argument("--arhiteq-base", default="http://localhost:8080")
+    ap.add_argument("--arhiteq-key", required=True, help="Arhiteq API key (dest)")
     ap.add_argument("--agent-id", action="append", default=[], help="repeatable")
     ap.add_argument("--all", action="store_true", help="migrate every Retell agent")
     ap.add_argument("--new-ids", action="store_true")
@@ -239,8 +239,8 @@ def main() -> int:
         timeout=30,
     )
     dst = httpx.Client(
-        base_url=args.architeq_base,
-        headers={"Authorization": f"Bearer {args.architeq_key}"},
+        base_url=args.arhiteq_base,
+        headers={"Authorization": f"Bearer {args.arhiteq_key}"},
         timeout=30,
     )
 

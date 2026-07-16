@@ -1,6 +1,6 @@
 """Voice-id → Cartesia UUID resolution."""
 
-from architeq_worker.voices import (
+from arhiteq_worker.voices import (
     FALLBACK_VOICE_UUID,
     VOICE_UUIDS,
     resolve_cartesia_voice,
@@ -45,7 +45,7 @@ def test_unknown_voice_falls_back_to_default():
 
 
 def test_unknown_voice_honours_env_default(monkeypatch):
-    monkeypatch.setenv("ARCHITEQ_DEFAULT_CARTESIA_VOICE_ID", KATIE)
+    monkeypatch.setenv("ARHITEQ_DEFAULT_CARTESIA_VOICE_ID", KATIE)
     assert resolve_cartesia_voice("openai-alloy") == KATIE
 
 

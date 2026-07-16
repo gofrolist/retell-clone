@@ -1,6 +1,6 @@
-# architeq-worker
+# arhiteq-worker
 
-LiveKit Agents voice worker for Architeq (agent name `architeq-agent`).
+LiveKit Agents voice worker for Arhiteq (agent name `arhiteq-agent`).
 One job per call: Cartesia ink-whisper STT → Gemini LLM → Cartesia Sonic TTS,
 with Retell-compatible dynamic variables, custom function tools, AMD/voicemail
 handling, lifecycle reporting to the control plane, and GCS call recordings.
@@ -28,17 +28,17 @@ Binding contracts: `docs/ARCHITECTURE.md`, `docs/INTERNAL_API.md`,
 | `LIVEKIT_URL` | yes | LiveKit server URL (`wss://…`) |
 | `LIVEKIT_API_KEY` | yes | LiveKit API key |
 | `LIVEKIT_API_SECRET` | yes | LiveKit API secret |
-| `ARCHITEQ_API_URL` | yes | Control-plane base URL (no trailing slash) |
-| `ARCHITEQ_INTERNAL_TOKEN` | yes | Shared secret for `/internal/*` (sent as `X-Internal-Token`) |
+| `ARHITEQ_API_URL` | yes | Control-plane base URL (no trailing slash) |
+| `ARHITEQ_INTERNAL_TOKEN` | yes | Shared secret for `/internal/*` (sent as `X-Internal-Token`) |
 | `CARTESIA_API_KEY` | yes | Cartesia STT + TTS |
 | `GOOGLE_API_KEY` | yes | Google GenAI (Gemini LLM + AMD greeting classifier) |
 | `RECORDINGS_GCS_BUCKET` | no | GCS bucket for room-composite recordings; unset → no recording, `recording_url: null` |
 | `GOOGLE_APPLICATION_CREDENTIALS` | no | Service-account JSON path passed to LiveKit Egress for GCS upload |
-| `ARCHITEQ_GEMINI_MODEL` | no | Fallback Gemini model when the agent's `llm.model` is not a Gemini model (default `gemini-2.5-flash`) |
-| `ARCHITEQ_CARTESIA_TTS_MODEL` | no | Cartesia TTS model (default `sonic-2`) |
-| `ARCHITEQ_CARTESIA_STT_MODEL` | no | Cartesia STT model (default `ink-whisper`) |
-| `ARCHITEQ_DIAL_TIMEOUT_S` | no | Outbound answer-wait timeout (default `60`) |
-| `ARCHITEQ_METRICS_PORT` | no | Prometheus port (default `9090`) |
+| `ARHITEQ_GEMINI_MODEL` | no | Fallback Gemini model when the agent's `llm.model` is not a Gemini model (default `gemini-2.5-flash`) |
+| `ARHITEQ_CARTESIA_TTS_MODEL` | no | Cartesia TTS model (default `sonic-2`) |
+| `ARHITEQ_CARTESIA_STT_MODEL` | no | Cartesia STT model (default `ink-whisper`) |
+| `ARHITEQ_DIAL_TIMEOUT_S` | no | Outbound answer-wait timeout (default `60`) |
+| `ARHITEQ_METRICS_PORT` | no | Prometheus port (default `9090`) |
 | `LOG_LEVEL` | no | Python log level (default `INFO`) |
 
 ## Retell agent-option mappings
@@ -54,10 +54,10 @@ Documented in `main.py`; summary:
 
 ## Metrics (`:9090/metrics`)
 
-- `architeq_worker_jobs_total{direction}`
-- `architeq_tool_calls_total{tool,outcome}`
-- `architeq_llm_ttfb_seconds`, `architeq_tts_ttfb_seconds`
-- `architeq_amd_detections_total{result}`
+- `arhiteq_worker_jobs_total{direction}`
+- `arhiteq_tool_calls_total{tool,outcome}`
+- `arhiteq_llm_ttfb_seconds`, `arhiteq_tts_ttfb_seconds`
+- `arhiteq_amd_detections_total{result}`
 
 Jobs run in subprocesses; each process starts the exporter if the port is
 free. For exact aggregates use prometheus_client multiprocess mode (TODO).
@@ -66,14 +66,14 @@ free. For exact aggregates use prometheus_client multiprocess mode (TODO).
 
 ```bash
 uv sync                                    # installs runtime deps + dev group
-uv run python -m architeq_worker.main dev  # local dev against LIVEKIT_URL
-uv run python -m architeq_worker.main start
+uv run python -m arhiteq_worker.main dev  # local dev against LIVEKIT_URL
+uv run python -m arhiteq_worker.main start
 uv run pytest                              # unit tests (variables + tool-bridge contract)
 ```
 
 ## Docker
 
 ```bash
-docker build -t architeq-worker .
-docker run --env-file .env architeq-worker
+docker build -t arhiteq-worker .
+docker run --env-file .env arhiteq-worker
 ```

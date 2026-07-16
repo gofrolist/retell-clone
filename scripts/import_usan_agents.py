@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Import the USAN Retirement agents from the consumer repo into Architeq.
+"""Import the USAN Retirement agents from the consumer repo into Arhiteq.
 
 Reads prompts and tool declarations directly from usan-retirement-backend
 (prompts/*.txt, retell/{companion,inbound,sales}/*.json) and creates, via the
-Architeq public API:
+Arhiteq public API:
   - one retell-llm + agent per role (companion, sales, betty),
   - preserving the EXISTING Retell agent ids (so the consumer's
     RETELL_*_AGENT_ID env vars keep working unchanged).
@@ -11,7 +11,7 @@ Architeq public API:
 Usage:
   python scripts/import_usan_agents.py \
       --api-base http://localhost:8080 \
-      --api-key  <ARCHITEQ_API_KEY> \
+      --api-key  <ARHITEQ_API_KEY> \
       --consumer-repo ~/gofrolist/usan-retirement-backend \
       --companion-agent-id agent_... --sales-agent-id agent_... \
       --betty-agent-id agent_... \
@@ -58,7 +58,7 @@ def load_tools(repo: Path, dirs: list[str]) -> list[dict]:
             spec = json.loads(f.read_text())
             url = spec.get("url", "")
             if not url or url.startswith("RETELL_BUILT_IN"):
-                # kb_lookup → Architeq knowledge-base tool, configured separately
+                # kb_lookup → Arhiteq knowledge-base tool, configured separately
                 continue
             name = spec["name"]
             if name in tools:

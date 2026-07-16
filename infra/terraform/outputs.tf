@@ -16,12 +16,12 @@ output "db_private_ip" {
 }
 
 output "db_password_secret" {
-  description = "Secret Manager secret holding the architeq DB password."
+  description = "Secret Manager secret holding the arhiteq DB password."
   value       = google_secret_manager_secret.db_password.secret_id
 }
 
 output "database_url_secret" {
-  description = "Secret Manager secret holding the full ARCHITEQ_DATABASE_URL DSN."
+  description = "Secret Manager secret holding the full ARHITEQ_DATABASE_URL DSN."
   value       = google_secret_manager_secret.database_url.secret_id
 }
 
@@ -39,7 +39,7 @@ output "recordings_bucket" {
 
 output "artifact_registry" {
   description = "Docker repo prefix for image pushes."
-  value       = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.architeq.repository_id}"
+  value       = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.arhiteq.repository_id}"
 }
 
 output "web_ip" {

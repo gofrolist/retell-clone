@@ -29,7 +29,7 @@ resource "google_dns_managed_zone" "zone" {
 
   name        = replace(var.domain, ".", "-")
   dns_name    = "${var.domain}."
-  description = "Architeq platform zone"
+  description = "Arhiteq platform zone"
 
   depends_on = [google_project_service.services]
 }

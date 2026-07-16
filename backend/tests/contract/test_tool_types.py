@@ -6,8 +6,8 @@ Retell tool union — including types the worker does not execute yet
 (code, mcp, bridge_transfer, cancel_transfer), which must still persist.
 """
 
-import architeq_api.db as db_module
-from architeq_api.models import Call
+import arhiteq_api.db as db_module
+from arhiteq_api.models import Call
 from tests.conftest import AGENT_ID, AUTH_HEADERS, INTERNAL_HEADERS, WORKSPACE_ID
 
 

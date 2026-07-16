@@ -22,12 +22,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
 
 # Numeric UID so Kubernetes runAsNonRoot can verify the user.
-RUN useradd --system --create-home --uid 10001 architeq
+RUN useradd --system --create-home --uid 10001 arhiteq
 ENV PYTHONUNBUFFERED=1 PATH="/app/.venv/bin:$PATH"
-COPY --from=builder --chown=architeq:architeq /app/.venv /app/.venv
+COPY --from=builder --chown=arhiteq:arhiteq /app/.venv /app/.venv
 
 USER 10001:10001
 WORKDIR /app
 
 EXPOSE 8080
-CMD ["uvicorn", "architeq_api.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "arhiteq_api.main:app", "--host", "0.0.0.0", "--port", "8080"]

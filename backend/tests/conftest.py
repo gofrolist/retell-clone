@@ -1,4 +1,4 @@
-# ruff: noqa: E402 — env vars must be set before architeq_api imports
+# ruff: noqa: E402 — env vars must be set before arhiteq_api imports
 import atexit
 import os
 import tempfile
@@ -8,7 +8,7 @@ import tempfile
 # (StaticPool), where a background task's session close() issues ROLLBACK on
 # that connection and can wipe a request's flushed-but-uncommitted UPDATE —
 # seen on CI as finalize returning 200 with the transcript silently lost.
-_db_file = tempfile.NamedTemporaryFile(prefix="architeq-test-", suffix=".sqlite", delete=False)
+_db_file = tempfile.NamedTemporaryFile(prefix="arhiteq-test-", suffix=".sqlite", delete=False)
 _db_file.close()
 atexit.register(
     lambda: [
@@ -16,16 +16,16 @@ atexit.register(
         for p in (_db_file.name, _db_file.name + "-wal", _db_file.name + "-shm")
     ]
 )
-os.environ["ARCHITEQ_DATABASE_URL"] = f"sqlite+aiosqlite:///{_db_file.name}"
-os.environ["ARCHITEQ_INTERNAL_TOKEN"] = "test-internal-token"
-os.environ["ARCHITEQ_FUNCTION_SECRET"] = "test-function-secret"
+os.environ["ARHITEQ_DATABASE_URL"] = f"sqlite+aiosqlite:///{_db_file.name}"
+os.environ["ARHITEQ_INTERNAL_TOKEN"] = "test-internal-token"
+os.environ["ARHITEQ_FUNCTION_SECRET"] = "test-function-secret"
 # Webhook targets in tests are fake hosts intercepted by respx — skip the
 # SSRF public-address check (its own unit tests exercise it directly).
-os.environ["ARCHITEQ_ALLOW_PRIVATE_WEBHOOKS"] = "true"
-os.environ["ARCHITEQ_SESSION_SECRET"] = "test-session-secret"
-os.environ["ARCHITEQ_DASHBOARD_ALLOWED_EMAILS"] = '["admin@example.com"]'
-os.environ["ARCHITEQ_RATE_LIMIT_RPM"] = "0"
-os.environ.pop("ARCHITEQ_GOOGLE_API_KEY", None)
+os.environ["ARHITEQ_ALLOW_PRIVATE_WEBHOOKS"] = "true"
+os.environ["ARHITEQ_SESSION_SECRET"] = "test-session-secret"
+os.environ["ARHITEQ_DASHBOARD_ALLOWED_EMAILS"] = '["admin@example.com"]'
+os.environ["ARHITEQ_RATE_LIMIT_RPM"] = "0"
+os.environ.pop("ARHITEQ_GOOGLE_API_KEY", None)
 
 import asyncio
 
@@ -33,11 +33,11 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event
 
-import architeq_api.db as db_module
-from architeq_api.auth import hash_key
-from architeq_api.services import webhooks
-from architeq_api.main import app
-from architeq_api.models import Agent, ApiKey, Base, PhoneNumber, RetellLLM, Workspace
+import arhiteq_api.db as db_module
+from arhiteq_api.auth import hash_key
+from arhiteq_api.services import webhooks
+from arhiteq_api.main import app
+from arhiteq_api.models import Agent, ApiKey, Base, PhoneNumber, RetellLLM, Workspace
 
 API_KEY = "key_test_0123456789abcdef0123456789abcdef"
 AGENT_ID = "agent_sales0000000000000000000001"
@@ -142,7 +142,7 @@ def _stub_telephony(monkeypatch):
     async def _noop(call):
         return None
 
-    monkeypatch.setattr("architeq_api.services.telephony.start_outbound_call", _noop)
+    monkeypatch.setattr("arhiteq_api.services.telephony.start_outbound_call", _noop)
 
 
 OTHER_API_KEY = "key_other_0123456789abcdef0123456789ab"

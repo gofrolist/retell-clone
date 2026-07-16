@@ -6,7 +6,7 @@
 #     -n monitoring --create-namespace -f values.yaml
 #
 # Dashboards: create the ConfigMap from ./dashboards first —
-#   kubectl -n monitoring create configmap architeq-dashboards \
+#   kubectl -n monitoring create configmap arhiteq-dashboards \
 #     --from-file=dashboards/ \
 #     --dry-run=client -o yaml | kubectl apply -f -
 
@@ -15,7 +15,7 @@ fullnameOverride: monitoring
 prometheus:
   prometheusSpec:
     # Pick up ServiceMonitors/PodMonitors from any namespace and any
-    # release label (architeq + livekit charts create their own).
+    # release label (arhiteq + livekit charts create their own).
     serviceMonitorSelectorNilUsesHelmValues: false
     podMonitorSelectorNilUsesHelmValues: false
     ruleSelectorNilUsesHelmValues: false
@@ -57,17 +57,17 @@ grafana:
     dashboardproviders.yaml:
       apiVersion: 1
       providers:
-        - name: architeq
+        - name: arhiteq
           orgId: 1
-          folder: Architeq
+          folder: Arhiteq
           type: file
           disableDeletion: false
           editable: true
           options:
-            path: /var/lib/grafana/dashboards/architeq
+            path: /var/lib/grafana/dashboards/arhiteq
 
   dashboardsConfigMaps:
-    architeq: architeq-dashboards
+    arhiteq: arhiteq-dashboards
 
   persistence:
     enabled: true

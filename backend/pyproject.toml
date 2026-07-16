@@ -1,7 +1,7 @@
 [project]
-name = "architeq-api"
+name = "arhiteq-api"
 version = "0.1.0"
-description = "Architeq control plane — Retell-compatible voice agent API"
+description = "Arhiteq control plane — Retell-compatible voice agent API"
 requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.115",

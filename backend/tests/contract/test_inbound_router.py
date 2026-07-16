@@ -7,8 +7,8 @@ import respx
 from httpx import Response
 from sqlalchemy import update
 
-from architeq_api.db import session_factory
-from architeq_api.models import PhoneNumber
+from arhiteq_api.db import session_factory
+from arhiteq_api.models import PhoneNumber
 from tests.conftest import AGENT_ID, COMPANION_AGENT_ID, FROM_NUMBER, INTERNAL_HEADERS
 
 ROUTER_URL = "https://consumer.example/functions/v1/inbound-call-router"

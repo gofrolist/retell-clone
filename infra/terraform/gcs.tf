@@ -2,7 +2,7 @@
 # serves them to the dashboard via signed URLs (hence the CORS rule).
 
 resource "google_storage_bucket" "recordings" {
-  name     = "${var.project_id}-architeq-recordings"
+  name     = "${var.project_id}-arhiteq-recordings"
   location = var.region
 
   uniform_bucket_level_access = true

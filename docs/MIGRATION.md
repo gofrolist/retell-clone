@@ -1,4 +1,4 @@
-# Migration runbook: Retell → Architeq (USAN Retirement)
+# Migration runbook: Retell → Arhiteq (USAN Retirement)
 
 Follows `usan-retirement-backend/VOICE_PROVIDER_MIGRATION_SPEC.md` §9.
 Good news discovered during mapping (see `docs/RETELL_INTEGRATION_MAP.md`):
@@ -11,22 +11,22 @@ Good news discovered during mapping (see `docs/RETELL_INTEGRATION_MAP.md`):
 ## Phase 0 — long-lead items (start first)
 
 1. **Numbers.** `+1(949)919-5585` is already "Custom telephony" (Telnyx) on
-   Retell — it can be repointed to Architeq's LiveKit-SIP without a port.
+   Retell — it can be repointed to Arhiteq's LiveKit-SIP without a port.
    Betty's `+1(415)707-8561` is Twilio-bought — port to Telnyx or replace.
 2. **Recordings archive.** Old Retell `recording_url`s die at cutover. Batch
    job: select `recording_url` from `calls`, download, upload to Supabase
-   Storage (or Architeq's GCS), rewrite the column.
+   Storage (or Arhiteq's GCS), rewrite the column.
 3. **Knowledge base.** Export the 13 docs of "UsanRetirement kb" from the
    Retell dashboard (they're small MD files + 1 PDF; most exist in git) and
-   import into Architeq KB.
+   import into Arhiteq KB.
 
-## Phase 1 — stand up Architeq
+## Phase 1 — stand up Arhiteq
 
 1. Deploy per `infra/README.md` (Terraform → GKE → LiveKit/SIP → services →
    kube-prometheus-stack).
 2. Seed a workspace **reusing the consumer's exact API key** so the Bearer
    token and the webhook-HMAC key both keep working:
-   `python -m architeq_api.seed --api-key "$RETELL_API_KEY" --workspace-name USAN`
+   `python -m arhiteq_api.seed --api-key "$RETELL_API_KEY" --workspace-name USAN`
    (already-provisioned deployment: add `--workspace-id ws_...` to attach the
    key to the existing workspace instead of creating a new one)
 3. Import agents **preserving existing agent ids** (so `RETELL_*_AGENT_ID`
@@ -49,7 +49,7 @@ Good news discovered during mapping (see `docs/RETELL_INTEGRATION_MAP.md`):
           "outbound_agent_id":"'$RETELL_COMPANION_AGENT_ID'",
           "inbound_webhook_url":"https://<project>.supabase.co/functions/v1/inbound-call-router"}'
    ```
-5. Set Architeq env `ARCHITEQ_FUNCTION_SECRET=$RETELL_FUNCTION_SECRET`
+5. Set Arhiteq env `ARHITEQ_FUNCTION_SECRET=$RETELL_FUNCTION_SECRET`
    (worker sends it as `X-Caller-Secret` on every tool call).
 
 ## Phase 2 — verification (before any live traffic)
@@ -60,12 +60,12 @@ Good news discovered during mapping (see `docs/RETELL_INTEGRATION_MAP.md`):
    signature verification (`ENFORCE_WEBHOOK_SIGNATURES=true` in a staging
    project), transcript/summary populated, tool calls hit edge functions with
    flat args + `X-Caller-Secret`.
-3. Betty QA loop: `run-test-scenario` → Betty (Architeq) calls Clara inbound
+3. Betty QA loop: `run-test-scenario` → Betty (Arhiteq) calls Clara inbound
    number → `evaluate-test` reads get-call. Full Surface 1+2+3 coverage.
 4. Voicemail test: call a number that goes to voicemail; verify consumer
    `determineStatus` → `voicemail` (needs `in_voicemail=true` or
    `disconnection_reason=machine_detected`).
-5. Latency acceptance (spec §8): Grafana `architeq-voice-latency` dashboard —
+5. Latency acceptance (spec §8): Grafana `arhiteq-voice-latency` dashboard —
    agree the p95 threshold before canary.
 
 ## Phase 3 — canary
@@ -75,7 +75,7 @@ Good news discovered during mapping (see `docs/RETELL_INTEGRATION_MAP.md`):
    subset; mechanism per-flag to be agreed). NB: `VOICE_API_BASE` is global
    per deployment — the practical canary is time-boxed windows or a staging
    project first.
-2. Watch: consumer `error_log`, Architeq Grafana (call rate, webhook delivery
+2. Watch: consumer `error_log`, Arhiteq Grafana (call rate, webhook delivery
    100%, tool-call outcomes, AMD), transcripts spot-check.
 3. Enable `ENFORCE_WEBHOOK_SIGNATURES=true`, then `ENFORCE_CALLER_AUTH=true`.
 
@@ -85,7 +85,7 @@ Good news discovered during mapping (see `docs/RETELL_INTEGRATION_MAP.md`):
    `https://api.retellai.com/...` endpoint_url must be deleted or rewritten —
    `retry-failed-jobs` replays verbatim and would bypass `VOICE_API_BASE`.
 2. Flip `VOICE_API_BASE` for all traffic; keep `RETELL_API_KEY` value (it is
-   now the Architeq key).
+   now the Arhiteq key).
 3. Repoint/port remaining numbers; decommission Retell agents after the
    recording archive (Phase 0.2) is confirmed complete.
 
@@ -93,20 +93,20 @@ Good news discovered during mapping (see `docs/RETELL_INTEGRATION_MAP.md`):
 
 | Var | Value |
 |---|---|
-| `VOICE_API_BASE` | `https://api.<domain>` (Architeq) |
-| `RETELL_API_KEY` | unchanged (imported into Architeq as the workspace key) |
+| `VOICE_API_BASE` | `https://api.<domain>` (Arhiteq) |
+| `RETELL_API_KEY` | unchanged (imported into Arhiteq as the workspace key) |
 | `RETELL_*_AGENT_ID` | unchanged (ids preserved on import) |
 | `RETELL_FROM_PHONE` / `RETELL_FROM_NUMBER` | unchanged (both! two names, both read) |
-| `RETELL_FUNCTION_SECRET` | unchanged (= `ARCHITEQ_FUNCTION_SECRET`) |
+| `RETELL_FUNCTION_SECRET` | unchanged (= `ARHITEQ_FUNCTION_SECRET`) |
 | `ENFORCE_WEBHOOK_SIGNATURES` / `ENFORCE_CALLER_AUTH` | `true` after stabilization |
 
 ## Open items to agree with stakeholders (spec §10)
 
-- Voicemail: Architeq sets **both** `call_analysis.in_voicemail` and
+- Voicemail: Arhiteq sets **both** `call_analysis.in_voicemail` and
   `disconnection_reason="machine_detected"` on AMD hit. ✅ confirmed design
 - `duration_ms` = talk time (answer→hangup), not dial time. ✅ confirmed design
 - Signature format `v={ms},d={hex sha256}` over `rawBody+ts`. ✅ implemented + tested
 - `recording_url` TTL: GCS signed URLs, 30-day expiry by default
-  (`ARCHITEQ_RECORDING_URL_TTL_SECONDS`) — consumer should archive if longer
+  (`ARHITEQ_RECORDING_URL_TTL_SECONDS`) — consumer should archive if longer
   retention is needed. **← needs sign-off**
 - Number porting timeline. **← needs Telnyx ticket**

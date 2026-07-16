@@ -5,7 +5,7 @@ log_outcome REQUIRES retell_call_id={{call.call_id}}). Retell resolves those
 from the live call object; the worker must expose the same keys.
 """
 
-from architeq_worker.config import CallConfig
+from arhiteq_worker.config import CallConfig
 
 CONFIG_DICT = {
     "call_id": "call_abc123",

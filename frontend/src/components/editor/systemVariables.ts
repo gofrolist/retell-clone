@@ -1,5 +1,5 @@
 /** Retell default system variables (docs.retellai.com/build/dynamic-variables)
- * resolved by the worker at call time, plus Architeq call-scoped aliases. */
+ * resolved by the worker at call time, plus Arhiteq call-scoped aliases. */
 export type SystemVariable = { name: string; description: string };
 
 export const SYSTEM_VARIABLES: SystemVariable[] = [

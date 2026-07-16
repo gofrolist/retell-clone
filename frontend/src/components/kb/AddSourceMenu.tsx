@@ -12,7 +12,7 @@ export type PendingSource =
   | { kind: "text"; title: string; text: string }
   | { kind: "file"; file: File };
 
-// Mirrored server-side as MAX_FILE_BYTES in backend/src/architeq_api/api/knowledge_bases.py.
+// Mirrored server-side as MAX_FILE_BYTES in backend/src/arhiteq_api/api/knowledge_bases.py.
 export const MAX_FILE_MB = 20;
 const MENU_WIDTH = 288; // w-72
 const VIEWPORT_MARGIN = 8;

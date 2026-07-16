@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 
 /**
  * Same guard as AudioPlayer's safeSrc: only http(s) plays. The API returns a
- * relative /static/... path when ARCHITEQ_PUBLIC_API_URL is unset (local
+ * relative /static/... path when ARHITEQ_PUBLIC_API_URL is unset (local
  * dev); resolve it against the API origin, not the dashboard origin.
  */
 export function resolvePreviewUrl(url: string | null | undefined): string | null {

@@ -14,7 +14,7 @@ const ROLES = [
   { value: "admin", label: "Admin" },
 ];
 
-// The TTL is a backend setting (ARCHITEQ_INVITE_TTL_HOURS) — describe the
+// The TTL is a backend setting (ARHITEQ_INVITE_TTL_HOURS) — describe the
 // actual expiry from the response instead of hardcoding a duration.
 function expiresText(expiresAtMs: number): string {
   const hours = Math.max(1, Math.round((expiresAtMs - Date.now()) / 3_600_000));

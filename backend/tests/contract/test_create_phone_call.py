@@ -1,7 +1,7 @@
 """Surface 1 — POST /v2/create-phone-call (spec §2)."""
 
-import architeq_api.db as db_module
-from architeq_api.models import Call
+import arhiteq_api.db as db_module
+from arhiteq_api.models import Call
 from tests.conftest import AGENT_ID, AUTH_HEADERS, FROM_NUMBER, WORKSPACE_ID
 
 

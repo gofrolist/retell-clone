@@ -7,7 +7,7 @@ import json
 
 import httpx
 
-from architeq_worker.tools import (
+from arhiteq_worker.tools import (
     TOOL_TIMEOUT_S,
     execute_custom_tool,
     extract_response_variables,

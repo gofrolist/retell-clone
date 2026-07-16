@@ -6,7 +6,7 @@ export default function Logo() {
         <path d="M12 2L2 22h5l5-10 5 10h5L12 2z" fill="#17181C" />
         <path d="M12 13l-3.2 6.4h6.4L12 13z" fill="#3B82F6" />
       </svg>
-      <span className="text-[17px] font-semibold tracking-tight">Architeq</span>
+      <span className="text-[17px] font-semibold tracking-tight">Arhiteq</span>
     </div>
   );
 }

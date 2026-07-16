@@ -15,8 +15,8 @@ are visible but disabled with a "Coming soon" tooltip.
 - Picker: `frontend/src/components/editor/SelectorRow.tsx` renders the shared
   `Select` (native `<select>`) with a `VoiceAvatar` prefix. No search, no
   filters, no preview.
-- Data: `GET /list-voices` (backend `architeq_api/api/voices.py`) returns the
-  static `VOICES` list from `backend/src/architeq_api/voices.py` — 12 Cartesia
+- Data: `GET /list-voices` (backend `arhiteq_api/api/voices.py`) returns the
+  static `VOICES` list from `backend/src/arhiteq_api/voices.py` — 12 Cartesia
   voices with `voice_id`, `voice_name`, `provider`, `accent`, `gender`, `age`,
   `preview_audio_url` (currently always `null`).
 - Save flow: `agents/[id]/page.tsx` wires `onVoice` →
@@ -37,7 +37,7 @@ The wire contract is frozen; we only add fields, never rename or drop.
    - One-time script `scripts/generate_voice_previews.py` (run manually with
      `CARTESIA_API_KEY`) synthesizes a short fixed sample sentence per voice.
    - Output committed as small mp3s at
-     `backend/src/architeq_api/static/voice_previews/{voice_id}.mp3`.
+     `backend/src/arhiteq_api/static/voice_previews/{voice_id}.mp3`.
    - FastAPI mounts `StaticFiles` at `/static` — unauthenticated, read-only
      mp3s only.
    - `preview_audio_url` is built from a `PUBLIC_API_URL` setting; falls back

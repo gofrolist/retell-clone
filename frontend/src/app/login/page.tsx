@@ -1,7 +1,7 @@
 "use client";
 
 // Google Sign-In via Google Identity Services (GIS). Posts the GIS credential
-// to the backend (POST /auth/google) and stores the returned Architeq session
+// to the backend (POST /auth/google) and stores the returned Arhiteq session
 // in localStorage — see lib/auth.ts. Rendered outside the (shell) group so it
 // never shows the sidebar and is never route-guarded.
 
@@ -95,7 +95,7 @@ export default function LoginPage() {
         }
         // The backend puts the actionable reason in `detail` — e.g. a 503
         // can be "Google Sign-In is not configured" OR "No workspace
-        // provisioned yet (run architeq_api.seed)". Prefer it over guessing
+        // provisioned yet (run arhiteq_api.seed)". Prefer it over guessing
         // from the status code.
         let detail = "";
         try {
@@ -106,7 +106,7 @@ export default function LoginPage() {
         if (res.status === 403) {
           setError(
             detail ||
-              "This Google account is not allowed to access Architeq. Ask a workspace admin to add your email to the allowlist.",
+              "This Google account is not allowed to access Arhiteq. Ask a workspace admin to add your email to the allowlist.",
           );
         } else if (res.status === 401) {
           setError("Google rejected the sign-in token. Please try again.");
@@ -120,7 +120,7 @@ export default function LoginPage() {
         }
       } catch {
         setError(
-          `Could not reach the Architeq API at ${API}. Check NEXT_PUBLIC_API_URL and that the backend is running.`,
+          `Could not reach the Arhiteq API at ${API}. Check NEXT_PUBLIC_API_URL and that the backend is running.`,
         );
       } finally {
         setBusy(false);
@@ -164,7 +164,7 @@ export default function LoginPage() {
           <Logo />
         </div>
         <h1 className="mt-5 text-center text-[17px] font-semibold text-ink">
-          Sign in to Architeq
+          Sign in to Arhiteq
         </h1>
         <p className="mt-1 text-center text-[13px] text-sub">
           Build, deploy and monitor AI voice agents

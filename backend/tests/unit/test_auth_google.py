@@ -5,8 +5,8 @@ import time
 import jwt
 import pytest
 
-from architeq_api.api import auth_google
-from architeq_api.sessions import decode_session, issue_session
+from arhiteq_api.api import auth_google
+from arhiteq_api.sessions import decode_session, issue_session
 from tests.conftest import WORKSPACE_ID
 
 GOOGLE_CLAIMS = {
@@ -67,7 +67,7 @@ async def test_auth_me_roundtrip_and_rejects_garbage(client, fake_google):
 async def test_expired_session_rejected(client):
     token = jwt.encode(
         {
-            "iss": "architeq",
+            "iss": "arhiteq",
             "sub": "admin@example.com",
             "ws": WORKSPACE_ID,
             "iat": int(time.time()) - 7200,
@@ -85,7 +85,7 @@ async def test_expired_session_rejected(client):
 async def test_session_signed_with_wrong_secret_rejected(client):
     token = jwt.encode(
         {
-            "iss": "architeq",
+            "iss": "arhiteq",
             "sub": "admin@example.com",
             "ws": WORKSPACE_ID,
             "exp": int(time.time()) + 3600,
@@ -98,7 +98,7 @@ async def test_session_signed_with_wrong_secret_rejected(client):
 
 
 def test_email_allowlist_logic(monkeypatch):
-    from architeq_api.config import Settings
+    from arhiteq_api.config import Settings
 
     monkeypatch.setattr(
         auth_google,
@@ -119,8 +119,8 @@ def test_email_allowlist_logic(monkeypatch):
 
 
 def test_issue_session_requires_secret(monkeypatch):
-    from architeq_api import sessions
-    from architeq_api.config import Settings
+    from arhiteq_api import sessions
+    from arhiteq_api.config import Settings
 
     monkeypatch.setattr(sessions, "get_settings", lambda: Settings(session_secret=""))
     with pytest.raises(RuntimeError):

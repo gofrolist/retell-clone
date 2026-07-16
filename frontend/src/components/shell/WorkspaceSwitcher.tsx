@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 
 // Single-workspace product: this shows the real workspace name, no switching.
 export default function WorkspaceSwitcher() {
-  const [name, setName] = useState("Architeq Workspace");
+  const [name, setName] = useState("Arhiteq Workspace");
 
   useEffect(() => {
     api

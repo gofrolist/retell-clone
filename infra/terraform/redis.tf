@@ -1,4 +1,4 @@
-# Memorystore Redis — shared by architeq-api (call state, rate limits)
+# Memorystore Redis — shared by arhiteq-api (call state, rate limits)
 # and LiveKit server (multi-node room routing).
 
 resource "google_redis_instance" "redis" {

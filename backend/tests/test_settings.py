@@ -3,10 +3,10 @@
 The livekit-agents worker and its plugins hard-read the bare names
 (LIVEKIT_API_KEY, GOOGLE_API_KEY, ...), so those are the canonical spelling
 for credentials shared across services; the backend accepts them as
-fallbacks to its ARCHITEQ_-prefixed names. One secret, one env key.
+fallbacks to its ARHITEQ_-prefixed names. One secret, one env key.
 """
 
-from architeq_api.config import Settings
+from arhiteq_api.config import Settings
 
 
 def _settings(**env):
@@ -39,9 +39,9 @@ def test_bare_shared_credential_names_are_accepted():
     assert s.recordings_gcs_bucket == "bucket-1"
 
 
-def test_architeq_prefixed_names_win_over_bare():
+def test_arhiteq_prefixed_names_win_over_bare():
     s = _settings(
-        ARCHITEQ_LIVEKIT_API_KEY="prefixed",
+        ARHITEQ_LIVEKIT_API_KEY="prefixed",
         LIVEKIT_API_KEY="bare",
     )
     assert s.livekit_api_key == "prefixed"

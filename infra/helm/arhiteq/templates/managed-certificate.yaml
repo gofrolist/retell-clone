@@ -1,0 +1,12 @@
+{{- if and .Values.ingress.enabled .Values.ingress.managedCertificate.enabled }}
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: {{ .Release.Name }}-cert
+  labels:
+    {{- include "arhiteq.labels" . | nindent 4 }}
+spec:
+  domains:
+    - api.{{ .Values.global.domain }}
+    - dashboard.{{ .Values.global.domain }}
+{{- end }}

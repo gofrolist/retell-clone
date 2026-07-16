@@ -14,7 +14,7 @@ export default function ReliabilityPage() {
         <div className="space-y-4">
           <SettingsCard
             title="Service Status"
-            description="Live status of Architeq platform components."
+            description="Live status of Arhiteq platform components."
           >
             <div className="divide-y divide-line rounded-lg border border-line">
               {["Call Engine", "LLM Gateway", "Telephony (Twilio)", "Telephony (Telnyx)", "Webhooks"].map(

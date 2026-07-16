@@ -29,7 +29,7 @@ export const LLM_MODELS = [
 export type LlmModelId = (typeof LLM_MODELS)[number]["id"];
 
 // Post-call analysis dropdown (cosmetic today: analysis actually runs on the
-// backend's global ARCHITEQ_ANALYSIS_MODEL setting, not this per-agent field).
+// backend's global ARHITEQ_ANALYSIS_MODEL setting, not this per-agent field).
 export const POST_CALL_ANALYSIS_MODELS: LlmModel[] = LLM_MODELS.filter((m) =>
   ["gemini-3.5-flash", "gemini-3.1-flash-lite"].includes(m.id),
 );

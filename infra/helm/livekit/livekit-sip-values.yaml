@@ -13,7 +13,7 @@ config:
   ws_url: ws://livekit-server.livekit.svc.cluster.local:443
 
   # Must match a key configured on the LiveKit server.
-  api_key: APIArchiteqKey
+  api_key: APIArhiteqKey
   api_secret: "LIVEKIT_API_SECRET_CHANGE_ME"
 
   redis:

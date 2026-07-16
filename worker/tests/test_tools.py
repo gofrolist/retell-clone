@@ -9,8 +9,8 @@ import json
 import httpx
 import pytest
 
-from architeq_worker.state import CallState
-from architeq_worker.tools import (
+from arhiteq_worker.state import CallState
+from arhiteq_worker.tools import (
     MAX_TOOL_RESPONSE_BYTES,
     UnsafeToolUrlError,
     assert_tool_url_safe,
@@ -183,7 +183,7 @@ def test_timeout_returns_error_json_to_model() -> None:
 def test_ssrf_guard_blocks_private_address(monkeypatch) -> None:
     # Without the dev bypass, a tool URL resolving to a private/link-local
     # address (e.g. the metadata server) must be rejected before any request.
-    monkeypatch.delenv("ARCHITEQ_ALLOW_PRIVATE_WEBHOOKS", raising=False)
+    monkeypatch.delenv("ARHITEQ_ALLOW_PRIVATE_WEBHOOKS", raising=False)
 
     async def run() -> None:
         for url in (
@@ -199,7 +199,7 @@ def test_ssrf_guard_blocks_private_address(monkeypatch) -> None:
 
 
 def test_ssrf_guard_surfaces_as_tool_error(monkeypatch) -> None:
-    monkeypatch.delenv("ARCHITEQ_ALLOW_PRIVATE_WEBHOOKS", raising=False)
+    monkeypatch.delenv("ARHITEQ_ALLOW_PRIVATE_WEBHOOKS", raising=False)
     called = {"posted": False}
 
     def handler(request: httpx.Request) -> httpx.Response:

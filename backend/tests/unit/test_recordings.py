@@ -2,7 +2,7 @@
 
 import pytest
 
-from architeq_api.services import recordings
+from arhiteq_api.services import recordings
 
 
 @pytest.mark.asyncio
@@ -48,7 +48,7 @@ async def test_signing_failure_keeps_original(monkeypatch):
 
 
 def test_ttl_clamped_to_v4_max(monkeypatch):
-    monkeypatch.setenv("ARCHITEQ_RECORDING_URL_TTL_SECONDS", str(30 * 24 * 3600))
+    monkeypatch.setenv("ARHITEQ_RECORDING_URL_TTL_SECONDS", str(30 * 24 * 3600))
     assert recordings._ttl().total_seconds() == 7 * 24 * 3600
-    monkeypatch.setenv("ARCHITEQ_RECORDING_URL_TTL_SECONDS", "3600")
+    monkeypatch.setenv("ARHITEQ_RECORDING_URL_TTL_SECONDS", "3600")
     assert recordings._ttl().total_seconds() == 3600

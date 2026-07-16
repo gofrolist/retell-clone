@@ -34,7 +34,7 @@ export interface Agent {
   folder_id?: string | null;
 }
 
-/** Dashboard-only agent grouping (Architeq extra, mirrors Retell's sidebar). */
+/** Dashboard-only agent grouping (Arhiteq extra, mirrors Retell's sidebar). */
 export interface AgentFolder {
   folder_id: string;
   folder_name: string;
@@ -46,7 +46,7 @@ export interface AgentFunction {
   type: "builtin" | "custom";
 }
 
-/** /list-voices catalog entry (Retell voice shape + Architeq extras). */
+/** /list-voices catalog entry (Retell voice shape + Arhiteq extras). */
 export interface Voice {
   voice_id: string;
   voice_name: string;
