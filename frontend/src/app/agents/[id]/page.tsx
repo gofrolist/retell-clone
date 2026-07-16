@@ -159,7 +159,7 @@ export default function AgentEditorPage({
       />
       <div className="flex min-h-0 grow gap-3 p-3">
         {/* left: prompt column */}
-        <div className="flex min-w-0 flex-[1.6] flex-col overflow-y-auto rounded-xl border border-line bg-card p-4">
+        <div className="flex min-w-[420px] flex-[2] flex-col overflow-y-auto rounded-xl border border-line bg-card p-4">
           <MetaRow agentId={agent.agent_id} llm={llmView} />
           <div className="mt-3">
             <SelectorRow
@@ -199,7 +199,7 @@ export default function AgentEditorPage({
         </div>
 
         {/* middle: settings accordions */}
-        <div className="min-w-0 flex-[1.1] overflow-y-auto rounded-xl border border-line bg-card">
+        <div className="min-w-[320px] flex-[0.8] overflow-y-auto rounded-xl border border-line bg-card">
           <Accordion icon={LayoutGrid} title="Functions" defaultOpen>
             {llmView ? (
               <FunctionsSection
@@ -278,7 +278,7 @@ export default function AgentEditorPage({
         </div>
 
         {/* right: test panel */}
-        <div className="min-w-0 flex-1 overflow-hidden rounded-xl border border-line bg-card">
+        <div className="min-w-[340px] flex-1 overflow-hidden rounded-xl border border-line bg-card">
           <TestPanel />
         </div>
       </div>
