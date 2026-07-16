@@ -37,7 +37,11 @@ worker:
 	$(LOAD_ENV); cd worker && uv run python -m architeq_worker.main dev
 
 web:
-	cd frontend && bun run dev
+	# Cap the dev-server V8 heap: Next 16.2.10's dev RSC flight client leaks
+	# ~3MB/request (9M+ retained {weak,response} wrappers), so an uncapped heap
+	# climbs to ~12GB and freezes the machine in multi-second mark-compacts.
+	# Capping turns that slow death into a fast, obvious crash you just restart.
+	cd frontend && NODE_OPTIONS=--max-old-space-size=4096 bun run dev
 
 test:
 	cd backend && uv run pytest
