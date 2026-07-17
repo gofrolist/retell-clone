@@ -39,6 +39,19 @@ const TOOL_KINDS = [
 ] as const;
 type ToolKind = (typeof TOOL_KINDS)[number];
 
+const ICON_FOR_KIND: Record<ToolKind, LucideIcon> = {
+  end_call: PhoneOff,
+  transfer_call: PhoneForwarded,
+  custom: Wrench,
+  press_digit: Hash,
+  check_availability_cal: CalendarSearch,
+  book_appointment_cal: CalendarCheck,
+  send_sms: MessageSquareText,
+  extract_dynamic_variable: Variable,
+  agent_swap: ArrowLeftRight,
+};
+const iconFor = (t: Tool): LucideIcon => ICON_FOR_KIND[t.type as ToolKind] ?? Wrench;
+
 const NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 const METHOD_OPTIONS = ["GET", "POST", "PUT", "PATCH", "DELETE"].map((m) => ({
   value: m,
@@ -982,19 +995,27 @@ function AddMenu({
   );
 
   const items: { kind: ToolKind; label: string; icon: LucideIcon; disabled?: boolean }[] = [
-    { kind: "custom", label: "Custom Function", icon: Wrench },
-    { kind: "end_call", label: "End Call", icon: PhoneOff, disabled: hasEndCall },
-    { kind: "transfer_call", label: "Call Transfer", icon: PhoneForwarded },
-    { kind: "agent_swap", label: "Agent Swap", icon: ArrowLeftRight },
-    { kind: "press_digit", label: "Press Digit (IVR Navigation)", icon: Hash },
+    { kind: "custom", label: "Custom Function", icon: ICON_FOR_KIND.custom },
+    { kind: "end_call", label: "End Call", icon: ICON_FOR_KIND.end_call, disabled: hasEndCall },
+    { kind: "transfer_call", label: "Call Transfer", icon: ICON_FOR_KIND.transfer_call },
+    { kind: "agent_swap", label: "Agent Swap", icon: ICON_FOR_KIND.agent_swap },
+    { kind: "press_digit", label: "Press Digit (IVR Navigation)", icon: ICON_FOR_KIND.press_digit },
     {
       kind: "check_availability_cal",
       label: "Check Calendar Availability (Cal.com)",
-      icon: CalendarSearch,
+      icon: ICON_FOR_KIND.check_availability_cal,
     },
-    { kind: "book_appointment_cal", label: "Book on the Calendar (Cal.com)", icon: CalendarCheck },
-    { kind: "send_sms", label: "Send SMS", icon: MessageSquareText },
-    { kind: "extract_dynamic_variable", label: "Extract Dynamic Variables", icon: Variable },
+    {
+      kind: "book_appointment_cal",
+      label: "Book on the Calendar (Cal.com)",
+      icon: ICON_FOR_KIND.book_appointment_cal,
+    },
+    { kind: "send_sms", label: "Send SMS", icon: ICON_FOR_KIND.send_sms },
+    {
+      kind: "extract_dynamic_variable",
+      label: "Extract Dynamic Variables",
+      icon: ICON_FOR_KIND.extract_dynamic_variable,
+    },
   ];
 
   return (
@@ -1079,17 +1100,19 @@ export default function FunctionsSection({
       {tools.length === 0 && !form && (
         <p className="text-[13px] text-sub">No functions attached.</p>
       )}
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-col gap-1.5">
         {tools.map((f, i) => {
           const kind = kindOf(f);
+          const Icon = iconFor(f);
           return (
-            <span
+            <div
               key={`${f.name}-${i}`}
               className={cn(
-                "group inline-flex items-center gap-1 rounded-full border bg-white py-1 pl-3 pr-1.5 text-[12.5px] font-medium shadow-sm",
+                "group flex items-center gap-2 rounded-lg border bg-white py-2 pl-3 pr-1.5 text-[12.5px] font-medium shadow-sm",
                 form?.index === i ? "border-accent" : "border-line",
               )}
             >
+              <Icon className="size-4 shrink-0 text-sub" />
               {kind ? (
                 <button
                   onClick={() => setForm({ kind, index: i })}
@@ -1106,13 +1129,14 @@ export default function FunctionsSection({
                   {f.type}
                 </span>
               )}
+              <span className="flex-1" />
               {kind && (
                 <button
                   onClick={() => setForm({ kind, index: i })}
                   className="rounded p-0.5 text-faint hover:bg-app hover:text-ink cursor-pointer"
                   aria-label={`Edit ${f.name}`}
                 >
-                  <Pencil className="size-3" />
+                  <Pencil className="size-3.5" />
                 </button>
               )}
               <button
@@ -1120,9 +1144,9 @@ export default function FunctionsSection({
                 className="rounded p-0.5 text-faint hover:bg-app hover:text-bad cursor-pointer"
                 aria-label={`Delete ${f.name}`}
               >
-                <Trash2 className="size-3" />
+                <Trash2 className="size-3.5" />
               </button>
-            </span>
+            </div>
           );
         })}
       </div>
