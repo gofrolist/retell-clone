@@ -1,7 +1,6 @@
 "use client";
 
 import { VoiceAvatar } from "@/components/agents/AgentsTable";
-import Badge from "@/components/ui/Badge";
 import Select from "@/components/ui/Select";
 import SelectVoiceModal from "@/components/voices/SelectVoiceModal";
 import { voiceNameFromId } from "@/lib/api";
@@ -56,15 +55,18 @@ export default function SelectorRow({
           <Select
             value={model}
             onChange={onModel}
-            prefix={<Sparkles className="size-3.5 text-accent" />}
+            prefix={
+              // Realtime (speech-to-speech) cue folded into the select's prefix
+              // icon so the header row doesn't grow and wrap; the label already
+              // reads "Live (Native Audio)".
+              live ? (
+                <Radio className="size-3.5 text-purple-600" />
+              ) : (
+                <Sparkles className="size-3.5 text-accent" />
+              )
+            }
             options={modelOptions}
           />
-          {live && (
-            <Badge tone="purple">
-              <Radio className="size-3" />
-              Realtime
-            </Badge>
-          )}
           <button
             disabled
             title="Not available yet"
