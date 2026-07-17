@@ -1,0 +1,18 @@
+{
+  "agent_175ad5d9bfe5ce919271b539ea": {
+    "bm_greeting": "Good morning friend \u2014 it's Clara. Just my friendly check-in. How are you feeling today?",
+    "call_direction": "outbound",
+    "first_name": "friend",
+    "is_day_1": "false",
+    "needs_evening_setup": "false",
+    "time_of_day": "morning",
+    "trial_status": "none"
+  },
+  "agent_8fbc66e7be3e0dde727f73a42b": {
+    "bm_greeting": "Hi, this is Clara from the US Senior Retirement Supply Administration. We\u2019ve launched a new program to help you stay independent and safe at home. Could I take a moment to explain how it works?",
+    "call_direction": "outbound",
+    "is_existing_client": "false",
+    "on_dnc_list": "false",
+    "state": "CA"
+  }
+}

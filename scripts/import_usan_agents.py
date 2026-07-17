@@ -87,6 +87,11 @@ def main() -> int:
     ap.add_argument(
         "--webhook-url", help="agent-level call-events webhook (retell-call-ended)"
     )
+    ap.add_argument(
+        "--defaults-json",
+        help="JSON {agent_id: {var: value}} of default_dynamic_variables to bake "
+        "into each LLM (as produced by transfer_default_dynamic_variables.py)",
+    )
     ap.add_argument("--llm-model", default="gemini-2.5-flash")
     args = ap.parse_args()
 
@@ -94,6 +99,12 @@ def main() -> int:
     if not repo.exists():
         print(f"consumer repo not found: {repo}", file=sys.stderr)
         return 1
+
+    defaults_by_agent: dict[str, dict] = {}
+    if args.defaults_json:
+        defaults_by_agent = json.loads(
+            Path(args.defaults_json).expanduser().read_text()
+        )
 
     client = httpx.Client(
         base_url=args.api_base,
@@ -114,17 +125,18 @@ def main() -> int:
         prompt = prompt_path.read_text()
         tools = load_tools(repo, cfg["tool_dirs"])
 
-        llm = client.post(
-            "/create-retell-llm",
-            json={
-                "model": args.llm_model,
-                "model_temperature": 0.0,
-                "general_prompt": prompt,
-                "general_tools": tools,
-                "begin_message": "{{bm_greeting}}",
-                "start_speaker": "agent",
-            },
-        )
+        llm_body = {
+            "model": args.llm_model,
+            "model_temperature": 0.0,
+            "general_prompt": prompt,
+            "general_tools": tools,
+            "begin_message": "{{bm_greeting}}",
+            "start_speaker": "agent",
+        }
+        defaults = defaults_by_agent.get(agent_ids[role] or "")
+        if defaults:
+            llm_body["default_dynamic_variables"] = defaults
+        llm = client.post("/create-retell-llm", json=llm_body)
         llm.raise_for_status()
         llm_id = llm.json()["llm_id"]
 
