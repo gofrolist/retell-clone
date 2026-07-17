@@ -7,6 +7,7 @@ or the GCP metadata server (169.254.169.254).
 """
 
 import ipaddress
+import logging
 import socket
 import time
 from collections import defaultdict, deque
@@ -14,8 +15,11 @@ from urllib.parse import urlparse
 
 from fastapi import HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
 from .config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class UnsafeUrlError(ValueError):
@@ -123,6 +127,29 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
                 return JSONResponse(status_code=429, content={"detail": "Too many requests"})
         return await call_next(request)
+
+
+class UnhandledErrorMiddleware(BaseHTTPMiddleware):
+    """Turn any unhandled exception into a JSON 500 *inside* the CORS layer.
+
+    Starlette's built-in ServerErrorMiddleware sits outside every app-added
+    middleware, so a 500 it emits never passes back through CORSMiddleware and
+    reaches the browser with no Access-Control-Allow-Origin header. The dashboard
+    then mislabels a plain server error as "backend unreachable". Catching here —
+    where CORS still wraps the response — keeps the CORS headers on error replies.
+
+    HTTPExceptions are already turned into responses by the inner
+    ExceptionMiddleware and never reach this layer; only genuinely unhandled
+    exceptions do. `except Exception` deliberately lets BaseException (e.g.
+    CancelledError) propagate for normal cancellation handling.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        try:
+            return await call_next(request)
+        except Exception:
+            logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+            return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

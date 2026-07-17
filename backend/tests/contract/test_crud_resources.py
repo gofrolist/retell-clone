@@ -170,3 +170,36 @@ class TestAgents:
         ):
             resp = await getattr(client, method)(url, headers=OTHER_AUTH_HEADERS)
             assert resp.status_code == 404, url
+
+    async def test_delete_agent_bound_to_phone_number_conflicts(self, client):
+        created = await client.post(
+            "/create-agent",
+            headers=AUTH_HEADERS,
+            json={
+                "response_engine": {"type": "retell-llm", "llm_id": LLM_ID},
+                "voice_id": "cartesia-sonic",
+            },
+        )
+        agent_id = created.json()["agent_id"]
+        number = "+14155550777"
+        imported = await client.post(
+            "/import-phone-number",
+            headers=AUTH_HEADERS,
+            json={"phone_number": number, "outbound_agent_id": agent_id},
+        )
+        assert imported.status_code == 201
+
+        # A bound DID must yield a clean 409 that names the number, not a 500.
+        blocked = await client.delete(f"/delete-agent/{agent_id}", headers=AUTH_HEADERS)
+        assert blocked.status_code == 409
+        assert number in blocked.json()["detail"]
+        assert (await client.get(f"/get-agent/{agent_id}", headers=AUTH_HEADERS)).status_code == 200
+
+        # Release the binding and the delete goes through.
+        await client.patch(
+            f"/update-phone-number/{number}",
+            headers=AUTH_HEADERS,
+            json={"outbound_agent_id": None},
+        )
+        deleted = await client.delete(f"/delete-agent/{agent_id}", headers=AUTH_HEADERS)
+        assert deleted.status_code == 204
