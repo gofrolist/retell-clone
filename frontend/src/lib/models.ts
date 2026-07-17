@@ -13,6 +13,10 @@ export interface LlmModel {
   id: string; // wire value stored in the Retell LLM `model` field
   label: string;
   provider: LlmProvider;
+  // Gemini Live (speech-to-speech) realtime model: it replaces the whole
+  // STT→LLM→TTS pipeline and speaks with a Gemini native-audio voice, so the
+  // voice picker must use the "gemini" provider (see SelectVoiceModal coupling).
+  live?: boolean;
 }
 
 // Stable (non-preview) conversational Gemini models,
@@ -23,10 +27,29 @@ export const LLM_MODELS = [
   { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", provider: "google" },
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", provider: "google" },
   { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite", provider: "google" },
+  // Gemini Live API (Vertex, native audio) — realtime speech-to-speech.
+  {
+    id: "gemini-live-2.5-flash-native-audio",
+    label: "Gemini 2.5 Flash Live (Native Audio)",
+    provider: "google",
+    live: true,
+  },
 ] as const satisfies readonly LlmModel[];
 
 // Union of the catalog's ids; lib/estimates.ts keys its rate card on this.
 export type LlmModelId = (typeof LLM_MODELS)[number]["id"];
+
+// Markers that identify a Gemini Live (realtime) model id. Kept in lockstep
+// with the worker's _LIVE_MODEL_MARKERS (worker/src/arhiteq_worker/main.py) and
+// matched loosely so imported/preview Live ids still resolve. Note "flash-lite"
+// does NOT contain "flash-live", so the lite pipeline models stay non-live.
+const LIVE_MODEL_MARKERS = ["native-audio", "-live-", "flash-live", "live-2.5"];
+
+/** True when a wire model id is a Gemini Live (speech-to-speech) model. */
+export function isLiveModel(id: string | null | undefined): boolean {
+  const m = (id ?? "").toLowerCase();
+  return LIVE_MODEL_MARKERS.some((marker) => m.includes(marker));
+}
 
 // Post-call analysis dropdown (cosmetic today: analysis actually runs on the
 // backend's global ARHITEQ_ANALYSIS_MODEL setting, not this per-agent field).

@@ -22,11 +22,16 @@ async def test_list_voices_returns_retell_shaped_catalog(client):
     assert len(voices) >= 12
     for voice in voices:
         assert VOICE_FIELDS <= set(voice)
-        assert voice["provider"] == "cartesia"
-        assert voice["gender"] in ("male", "female")
+        # Cartesia (pipeline TTS) + Gemini Live (speech-to-speech) ship today.
+        assert voice["provider"] in ("cartesia", "gemini")
+        # Cartesia voices carry a binary gender; Gemini native-audio voices
+        # have no published gender (the field is present but null).
+        if voice["provider"] == "cartesia":
+            assert voice["gender"] in ("male", "female")
     ids = {v["voice_id"] for v in voices}
     # Ids referenced elsewhere in the platform must exist in the catalog.
     assert {"cartesia-sonic", "cartesia-sonic-english"} <= ids
+    assert {"gemini-Puck", "gemini-Kore"} <= ids
 
 
 async def test_get_voice_by_id(client):
@@ -54,12 +59,13 @@ async def test_list_voices_includes_recommended_flags(client):
     # Additive field: present on every voice, boolean.
     assert all(isinstance(v.get("recommended"), bool) for v in voices)
     recommended = {v["voice_id"] for v in voices if v["recommended"]}
-    assert recommended == {
+    assert {
         "cartesia-sonic",
         "cartesia-savannah",
         "cartesia-blake",
         "cartesia-jacqueline",
-    }
+    } <= recommended
+    assert {"gemini-Puck", "gemini-Kore", "gemini-Charon"} <= recommended
 
 
 async def test_preview_audio_url_null_when_sample_missing(client, tmp_path, monkeypatch):

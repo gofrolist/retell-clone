@@ -16,14 +16,34 @@ import { AudioLines, Check, Pause, Play, Plus } from "lucide-react";
 import { useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { resolvePreviewUrl, useVoicePreview } from "./useVoicePreview";
 
-// Only Cartesia ships today; the rest are visible but disabled (Retell parity).
+// Provider tabs. Cartesia ships for the STT→LLM→TTS pipeline; Gemini Live
+// ships for the speech-to-speech realtime model. The two are mutually
+// exclusive per agent — which one is usable depends on whether a Gemini Live
+// model is selected (liveMode). The rest are visible-but-disabled (Retell
+// parity). Selecting a tab filters the table to that provider's voices.
 const PROVIDERS = [
-  { key: "minimax", label: "MiniMax", enabled: false },
-  { key: "fish", label: "Fish Audio", enabled: false },
-  { key: "elevenlabs", label: "ElevenLabs", enabled: false },
-  { key: "cartesia", label: "Cartesia", enabled: true },
-  { key: "openai", label: "OpenAI", enabled: false },
+  { key: "minimax", label: "MiniMax" },
+  { key: "fish", label: "Fish Audio" },
+  { key: "elevenlabs", label: "ElevenLabs" },
+  { key: "cartesia", label: "Cartesia" },
+  { key: "openai", label: "OpenAI" },
+  { key: "gemini", label: "Gemini Live" },
 ];
+
+// Which provider tabs are selectable, given the agent's LLM mode.
+function providerState(key: string, liveMode: boolean): { enabled: boolean; reason?: string } {
+  if (key === "gemini") {
+    return liveMode
+      ? { enabled: true }
+      : { enabled: false, reason: "Select a Gemini Live model to use these voices" };
+  }
+  if (key === "cartesia") {
+    return liveMode
+      ? { enabled: false, reason: "Not available with Gemini Live" }
+      : { enabled: true };
+  }
+  return { enabled: false, reason: "Coming soon" };
+}
 
 const GENDERS = [
   { value: "all", label: "Gender" },
@@ -39,7 +59,8 @@ const AGES = [
 ];
 
 function traitLine(v: Voice): string {
-  return [v.accent, v.age].filter(Boolean).join(" · ");
+  // Gemini voices carry no accent/age; fall back to their one-word descriptor.
+  return [v.accent, v.age].filter(Boolean).join(" · ") || v.description || "";
 }
 
 function PlayButton({
@@ -83,17 +104,22 @@ export default function SelectVoiceModal({
   currentVoiceId,
   onSelect,
   onClose,
+  liveMode = false,
 }: {
   voices: Voice[];
   currentVoiceId: string;
   onSelect: (voiceId: string) => void;
   onClose: () => void;
+  // The agent runs a Gemini Live model, so only Gemini native-audio voices
+  // apply. Opens on the Gemini tab and disables the Cartesia tab.
+  liveMode?: boolean;
 }) {
   const [gender, setGender] = useState("all");
   const [accent, setAccent] = useState("all");
   const [age, setAge] = useState("all");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(currentVoiceId);
+  const [provider, setProvider] = useState(() => (liveMode ? "gemini" : "cartesia"));
   const { playingId, toggle } = useVoicePreview();
 
   // An agent imported from Retell can store a voice outside our catalog
@@ -122,6 +148,9 @@ export default function SelectVoiceModal({
     const q = search.trim().toLowerCase();
     return allVoices.filter(
       (v) =>
+        // Always keep the current voice reselectable, even when it belongs to
+        // a provider whose tab is disabled (e.g. an imported "openai-Cimo").
+        (v.provider === provider || v.voice_id === currentVoiceId) &&
         (gender === "all" || v.gender === gender) &&
         (accent === "all" || v.accent === accent) &&
         (age === "all" || v.age === age) &&
@@ -129,9 +158,12 @@ export default function SelectVoiceModal({
           v.voice_name.toLowerCase().includes(q) ||
           v.voice_id.toLowerCase().includes(q)),
     );
-  }, [allVoices, gender, accent, age, search]);
+  }, [allVoices, currentVoiceId, provider, gender, accent, age, search]);
 
-  const recommended = useMemo(() => voices.filter((v) => v.recommended), [voices]);
+  const recommended = useMemo(
+    () => voices.filter((v) => v.recommended && v.provider === provider),
+    [voices, provider],
+  );
   const selectedVoice = useMemo(
     () => allVoices.find((v) => v.voice_id === selected),
     [allVoices, selected],
@@ -238,29 +270,34 @@ export default function SelectVoiceModal({
         </div>
       }
     >
-      <div className={cn("grid grid-cols-5", PILL_CONTAINER_CLASSES)}>
-        {PROVIDERS.map((p) =>
-          p.enabled ? (
+      <div className={cn("grid grid-cols-3 sm:grid-cols-6", PILL_CONTAINER_CLASSES)}>
+        {PROVIDERS.map((p) => {
+          const { enabled, reason } = providerState(p.key, liveMode);
+          if (!enabled) {
+            return (
+              <Tooltip key={p.key} label={reason ?? "Coming soon"} side="bottom" className="w-full">
+                <button
+                  disabled
+                  className="w-full rounded-md px-3 py-1.5 text-center text-[13px] font-medium text-faint cursor-not-allowed"
+                >
+                  {p.label}
+                </button>
+              </Tooltip>
+            );
+          }
+          return (
             <button
               key={p.key}
+              onClick={() => setProvider(p.key)}
               className={cn(
-                "rounded-md px-3 py-1.5 text-center text-[13px] font-medium",
-                PILL_ACTIVE_CLASSES,
+                "rounded-md px-3 py-1.5 text-center text-[13px] font-medium transition-colors cursor-pointer",
+                provider === p.key ? PILL_ACTIVE_CLASSES : "text-sub hover:text-ink",
               )}
             >
               {p.label}
             </button>
-          ) : (
-            <Tooltip key={p.key} label="Coming soon" side="bottom" className="w-full">
-              <button
-                disabled
-                className="w-full rounded-md px-3 py-1.5 text-center text-[13px] font-medium text-faint cursor-not-allowed"
-              >
-                {p.label}
-              </button>
-            </Tooltip>
-          ),
-        )}
+          );
+        })}
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -278,6 +315,13 @@ export default function SelectVoiceModal({
         <Select value={age} onChange={setAge} options={AGES} className="w-36" />
         <SearchInput value={search} onChange={setSearch} className="min-w-48 grow" />
       </div>
+
+      {liveMode && selectedVoice && selectedVoice.provider !== "gemini" && (
+        <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12.5px] text-amber-800">
+          “{selectedVoice.voice_name}” isn’t a Gemini voice. Gemini Live speaks with a
+          Gemini native-audio voice — pick one below.
+        </div>
+      )}
 
       {!filtersActive && recommended.length > 0 && (
         <div className="mt-4">

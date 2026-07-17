@@ -327,7 +327,10 @@ function titleCase(s: string): string {
 
 /** "cartesia-sonic-english" → "Sonic English"; "11labs-Cimo" → "Cimo". */
 export function voiceNameFromId(voiceId: string): string {
-  const bare = voiceId.replace(/^(cartesia|11labs|elevenlabs|openai|play|deepgram)-/i, "");
+  const bare = voiceId.replace(
+    /^(cartesia|11labs|elevenlabs|openai|play|deepgram|gemini)-/i,
+    "",
+  );
   return titleCase(bare) || voiceId;
 }
 
