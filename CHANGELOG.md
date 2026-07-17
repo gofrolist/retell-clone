@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.0](https://github.com/gofrolist/retell-clone/compare/v0.5.1...v0.6.0) (2026-07-17)
+
+
+### Features
+
+* **dashboard:** show a type icon per function and align rows like Retell ([#83](https://github.com/gofrolist/retell-clone/issues/83)) ([9c17af1](https://github.com/gofrolist/retell-clone/commit/9c17af15bbb234869800d5ef3a74f1c58eff0119))
+
+
+### Bug Fixes
+
+* **analysis:** authenticate post-call analysis to Vertex via ADC ([#85](https://github.com/gofrolist/retell-clone/issues/85)) ([7f75b9e](https://github.com/gofrolist/retell-clone/commit/7f75b9e232964dbacb32f2bb28565227f85ba8b3))
+* return 409 (not 500) when deleting an agent bound to a DID, keep CORS headers on errors ([#81](https://github.com/gofrolist/retell-clone/issues/81)) ([af5baa9](https://github.com/gofrolist/retell-clone/commit/af5baa9ac631e8e9bae12c757ecb36a512ac218c))
+
 ## [0.5.1](https://github.com/gofrolist/retell-clone/compare/v0.5.0...v0.5.1) (2026-07-16)
 
 
