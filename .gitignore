@@ -14,6 +14,7 @@ node_modules/
 out/
 dist/
 *.tfstate*
+*.tfplan
 .terraform/
 .terraform.lock.hcl
 .coverage
