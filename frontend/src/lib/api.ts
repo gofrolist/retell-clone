@@ -226,6 +226,7 @@ export interface RawLlm {
       }[]
     | null;
   knowledge_base_ids: string[] | null;
+  default_dynamic_variables: Record<string, string> | null;
   last_modification_timestamp: number;
   [key: string]: unknown;
 }

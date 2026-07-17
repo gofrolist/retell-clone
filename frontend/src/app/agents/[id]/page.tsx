@@ -178,9 +178,7 @@ export default function AgentEditorPage({
                 <PromptEditor
                   value={llmView.general_prompt ?? ""}
                   onChange={(v) => setLlmField("general_prompt", v)}
-                  defaultDynamicVariables={
-                    llmView.default_dynamic_variables as Record<string, unknown> | null
-                  }
+                  defaultDynamicVariables={llmView.default_dynamic_variables}
                 />
               </div>
               <WelcomeMessage
@@ -264,6 +262,10 @@ export default function AgentEditorPage({
             <SecuritySection
               optOut={Boolean(view.opt_out_sensitive_data_storage)}
               onOptOut={(v) => setAgentField("opt_out_sensitive_data_storage", v)}
+              dynamicVariables={llmView?.default_dynamic_variables}
+              onDynamicVariables={
+                llm ? (v) => setLlmField("default_dynamic_variables", v) : undefined
+              }
             />
           </Accordion>
           <Accordion icon={Webhook} title="Webhook Settings">
