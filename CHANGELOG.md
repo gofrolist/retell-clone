@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0](https://github.com/gofrolist/retell-clone/compare/v0.6.0...v0.7.0) (2026-07-17)
+
+
+### Features
+
+* **dashboard:** editable default dynamic variables ([#86](https://github.com/gofrolist/retell-clone/issues/86)) ([04cc222](https://github.com/gofrolist/retell-clone/commit/04cc2220e0e8c34229d615096238057080eb82fd))
+* **scripts:** transfer Retell default_dynamic_variables into Arhiteq ([#87](https://github.com/gofrolist/retell-clone/issues/87)) ([1e61f08](https://github.com/gofrolist/retell-clone/commit/1e61f0889e5d8bd36a74bce779b8a09b8ac57758))
+
 ## [0.6.0](https://github.com/gofrolist/retell-clone/compare/v0.5.1...v0.6.0) (2026-07-17)
 
 
