@@ -53,7 +53,9 @@ async def analyze_call(
     in_voicemail_hint: bool | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
-    if not transcript or not settings.google_api_key:
+    # Vertex mode authenticates via ADC (workload identity); API-key mode needs
+    # a key. Skip (fallback) only when neither credential path is available.
+    if not transcript or not (settings.google_genai_use_vertexai or settings.google_api_key):
         result = _fallback(in_voicemail_hint)
         if disconnection_reason == "machine_detected":
             result["in_voicemail"] = True
@@ -63,7 +65,11 @@ async def analyze_call(
     try:
         from google import genai
 
-        client = genai.Client(api_key=settings.google_api_key)
+        if settings.google_genai_use_vertexai:
+            # ADC + GOOGLE_CLOUD_{PROJECT,LOCATION} from env, same as the worker.
+            client = genai.Client(vertexai=True)
+        else:
+            client = genai.Client(api_key=settings.google_api_key)
         prompt = _PROMPT.format(
             transcript=transcript[:30000],
             direction=direction,

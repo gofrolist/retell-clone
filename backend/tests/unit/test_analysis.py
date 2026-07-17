@@ -78,6 +78,28 @@ async def test_no_transcript_skips_model_and_keeps_machine_detected():
     assert result["in_voicemail"] is True
 
 
+async def test_no_credentials_skips_model(monkeypatch):
+    # Neither an API key nor Vertex mode → skip (fallback), don't call the model.
+    monkeypatch.setattr(analysis, "get_settings", lambda: Settings(google_api_key=""))
+    with patch("google.genai.Client") as mk:
+        result = await analysis.analyze_call("Agent: Hi\nUser: Hello", "outbound", 1000, None)
+    mk.assert_not_called()
+    assert result["user_sentiment"] == "Unknown"
+
+
+async def test_vertex_mode_uses_adc_without_api_key(monkeypatch):
+    # Vertex mode: no API key, client built with vertexai=True (ADC), model runs.
+    monkeypatch.setattr(
+        analysis,
+        "get_settings",
+        lambda: Settings(google_api_key="", google_genai_use_vertexai=True),
+    )
+    with _gemini_returning({"call_summary": "ok", "user_sentiment": "Neutral"}) as mk:
+        result = await analysis.analyze_call("Agent: Hi\nUser: Hello", "inbound", 1000, None)
+    mk.assert_called_once_with(vertexai=True)
+    assert result["summary"] == "ok"
+
+
 async def test_seed_creates_workspace_and_demo(client):
     """seed() against the live test DB (also exercised by ops tooling)."""
     from arhiteq_api.seed import seed

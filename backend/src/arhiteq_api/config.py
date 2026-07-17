@@ -34,8 +34,19 @@ class Settings(BaseSettings):
     # (env: ARHITEQ_SIP_OUTBOUND_TRUNK_ID, matching the Helm chart).
     sip_outbound_trunk_id: str = ""
 
-    # Google GenAI (Gemini) for post-call analysis
+    # Google GenAI (Gemini) for post-call analysis.
+    # In prod the worker authenticates to Vertex via ADC (workload identity),
+    # not an API key; the analysis client mirrors that when use_vertexai is set
+    # (env GOOGLE_GENAI_USE_VERTEXAI). GOOGLE_CLOUD_{PROJECT,LOCATION} are read
+    # by google-genai directly. Gemini 3.x models are global-endpoint only, so
+    # the location must be `global`, not a region.
     google_api_key: str = Field("", validation_alias=_shared("GOOGLE_API_KEY"))
+    google_genai_use_vertexai: bool = Field(
+        False,
+        validation_alias=AliasChoices(
+            "ARHITEQ_GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_GENAI_USE_VERTEXAI"
+        ),
+    )
     analysis_model: str = "gemini-3.1-flash-lite"
 
     # Webhook delivery
