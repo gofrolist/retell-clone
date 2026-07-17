@@ -148,7 +148,9 @@ export default function SelectVoiceModal({
     const q = search.trim().toLowerCase();
     return allVoices.filter(
       (v) =>
-        v.provider === provider &&
+        // Always keep the current voice reselectable, even when it belongs to
+        // a provider whose tab is disabled (e.g. an imported "openai-Cimo").
+        (v.provider === provider || v.voice_id === currentVoiceId) &&
         (gender === "all" || v.gender === gender) &&
         (accent === "all" || v.accent === accent) &&
         (age === "all" || v.age === age) &&
@@ -156,7 +158,7 @@ export default function SelectVoiceModal({
           v.voice_name.toLowerCase().includes(q) ||
           v.voice_id.toLowerCase().includes(q)),
     );
-  }, [allVoices, provider, gender, accent, age, search]);
+  }, [allVoices, currentVoiceId, provider, gender, accent, age, search]);
 
   const recommended = useMemo(
     () => voices.filter((v) => v.recommended && v.provider === provider),
