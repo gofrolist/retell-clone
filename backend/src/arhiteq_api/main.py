@@ -27,7 +27,11 @@ from .api import (
 from .config import get_settings
 from .db import get_engine
 from .models import Base
-from .security import RateLimitMiddleware, SecurityHeadersMiddleware
+from .security import (
+    RateLimitMiddleware,
+    SecurityHeadersMiddleware,
+    UnhandledErrorMiddleware,
+)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -63,6 +67,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Arhiteq API", version="0.1.0", lifespan=lifespan)
+# Innermost app middleware: catches unhandled exceptions and returns a JSON 500.
+# Added first so it sits *inside* CORS below — otherwise error responses would
+# skip the CORS layer and reach the browser without Access-Control-Allow-Origin.
+app.add_middleware(UnhandledErrorMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RateLimitMiddleware)
 # Browser-facing CORS is an allowlist (the dashboard origin). Server-to-server

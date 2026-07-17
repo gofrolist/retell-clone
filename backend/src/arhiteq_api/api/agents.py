@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import require_api_key
 from ..db import get_session
-from ..models import Agent, AgentFolder, ApiKey, now_ms
+from ..models import Agent, AgentFolder, ApiKey, PhoneNumber, now_ms
 from ..schemas import CreateAgentRequest, agent_to_dict
 from ._deps import apply_patch, get_owned
 from .chat_agents import CHAT_VOICE_ID
@@ -169,5 +169,26 @@ async def delete_agent(
     session: AsyncSession = Depends(get_session),
 ):
     agent = await _get_voice_agent(session, agent_id, api_key.workspace_id)
+    # A phone number's inbound/outbound_agent_id FKs default to RESTRICT, so a
+    # bound DID would turn the delete into an unhandled IntegrityError (500).
+    # Fail loud and early with a 409 that names the DIDs so the caller knows to
+    # repoint or release them first.
+    bound = (
+        await session.scalars(
+            select(PhoneNumber.phone_number).where(
+                PhoneNumber.workspace_id == api_key.workspace_id,
+                (PhoneNumber.inbound_agent_id == agent_id)
+                | (PhoneNumber.outbound_agent_id == agent_id),
+            )
+        )
+    ).all()
+    if bound:
+        raise HTTPException(
+            409,
+            detail=(
+                "Agent is still routed to phone number(s): "
+                f"{', '.join(bound)}. Repoint or release them before deleting."
+            ),
+        )
     await session.delete(agent)
     await session.commit()
