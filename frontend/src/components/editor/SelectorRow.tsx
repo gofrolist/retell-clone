@@ -1,13 +1,14 @@
 "use client";
 
 import { VoiceAvatar } from "@/components/agents/AgentsTable";
+import Badge from "@/components/ui/Badge";
 import Select from "@/components/ui/Select";
 import SelectVoiceModal from "@/components/voices/SelectVoiceModal";
 import { voiceNameFromId } from "@/lib/api";
-import { LLM_MODELS } from "@/lib/models";
+import { isLiveModel, LLM_MODELS } from "@/lib/models";
 import type { Voice } from "@/lib/types";
 import { withValue } from "@/lib/utils";
-import { BookOpen, ChevronDown, Clock4, Settings2, Sparkles } from "lucide-react";
+import { BookOpen, ChevronDown, Clock4, Radio, Settings2, Sparkles } from "lucide-react";
 import { useState } from "react";
 
 const LANGUAGES: { value: string; label: string; flag: string }[] = [
@@ -36,6 +37,7 @@ export default function SelectorRow({
   voices: Voice[];
 }) {
   const [voiceModalOpen, setVoiceModalOpen] = useState(false);
+  const live = isLiveModel(model);
 
   const modelOptions = withValue(
     LLM_MODELS.map((m) => ({ value: m.id, label: m.label })),
@@ -57,6 +59,12 @@ export default function SelectorRow({
             prefix={<Sparkles className="size-3.5 text-accent" />}
             options={modelOptions}
           />
+          {live && (
+            <Badge tone="purple">
+              <Radio className="size-3" />
+              Realtime
+            </Badge>
+          )}
           <button
             disabled
             title="Not available yet"
@@ -82,6 +90,7 @@ export default function SelectorRow({
           currentVoiceId={voiceId}
           onSelect={onVoice}
           onClose={() => setVoiceModalOpen(false)}
+          liveMode={live}
         />
       )}
       <Select

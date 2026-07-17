@@ -54,6 +54,9 @@ export interface Voice {
   gender?: string;
   accent?: string;
   age?: string;
+  // Free-form voice characteristic shown as the trait when accent/age are
+  // absent (e.g. Gemini Live voices carry Google's one-word descriptor).
+  description?: string;
   preview_audio_url?: string | null;
   recommended?: boolean;
 }

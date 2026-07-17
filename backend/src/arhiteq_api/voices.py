@@ -130,4 +130,60 @@ VOICES: list[dict[str, Any]] = [
     },
 ]
 
+# Gemini Live (speech-to-speech) native-audio voices. Unlike the Cartesia
+# voices above, these have no UUID — the id maps straight to the voice name the
+# worker passes to google.realtime.RealtimeModel (see worker/src/
+# arhiteq_worker/voices.py, resolve_gemini_voice). Only usable with a Gemini
+# Live model; the dashboard couples the LLM choice and the voice tab.
+# `description` is Google's published one-word voice characteristic
+# (https://ai.google.dev/gemini-api/docs/speech-generation#voices).
+_GEMINI_VOICES: list[tuple[str, str]] = [
+    ("Puck", "Upbeat"),
+    ("Charon", "Informative"),
+    ("Kore", "Firm"),
+    ("Fenrir", "Excitable"),
+    ("Aoede", "Breezy"),
+    ("Leda", "Youthful"),
+    ("Orus", "Firm"),
+    ("Zephyr", "Bright"),
+    ("Callirrhoe", "Easy-going"),
+    ("Autonoe", "Bright"),
+    ("Enceladus", "Breathy"),
+    ("Iapetus", "Clear"),
+    ("Umbriel", "Easy-going"),
+    ("Algieba", "Smooth"),
+    ("Despina", "Smooth"),
+    ("Erinome", "Clear"),
+    ("Algenib", "Gravelly"),
+    ("Rasalgethi", "Informative"),
+    ("Laomedeia", "Upbeat"),
+    ("Achernar", "Soft"),
+    ("Alnilam", "Firm"),
+    ("Schedar", "Even"),
+    ("Gacrux", "Mature"),
+    ("Pulcherrima", "Forward"),
+    ("Achird", "Friendly"),
+    ("Zubenelgenubi", "Casual"),
+    ("Vindemiatrix", "Gentle"),
+    ("Sadachbia", "Lively"),
+    ("Sadaltager", "Knowledgeable"),
+    ("Sulafat", "Warm"),
+]
+_GEMINI_RECOMMENDED = {"Puck", "Kore", "Charon", "Aoede", "Leda", "Zephyr"}
+
+VOICES += [
+    {
+        "voice_id": f"gemini-{name}",
+        "voice_name": name,
+        "provider": "gemini",
+        "accent": None,
+        "gender": None,
+        "age": None,
+        "description": trait,
+        "preview_audio_url": None,
+        "recommended": name in _GEMINI_RECOMMENDED,
+    }
+    for name, trait in _GEMINI_VOICES
+]
+
 VOICES_BY_ID: dict[str, dict[str, Any]] = {v["voice_id"]: v for v in VOICES}

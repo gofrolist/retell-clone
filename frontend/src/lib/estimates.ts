@@ -10,7 +10,7 @@
 // 2026-07-14; update in place when providers reprice.
 
 import type { RawLlm } from "@/lib/api";
-import type { LlmModelId } from "@/lib/models";
+import { isLiveModel, type LlmModelId } from "@/lib/models";
 import { formatCost } from "@/lib/utils";
 
 export interface EstimateRow {
@@ -43,7 +43,16 @@ const LLM_RATES = {
   "gemini-2.5-pro": { inputPer1M: 1.25, outputPer1M: 10.0, ttftMs: [600, 1200] },
   "gemini-2.5-flash": { inputPer1M: 0.3, outputPer1M: 2.5, ttftMs: [350, 600] },
   "gemini-2.5-flash-lite": { inputPer1M: 0.1, outputPer1M: 0.4, ttftMs: [250, 450] },
+  // Live/native-audio is billed on audio tokens, not text turns — the estimator
+  // uses the per-minute live path below, so this entry only satisfies the type.
+  "gemini-live-2.5-flash-native-audio": { inputPer1M: 3.0, outputPer1M: 12.0, ttftMs: [300, 700] },
 } satisfies Record<LlmModelId, LlmRate>;
+
+// Gemini Live (native audio) replaces STT+LLM+TTS with one speech-to-speech
+// model billed on audio tokens; approximate as an all-in per-call-minute cost
+// (our rounded estimate) and a single realtime turn-latency band.
+const GEMINI_LIVE_COST_PER_MIN = 0.6;
+const GEMINI_LIVE_LATENCY_MS: [number, number] = [300, 700];
 
 // Catalog drift safety net: unknown model ids estimate as gemini-2.5-flash.
 const DEFAULT_LLM_RATE: LlmRate = LLM_RATES["gemini-2.5-flash"];
@@ -130,6 +139,20 @@ export function estimateCost(
   tokens: Estimate | null,
 ): Estimate {
   const rows: EstimateRow[] = [];
+  // Gemini Live is one speech-to-speech model: no separate Cartesia STT/TTS,
+  // and it's billed per audio minute rather than per text turn.
+  if (llm && isLiveModel(llm.model)) {
+    rows.push({
+      label: `Gemini Live: ${llm.model}`,
+      min: GEMINI_LIVE_COST_PER_MIN,
+      max: GEMINI_LIVE_COST_PER_MIN,
+    });
+    rows.push({ label: "Voice Infra", min: INFRA_COST_PER_MIN, max: INFRA_COST_PER_MIN });
+    if (hasKb(llm)) {
+      rows.push({ label: "Knowledge Base", min: KB_COST_PER_MIN, max: KB_COST_PER_MIN });
+    }
+    return total(rows);
+  }
   if (llm && tokens) {
     const rate = getLlmRate(llm.model);
     const perMin =
@@ -157,6 +180,21 @@ export function estimateCost(
 
 /** End-to-end turn latency range: sum of per-component ranges. */
 export function estimateLatency(llm: RawLlm | null): Estimate {
+  // Gemini Live handles transcription + generation + speech in one model, so
+  // report a single realtime turn-latency band instead of STT + LLM + TTS.
+  if (llm && isLiveModel(llm.model)) {
+    const rows: EstimateRow[] = [
+      {
+        label: "Gemini Live (speech-to-speech)",
+        min: GEMINI_LIVE_LATENCY_MS[0],
+        max: GEMINI_LIVE_LATENCY_MS[1],
+      },
+    ];
+    if (hasKb(llm)) {
+      rows.push({ label: "Knowledge Base", min: KB_LATENCY_MS[0], max: KB_LATENCY_MS[1] });
+    }
+    return total(rows);
+  }
   const rows: EstimateRow[] = [
     { label: "Transcription", min: STT_LATENCY_MS[0], max: STT_LATENCY_MS[1] },
   ];

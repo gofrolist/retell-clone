@@ -24,7 +24,7 @@ _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
 )
 _PROVIDER_PREFIX_RE = re.compile(
-    r"^(cartesia|11labs|elevenlabs|openai|play|deepgram)-", re.IGNORECASE
+    r"^(cartesia|11labs|elevenlabs|openai|play|deepgram|gemini)-", re.IGNORECASE
 )
 
 # Sarah — the voice the platform launched with; proven on production calls.
@@ -65,3 +65,41 @@ def resolve_cartesia_voice(voice_id: str) -> str:
         mapped = os.getenv("ARHITEQ_DEFAULT_CARTESIA_VOICE_ID", FALLBACK_VOICE_UUID)
         logger.warning("voice_id %r has no Cartesia mapping; using default voice", voice_id)
     return mapped
+
+
+# Gemini Live (speech-to-speech) native-audio prebuilt voices. Unlike Cartesia
+# these are not TTS voices with UUIDs — the id maps straight to the voice name
+# passed to google.realtime.RealtimeModel(voice=...). Keep in sync with the
+# livekit google plugin's api_proto.Voice literal and the dashboard catalog
+# (backend/src/arhiteq_api/voices.py, "gemini-*" entries).
+GEMINI_LIVE_VOICES: frozenset[str] = frozenset(
+    {
+        "Achernar", "Achird", "Algenib", "Algieba", "Alnilam", "Aoede",
+        "Autonoe", "Callirrhoe", "Charon", "Despina", "Enceladus", "Erinome",
+        "Fenrir", "Gacrux", "Iapetus", "Kore", "Laomedeia", "Leda", "Orus",
+        "Pulcherrima", "Puck", "Rasalgethi", "Sadachbia", "Sadaltager",
+        "Schedar", "Sulafat", "Umbriel", "Vindemiatrix", "Zephyr",
+        "Zubenelgenubi",
+    }
+)  # fmt: skip
+
+DEFAULT_GEMINI_LIVE_VOICE = "Puck"  # the plugin's own default voice
+_GEMINI_VOICE_BY_LOWER = {v.lower(): v for v in GEMINI_LIVE_VOICES}
+
+
+def resolve_gemini_voice(voice_id: str) -> str:
+    """Return the Gemini native-audio voice name for a "gemini-<Voice>" id.
+
+    Unknown ids fall back to the default voice with a warning, mirroring
+    resolve_cartesia_voice — a bad voice must never fail the call.
+    """
+    name = _PROVIDER_PREFIX_RE.sub("", voice_id or "")
+    canonical = _GEMINI_VOICE_BY_LOWER.get(name.lower())
+    if canonical is None:
+        logger.warning(
+            "voice_id %r has no Gemini voice mapping; using %s",
+            voice_id,
+            DEFAULT_GEMINI_LIVE_VOICE,
+        )
+        return DEFAULT_GEMINI_LIVE_VOICE
+    return canonical

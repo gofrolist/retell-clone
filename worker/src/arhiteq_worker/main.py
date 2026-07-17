@@ -43,7 +43,7 @@ from arhiteq_worker.internal_api import InternalAPI, InternalAPIError
 from arhiteq_worker.state import CallState, now_ms
 from arhiteq_worker.tools import DTMF_CODES, build_tools
 from arhiteq_worker.variables import resolve_template
-from arhiteq_worker.voices import resolve_cartesia_voice
+from arhiteq_worker.voices import resolve_cartesia_voice, resolve_gemini_voice
 
 logger = logging.getLogger("arhiteq-worker")
 
@@ -84,6 +84,28 @@ DEFAULT_GEMINI_MODEL = os.getenv("ARHITEQ_GEMINI_MODEL", "gemini-2.5-flash")
 CARTESIA_TTS_MODEL = os.getenv("ARHITEQ_CARTESIA_TTS_MODEL", "sonic-2")
 CARTESIA_STT_MODEL = os.getenv("ARHITEQ_CARTESIA_STT_MODEL", "ink-whisper")
 
+# Gemini Live (speech-to-speech) — a single realtime model that replaces the
+# whole Cartesia-STT → Gemini → Cartesia-TTS pipeline. The default is the
+# Vertex-served Live model; the plugin inherits the worker's Vertex env
+# (GOOGLE_GENAI_USE_VERTEXAI / GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION).
+DEFAULT_GEMINI_LIVE_MODEL = os.getenv(
+    "ARHITEQ_GEMINI_LIVE_MODEL", "gemini-live-2.5-flash-native-audio"
+)
+# Live native-audio has limited regional availability and may not be served on
+# the "global" endpoint the pipeline LLM uses. Set this (e.g. "us-central1") to
+# pin the realtime model to a region without moving the rest of the worker.
+GEMINI_LIVE_LOCATION = os.getenv("ARHITEQ_GEMINI_LIVE_LOCATION") or None
+# Context-window compression thresholds (native-audio ctx is 128k tokens ≈ 15
+# min of audio). 0 = leave the model/plugin defaults in place.
+GEMINI_LIVE_TRIGGER_TOKENS = int(os.getenv("ARHITEQ_GEMINI_LIVE_TRIGGER_TOKENS", "0")) or None
+GEMINI_LIVE_TARGET_TOKENS = int(os.getenv("ARHITEQ_GEMINI_LIVE_TARGET_TOKENS", "0")) or None
+# Markers that identify a Live API (realtime) model id. Matched loosely so new
+# Live model names Just Work: "gemini-live-2.5-flash-native-audio",
+# "gemini-2.5-flash-native-audio-preview-…", "gemini-3.1-flash-live-preview".
+# Note "flash-lite" does NOT match "flash-live", so the lite pipeline models
+# stay on the Cartesia path.
+_LIVE_MODEL_MARKERS = ("native-audio", "-live-", "flash-live", "live-2.5")
+
 _SIP_ANSWERED_STATUSES = {"active", "automation"}
 
 
@@ -109,6 +131,18 @@ def _gemini_model(model: str) -> str:
     return DEFAULT_GEMINI_MODEL
 
 
+def _is_live_model(model: str) -> bool:
+    """True when *model* is a Gemini Live (speech-to-speech) model id."""
+    m = (model or "").lower()
+    return any(marker in m for marker in _LIVE_MODEL_MARKERS)
+
+
+def _live_model(model: str) -> str:
+    # A Live-shaped id is passed through; anything else uses the deployment
+    # default Live model (this path is only reached for Live models).
+    return model if _is_live_model(model) else DEFAULT_GEMINI_LIVE_MODEL
+
+
 def _min_interruption_duration(sensitivity: float) -> float:
     s = _clamp(sensitivity, 0.0, 1.0)
     return 0.1 + (1.0 - s) * 1.4
@@ -119,31 +153,14 @@ def _endpointing_delays(responsiveness: float) -> tuple[float, float]:
     return 0.2 + (1.0 - r) * 1.0, 3.0 + (1.0 - r) * 3.0
 
 
-def build_session(cfg: CallConfig) -> tuple[AgentSession, Any]:
-    """Build the Cartesia-STT → Gemini → Cartesia-TTS AgentSession.
+def _assemble_session(cfg: CallConfig, base_kwargs: dict[str, Any]) -> AgentSession:
+    """Attach interruption/endpointing tuning and build the AgentSession.
 
-    Returns (session, llm) — the LLM instance is reused by the AMD greeting
-    classifier. Optional tuning kwargs are filtered against the installed
-    AgentSession signature so the worker runs on livekit-agents 1.2 (flat
-    kwargs) and ≥1.3 (TurnHandlingOptions) alike.
+    Optional kwargs are filtered against the installed AgentSession signature
+    so the worker runs on livekit-agents 1.2 (flat kwargs) and ≥1.3
+    (TurnHandlingOptions) alike.
     """
-    from livekit.plugins import cartesia, google
-
-    llm = google.LLM(  # GOOGLE_API_KEY read from env by the plugin
-        model=_gemini_model(cfg.llm.model),
-        temperature=cfg.llm.model_temperature,
-    )
-    stt = cartesia.STT(  # CARTESIA_API_KEY read from env by the plugin
-        model=CARTESIA_STT_MODEL,
-        language=_stt_language(cfg.agent.language),
-    )
-    tts = cartesia.TTS(
-        model=CARTESIA_TTS_MODEL,
-        voice=resolve_cartesia_voice(cfg.agent.voice_id),
-        speed=_cartesia_speed(cfg.agent.voice_speed),
-    )
-
-    kwargs: dict[str, Any] = {"stt": stt, "llm": llm, "tts": tts}
+    kwargs: dict[str, Any] = dict(base_kwargs)
     params = inspect.signature(AgentSession.__init__).parameters
     min_delay, max_delay = _endpointing_delays(cfg.agent.responsiveness)
     optional: dict[str, Any] = {
@@ -166,7 +183,84 @@ def build_session(cfg: CallConfig) -> tuple[AgentSession, Any]:
     for name, value in optional.items():
         if name in params:
             kwargs[name] = value
-    return AgentSession(**kwargs), llm
+    return AgentSession(**kwargs)
+
+
+def _build_realtime_model(google_plugin: Any, cfg: CallConfig) -> Any:
+    """Build a Gemini Live realtime model for a speech-to-speech session.
+
+    Enables input+output transcription (the Retell contract's post-call
+    analysis and webhooks read the transcript), session resumption (seamless
+    reconnect on the ~10-min GoAway), and context-window compression (the 128k
+    native-audio window ≈ 15 min of audio would otherwise overflow and drop
+    the call). Auth and region are inherited from the worker's Vertex env
+    unless ARHITEQ_GEMINI_LIVE_LOCATION pins a region.
+    """
+    from google.genai import types as genai_types
+
+    sliding = (
+        genai_types.SlidingWindow(target_tokens=GEMINI_LIVE_TARGET_TOKENS)
+        if GEMINI_LIVE_TARGET_TOKENS
+        else genai_types.SlidingWindow()
+    )
+    compression_kwargs: dict[str, Any] = {"sliding_window": sliding}
+    if GEMINI_LIVE_TRIGGER_TOKENS:
+        compression_kwargs["trigger_tokens"] = GEMINI_LIVE_TRIGGER_TOKENS
+
+    opts: dict[str, Any] = {
+        "model": _live_model(cfg.llm.model),
+        "voice": resolve_gemini_voice(cfg.agent.voice_id),
+        "temperature": cfg.llm.model_temperature,
+        "input_audio_transcription": genai_types.AudioTranscriptionConfig(),
+        "output_audio_transcription": genai_types.AudioTranscriptionConfig(),
+        "session_resumption": genai_types.SessionResumptionConfig(),
+        "context_window_compression": genai_types.ContextWindowCompressionConfig(
+            **compression_kwargs
+        ),
+    }
+    if GEMINI_LIVE_LOCATION:
+        # A region override implies Vertex — the Live models we ship are Vertex.
+        opts["vertexai"] = True
+        opts["location"] = GEMINI_LIVE_LOCATION
+    return google_plugin.realtime.RealtimeModel(**opts)
+
+
+def build_session(cfg: CallConfig) -> tuple[AgentSession, Any]:
+    """Build the call's AgentSession; return (session, amd_llm).
+
+    Two shapes, chosen by the configured model:
+    - Gemini Live model → a single google.realtime.RealtimeModel
+      (speech-to-speech); the Cartesia STT/TTS pipeline is bypassed and the
+      Gemini native-audio voice comes from the agent's voice_id.
+    - anything else → the Cartesia-STT → Gemini → Cartesia-TTS pipeline.
+
+    The second return value is always a *text* google.LLM for the AMD greeting
+    classifier (RealtimeModel has no .chat()); in Live mode a small dedicated
+    text LLM is built for it.
+    """
+    from livekit.plugins import cartesia, google
+
+    if _is_live_model(cfg.llm.model):
+        realtime = _build_realtime_model(google, cfg)
+        session = _assemble_session(cfg, {"llm": realtime})
+        amd_llm = google.LLM(model=DEFAULT_GEMINI_MODEL, temperature=0.0)
+        return session, amd_llm
+
+    llm = google.LLM(  # GOOGLE_API_KEY read from env by the plugin
+        model=_gemini_model(cfg.llm.model),
+        temperature=cfg.llm.model_temperature,
+    )
+    stt = cartesia.STT(  # CARTESIA_API_KEY read from env by the plugin
+        model=CARTESIA_STT_MODEL,
+        language=_stt_language(cfg.agent.language),
+    )
+    tts = cartesia.TTS(
+        model=CARTESIA_TTS_MODEL,
+        voice=resolve_cartesia_voice(cfg.agent.voice_id),
+        speed=_cartesia_speed(cfg.agent.voice_speed),
+    )
+    session = _assemble_session(cfg, {"stt": stt, "llm": llm, "tts": tts})
+    return session, llm
 
 
 class ArhiteqAgent(Agent):
@@ -604,6 +698,9 @@ async def entrypoint(ctx: JobContext) -> None:
         await agent.update_instructions(new_instructions)
         await agent.update_tools(new_tools)
         if not entry.get("keep_current_voice"):
+            # Gemini Live sessions have no separate TTS (voice is baked into the
+            # realtime model), so getattr(...) is None and the voice stays put —
+            # a live voice hot-swap would need a full session rebuild.
             tts = getattr(agent, "tts", None) or getattr(session, "tts", None)
             update = getattr(tts, "update_options", None)
             if update is not None:
