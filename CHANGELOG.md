@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0](https://github.com/gofrolist/retell-clone/compare/v0.7.0...v0.8.0) (2026-07-17)
+
+
+### Features
+
+* add Gemini Live API realtime LLM + voice tab ([#89](https://github.com/gofrolist/retell-clone/issues/89)) ([0d41ec3](https://github.com/gofrolist/retell-clone/commit/0d41ec3f902f939de2a398fe819de8f45b61c802))
+
+
+### Bug Fixes
+
+* **dashboard:** keep Live model header on one row ([#91](https://github.com/gofrolist/retell-clone/issues/91)) ([8dd5264](https://github.com/gofrolist/retell-clone/commit/8dd5264dc72939754dacf068ba8ec4de0060d152))
+
 ## [0.7.0](https://github.com/gofrolist/retell-clone/compare/v0.6.0...v0.7.0) (2026-07-17)
 
 
