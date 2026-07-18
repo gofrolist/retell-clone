@@ -299,16 +299,26 @@ class ArhiteqAgent(Agent):
         tools: list[Any],
         begin_message: str | None,
         start_speaker: str,
+        live: bool = False,
     ) -> None:
         super().__init__(instructions=instructions, tools=tools)
         self._begin_message = begin_message
         self._start_speaker = start_speaker
+        self._live = live
 
     async def on_enter(self) -> None:
         if self._start_speaker != "agent":
             return  # start_speaker == "user": wait for the callee to talk
-        if self._begin_message:
+        if self._begin_message and not self._live:
             await self.session.say(self._begin_message)
+        elif self._begin_message:
+            # Gemini Live is speech-to-speech with no TTS, so say() raises
+            # ("...without a TTS model or a RealtimeSession that supports
+            # say()"). Have the model open the call by voicing the greeting.
+            self.session.generate_reply(
+                instructions=f"Begin the call by greeting the user, saying exactly: "
+                f"{self._begin_message}"
+            )
         else:
             self.session.generate_reply()
 
@@ -697,6 +707,7 @@ async def entrypoint(ctx: JobContext) -> None:
         tools=livekit_tools,
         begin_message=begin_message,
         start_speaker=cfg.llm.start_speaker,
+        live=_is_live_model(cfg.llm.model),
     )
 
     async def _do_agent_swap(agent_id: str, entry: Mapping[str, Any]) -> str:
