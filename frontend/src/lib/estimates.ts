@@ -43,15 +43,28 @@ const LLM_RATES = {
   "gemini-2.5-pro": { inputPer1M: 1.25, outputPer1M: 10.0, ttftMs: [600, 1200] },
   "gemini-2.5-flash": { inputPer1M: 0.3, outputPer1M: 2.5, ttftMs: [350, 600] },
   "gemini-2.5-flash-lite": { inputPer1M: 0.1, outputPer1M: 0.4, ttftMs: [250, 450] },
-  // Live/native-audio is billed on audio tokens, not text turns — the estimator
-  // uses the per-minute live path below, so this entry only satisfies the type.
+  // Live/native-audio is billed on AUDIO tokens, not text turns: input
+  // $3.00/1M, output $12.00/1M (paid tier,
+  // https://ai.google.dev/gemini-api/docs/pricing, 2026-07-17). These rates
+  // feed GEMINI_LIVE_COST_PER_MIN below — the token-turn path is skipped for
+  // Live — so this is the single source of truth for the audio prices.
   "gemini-live-2.5-flash-native-audio": { inputPer1M: 3.0, outputPer1M: 12.0, ttftMs: [300, 700] },
 } satisfies Record<LlmModelId, LlmRate>;
 
 // Gemini Live (native audio) replaces STT+LLM+TTS with one speech-to-speech
-// model billed on audio tokens; approximate as an all-in per-call-minute cost
-// (our rounded estimate) and a single realtime turn-latency band.
-const GEMINI_LIVE_COST_PER_MIN = 0.6;
+// model billed on audio tokens. Google tokenizes audio at 25 tokens/second
+// (1,500 tokens/minute per stream), so the per-call-minute cost is: input for
+// the whole minute the model listens to the caller, plus output for the share
+// of the minute the agent actually speaks (~50%, matching the TTS assumption
+// below). At $3/1M in + $12/1M out that is ~$0.0135/min — the old flat $0.60
+// guess overstated it by ~40x. Derived from the rate-card entry above so the
+// audio prices live in one place.
+const LIVE_AUDIO_TOKENS_PER_MIN = 25 * 60;
+const LIVE_AGENT_TALK_RATIO = 0.5;
+const LIVE_RATE = LLM_RATES["gemini-live-2.5-flash-native-audio"];
+const GEMINI_LIVE_COST_PER_MIN =
+  (LIVE_AUDIO_TOKENS_PER_MIN / 1e6) * LIVE_RATE.inputPer1M +
+  ((LIVE_AGENT_TALK_RATIO * LIVE_AUDIO_TOKENS_PER_MIN) / 1e6) * LIVE_RATE.outputPer1M;
 const GEMINI_LIVE_LATENCY_MS: [number, number] = [300, 700];
 
 // Catalog drift safety net: unknown model ids estimate as gemini-2.5-flash.
