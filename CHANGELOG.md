@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.3](https://github.com/gofrolist/retell-clone/compare/v0.8.2...v0.8.3) (2026-07-18)
+
+
+### Bug Fixes
+
+* **worker:** safety-net hangup for deferred end_call on Gemini Live ([#97](https://github.com/gofrolist/retell-clone/issues/97)) ([d8ea461](https://github.com/gofrolist/retell-clone/commit/d8ea461d9aac323216ef8c92ba1f5dee1432d4a1))
+
 ## [0.8.2](https://github.com/gofrolist/retell-clone/compare/v0.8.1...v0.8.2) (2026-07-18)
 
 
