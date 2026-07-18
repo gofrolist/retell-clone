@@ -307,10 +307,21 @@ class ArhiteqAgent(Agent):
     async def on_enter(self) -> None:
         if self._start_speaker != "agent":
             return  # start_speaker == "user": wait for the callee to talk
-        if self._begin_message:
-            await self.session.say(self._begin_message)
-        else:
+        if not self._begin_message:
             self.session.generate_reply()
+        elif self.session.tts is None:
+            # A speech-to-speech session (Gemini Live) has no TTS, so say()
+            # raises ("...without a TTS model or a RealtimeSession that supports
+            # say()"). Have the realtime model open the call by voicing the
+            # greeting verbatim instead.
+            self.session.generate_reply(
+                instructions=(
+                    "Start the call by saying this greeting to the user, word "
+                    f'for word and nothing else first: "{self._begin_message}"'
+                )
+            )
+        else:
+            await self.session.say(self._begin_message)
 
 
 class CallRuntime:
