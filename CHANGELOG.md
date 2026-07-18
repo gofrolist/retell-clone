@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.4](https://github.com/gofrolist/retell-clone/compare/v0.8.3...v0.8.4) (2026-07-18)
+
+
+### Bug Fixes
+
+* **dashboard:** compute Gemini Live cost from real audio rates, not a flat $0.60 ([#99](https://github.com/gofrolist/retell-clone/issues/99)) ([a06d757](https://github.com/gofrolist/retell-clone/commit/a06d757c623145fb5669cdaab05139e1a98241c2))
+
 ## [0.8.3](https://github.com/gofrolist/retell-clone/compare/v0.8.2...v0.8.3) (2026-07-18)
 
 
