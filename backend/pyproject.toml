@@ -17,7 +17,7 @@ dependencies = [
     "google-genai>=1.0",
     "livekit-api>=1.2.0",
     "prometheus-client>=0.20",
-    "google-auth>=2.30",
+    "google-auth>=2.56.0",
     "PyJWT>=2.8",
     "google-cloud-storage>=3.12.1",
 ]
