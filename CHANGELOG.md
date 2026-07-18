@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.2](https://github.com/gofrolist/retell-clone/compare/v0.8.1...v0.8.2) (2026-07-18)
+
+
+### Bug Fixes
+
+* **worker:** flush SIP audio tail before hangup so goodbyes aren't clipped ([#95](https://github.com/gofrolist/retell-clone/issues/95)) ([c92013d](https://github.com/gofrolist/retell-clone/commit/c92013da36f02b8b39aa8f0d2b5aae0cefce0885))
+* **worker:** greet via generate_reply on Gemini Live ([#94](https://github.com/gofrolist/retell-clone/issues/94)) ([0230c31](https://github.com/gofrolist/retell-clone/commit/0230c31d762a0677f75d7b12960a1274a5f1390a))
+
 ## [0.8.1](https://github.com/gofrolist/retell-clone/compare/v0.8.0...v0.8.1) (2026-07-18)
 
 
