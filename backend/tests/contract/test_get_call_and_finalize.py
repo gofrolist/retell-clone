@@ -42,6 +42,41 @@ async def test_get_call_exposes_consumer_read_fields(client):
     assert body["call_status"] == "ended"
 
 
+async def test_get_call_exposes_collected_vars_and_detail_logs(client):
+    call_id = await _create_call(client)
+    await client.post(
+        f"/internal/calls/{call_id}/events",
+        headers=INTERNAL_HEADERS,
+        json={"event": "call_started", "start_timestamp": 1750000000000},
+    )
+    resp = await client.post(
+        f"/internal/calls/{call_id}/finalize",
+        headers=INTERNAL_HEADERS,
+        json={
+            "end_timestamp": 1750000030000,
+            "duration_ms": 30000,
+            "disconnection_reason": "user_hangup",
+            "call_status": "ended",
+            # extract_dynamic_variable tool output — persisted and surfaced.
+            "collected_dynamic_variables": {"plan": "pro", "first_name": "John"},
+            "latency": {"e2e": {"p50": 515.0, "p95": 939.0}},
+        },
+    )
+    assert resp.status_code == 200
+
+    body = (await client.get(f"/v2/get-call/{call_id}", headers=AUTH_HEADERS)).json()
+    assert body["collected_dynamic_variables"] == {"plan": "pro", "first_name": "John"}
+
+    # Detail Logs are synthesized (dashboard-only) from lifecycle + latency.
+    messages = [line["message"] for line in body["detail_logs"]]
+    assert any("Starting call" in m for m in messages)
+    assert any("Ending call" in m for m in messages)
+    assert any("e2e p50" in m for m in messages)
+    # Ordered ascending by timestamp.
+    times = [line["time_ms"] for line in body["detail_logs"]]
+    assert times == sorted(times)
+
+
 async def test_internal_call_config_includes_call_type(client):
     # The worker gates phone-call-only system variables ({{direction}},
     # {{user_number}}, {{agent_number}}) on call_type.

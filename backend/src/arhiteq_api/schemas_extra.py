@@ -9,7 +9,7 @@ from typing import Any
 
 from pydantic import Field
 
-from .models import Call, Chat, ConversationFlow, KnowledgeBase
+from .models import Call, Chat, ConversationFlow, KnowledgeBase, WebhookDelivery
 from .schemas import CompatModel, call_to_dict
 
 
@@ -98,6 +98,51 @@ def serialize_call(call: Call) -> dict[str, Any]:
     if call.call_type == "web_call":
         return web_call_to_dict(call)
     return call_to_dict(call)
+
+
+def build_detail_logs(call: Call, deliveries: list[WebhookDelivery]) -> list[dict[str, Any]]:
+    """Retell-style timestamped Detail Logs, synthesized from data we already
+    keep (lifecycle timestamps, webhook-delivery bookkeeping, latency).
+
+    We don't stream per-turn logs from the worker, so this is a reconstruction,
+    not a live trace — enough to give the dashboard's Detail Logs tab the same
+    shape Retell shows. Each entry is {time_ms, level, message}.
+    """
+    entries: list[dict[str, Any]] = []
+
+    def add(time_ms: int | None, message: str, level: str = "info") -> None:
+        if time_ms is not None:
+            entries.append({"time_ms": time_ms, "level": level, "message": message})
+
+    add(call.start_timestamp, f"Starting call: {call.call_id}")
+
+    for d in deliveries:
+        add(d.created_at_ms, f"Webhook triggered for {d.event}")
+        if d.last_status_code is not None:
+            add(
+                d.created_at_ms,
+                f"Webhook response received for {d.event}: HTTP {d.last_status_code}",
+            )
+        elif d.last_error:
+            add(
+                d.created_at_ms,
+                f"Webhook delivery failed for {d.event}: {d.last_error}",
+                level="error",
+            )
+
+    e2e = (call.latency or {}).get("e2e") or {}
+    if e2e.get("p50") is not None:
+        p95 = f", p95: {e2e['p95']}ms" if e2e.get("p95") is not None else ""
+        add(call.end_timestamp, f"Latency — e2e p50: {e2e['p50']}ms{p95}")
+
+    if call.disconnection_reason:
+        add(call.end_timestamp, f"Disconnection reason: {call.disconnection_reason}")
+    add(call.end_timestamp, f"Ending call: {call.call_id}")
+
+    # Stable sort keeps insertion order within the same timestamp (e.g. trigger
+    # before its response), so lines read in the order they logically happened.
+    entries.sort(key=lambda e: e["time_ms"])
+    return entries
 
 
 def knowledge_base_to_dict(kb: KnowledgeBase) -> dict[str, Any]:

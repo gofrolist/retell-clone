@@ -9,12 +9,13 @@ from ..auth import require_api_key
 from ..config import get_settings
 from ..db import get_session
 from ..ids import new_call_id
-from ..models import Agent, ApiKey, Call, PhoneNumber
+from ..models import Agent, ApiKey, Call, PhoneNumber, WebhookDelivery
 from ..schemas import CreatePhoneCallRequest, ListCallsRequest, call_to_dict
 from ..schemas_extra import (
     CreateWebCallRequest,
     RegisterPhoneCallRequest,
     UpdateCallRequest,
+    build_detail_logs,
     serialize_call,
     web_call_to_dict,
 )
@@ -133,7 +134,23 @@ async def get_call(
     call = await session.get(Call, call_id)
     if call is None or call.workspace_id != api_key.workspace_id:
         raise HTTPException(404, detail="Call not found")
-    return serialize_call(call)
+    out = serialize_call(call)
+    # Detail Logs are dashboard-only (a reconstruction from lifecycle +
+    # webhook-delivery bookkeeping), so they're attached here rather than in the
+    # shared serializer that also builds outbound webhook payloads.
+    deliveries = (
+        (
+            await session.execute(
+                select(WebhookDelivery)
+                .where(WebhookDelivery.call_id == call_id)
+                .order_by(WebhookDelivery.created_at_ms)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    out["detail_logs"] = build_detail_logs(call, list(deliveries))
+    return out
 
 
 @router.post("/v2/list-calls")

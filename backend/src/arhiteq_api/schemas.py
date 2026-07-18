@@ -135,6 +135,8 @@ def call_to_dict(call: Call) -> dict[str, Any]:
         "retell_llm_dynamic_variables": call.retell_llm_dynamic_variables or {},
         "opt_out_sensitive_data_storage": False,
     }
+    if call.collected_dynamic_variables:
+        out["collected_dynamic_variables"] = call.collected_dynamic_variables
     if call.custom_sip_headers:
         out["custom_sip_headers"] = call.custom_sip_headers
     if call.telephony_identifier:

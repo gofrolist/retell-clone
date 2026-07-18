@@ -6,7 +6,7 @@ import CopyId from "@/components/ui/CopyId";
 import StatusDot from "@/components/ui/StatusDot";
 import { UnderlineTabs } from "@/components/ui/Tabs";
 import { api } from "@/lib/api";
-import type { Call } from "@/lib/types";
+import type { Call, DetailLog } from "@/lib/types";
 import {
   formatCallTime,
   formatCost,
@@ -38,6 +38,59 @@ function AnalysisRow({ label, children }: { label: string; children: React.React
     <div className="flex items-center justify-between border-b border-line/70 py-2 text-[13px] last:border-b-0">
       <span className="text-sub">{label}</span>
       <span>{children}</span>
+    </div>
+  );
+}
+
+function DataPanel({ vars }: { vars?: Record<string, string> }) {
+  const entries = Object.entries(vars ?? {});
+  if (entries.length === 0) {
+    return (
+      <p className="py-8 text-center text-[13px] text-sub">
+        No extracted data available for this call.
+      </p>
+    );
+  }
+  return (
+    <div>
+      <h4 className="mb-2 flex items-center gap-1.5 text-[13px] font-semibold text-sub">
+        <span className="font-mono text-faint">{"{ }"}</span> Dynamic Variables
+      </h4>
+      <dl className="rounded-lg border border-line bg-app/50 divide-y divide-line/70">
+        {entries.map(([k, v]) => (
+          <div key={k} className="px-3 py-2 text-[13px]">
+            <dt className="font-mono text-[12px] text-sub">{k}</dt>
+            <dd className="mt-0.5 break-words whitespace-pre-wrap">{v}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
+function LogsPanel({ logs }: { logs?: DetailLog[] }) {
+  if (!logs || logs.length === 0) {
+    return (
+      <p className="py-8 text-center text-[13px] text-sub">
+        No detail logs available for this call.
+      </p>
+    );
+  }
+  const fmt = (ms: number) => {
+    const d = new Date(ms);
+    const p = (n: number, w = 2) => String(n).padStart(w, "0");
+    return (
+      `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+      `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`
+    );
+  };
+  return (
+    <div className="space-y-1 font-mono text-[12px] leading-relaxed">
+      {logs.map((l, i) => (
+        <div key={i} className={l.level === "error" ? "text-bad" : "text-sub"}>
+          <span className="text-faint">{fmt(l.time_ms)}</span> {l.message}
+        </div>
+      ))}
     </div>
   );
 }
@@ -251,9 +304,13 @@ export default function CallDrawer({
               <div className="pt-4 pb-6">
                 {tab === "transcription" ? (
                   <Transcript turns={c.transcript ?? []} />
+                ) : tab === "data" ? (
+                  <DataPanel vars={c.dynamic_variables} />
+                ) : tab === "logs" ? (
+                  <LogsPanel logs={c.detail_logs} />
                 ) : (
                   <p className="py-8 text-center text-[13px] text-sub">
-                    No {tab === "data" ? "extracted data" : tab === "logs" ? "detail logs" : "packet capture"} available for this call.
+                    No packet capture available for this call.
                   </p>
                 )}
               </div>

@@ -180,6 +180,7 @@ class FinalizeRequest(BaseModel):
     recording_url: str | None = None
     in_voicemail: bool | None = None
     latency: dict[str, Any] | None = None
+    collected_dynamic_variables: dict[str, Any] | None = None
 
 
 @router.post("/calls/{call_id}/finalize")
@@ -211,6 +212,8 @@ async def finalize_call(
         call.recording_url = await sign_recording_url(body.recording_url)
     if body.latency is not None:
         call.latency = body.latency
+    if body.collected_dynamic_variables is not None:
+        call.collected_dynamic_variables = body.collected_dynamic_variables
     await session.commit()
 
     if was_ongoing:

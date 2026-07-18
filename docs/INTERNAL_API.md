@@ -72,7 +72,8 @@ Terminal update; idempotent (second call is a no-op).
   "in_voicemail": true | false | null,   // worker-side AMD verdict, if any
   "latency": { "e2e": {"p50": …, "p95": …} } | null,
   "collected_dynamic_variables": {"plan": "pro"} | null  // extract_dynamic_variable
-      // output; accepted (extra=allow) but not yet persisted on the call row
+      // output; persisted on the call row, surfaced in get-call's
+      // collected_dynamic_variables (Retell contract field)
 }
 ```
 
