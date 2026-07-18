@@ -115,7 +115,9 @@ async def assert_tool_url_safe(url: str) -> None:
 class CallControl(Protocol):
     """Call-control surface main.py hands to the built-in tools."""
 
-    async def end_call(self, reason: str = "agent_hangup") -> None: ...
+    async def end_call(
+        self, reason: str = "agent_hangup", *, flush_grace: bool = False
+    ) -> None: ...
 
     async def transfer_call(self, number: str) -> str: ...
 
@@ -403,12 +405,14 @@ def _make_end_call_tool(entry: dict[str, Any], *, control: CallControl, state: C
     async def handler(raw_arguments: dict[str, object], context: RunContext) -> str:
         state.add_tool_invocation(name, "{}")
         metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="success").inc()
-        # Let any pending goodbye finish playing before hanging up.
+        # Let any pending goodbye finish playing before hanging up. wait_for_playout
+        # covers worker→room; flush_grace then covers the room→SIP→phone tail so
+        # delete_room doesn't clip the last words.
         try:
             await context.wait_for_playout()
         except Exception:  # noqa: BLE001 - never block the hangup
             pass
-        await control.end_call("agent_hangup")
+        await control.end_call("agent_hangup", flush_grace=True)
         state.add_tool_result(name, "call ended")
         return "The call has been ended."
 

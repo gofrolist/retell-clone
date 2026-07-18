@@ -84,6 +84,16 @@ DEFAULT_GEMINI_MODEL = os.getenv("ARHITEQ_GEMINI_MODEL", "gemini-2.5-flash")
 CARTESIA_TTS_MODEL = os.getenv("ARHITEQ_CARTESIA_TTS_MODEL", "sonic-2")
 CARTESIA_STT_MODEL = os.getenv("ARHITEQ_CARTESIA_STT_MODEL", "ink-whisper")
 
+# Grace before tearing down the SIP room on a hangup that follows a spoken
+# utterance (a goodbye or voicemail message). delete_room stops SIP egress
+# immediately, so without this the tail still in flight to the callee — the
+# room→SIP→phone jitter-buffered audio — gets cut mid-word. Parsed safely so a
+# bad env value can't crash worker startup.
+try:
+    HANGUP_FLUSH_GRACE_S = max(0.0, float(os.getenv("ARHITEQ_HANGUP_FLUSH_GRACE_S", "1.0")))
+except ValueError:
+    HANGUP_FLUSH_GRACE_S = 1.0
+
 
 def _positive_int_env(name: str) -> int | None:
     """Parse a positive-int env var; blank / 0 / non-numeric → None (defaults).
@@ -340,9 +350,14 @@ class CallRuntime:
             return json.dumps({"error": "agent swap not available on this call"})
         return await self._agent_swap(agent_id, entry)
 
-    async def end_call(self, reason: str = "agent_hangup") -> None:
+    async def end_call(self, reason: str = "agent_hangup", *, flush_grace: bool = False) -> None:
         self._state.set_reason_once(reason)
         self._state.ended_at_ms = self._state.ended_at_ms or now_ms()
+        if flush_grace and HANGUP_FLUSH_GRACE_S > 0:
+            # The agent just spoke (goodbye / voicemail); let that tail reach the
+            # callee before delete_room cuts SIP egress. wait_for_playout only
+            # covers worker→room, not the room→SIP→phone tail still in flight.
+            await asyncio.sleep(HANGUP_FLUSH_GRACE_S)
         try:
             await self._lkapi.room.delete_room(api.DeleteRoomRequest(room=self._ctx.room.name))
         except Exception as exc:  # noqa: BLE001 - room may already be gone
@@ -580,7 +595,7 @@ async def _run_amd(
             await session.say(resolve_template(message, variables), allow_interruptions=False)
         except Exception as exc:  # noqa: BLE001
             logger.warning("voicemail message playback failed: %s", exc)
-    await runtime.end_call("machine_detected")
+    await runtime.end_call("machine_detected", flush_grace=bool(message))
 
 
 async def entrypoint(ctx: JobContext) -> None:

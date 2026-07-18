@@ -20,7 +20,7 @@ from arhiteq_worker.tools import build_tools
 
 
 class _Control:
-    async def end_call(self, reason: str = "agent_hangup") -> None:
+    async def end_call(self, reason: str = "agent_hangup", *, flush_grace: bool = False) -> None:
         pass
 
     async def transfer_call(self, number: str) -> str:
