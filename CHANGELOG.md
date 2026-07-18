@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/gofrolist/retell-clone/compare/v0.8.0...v0.8.1) (2026-07-18)
+
+
+### Bug Fixes
+
+* **dashboard:** hide inapplicable voice controls on the Gemini Live tab ([#92](https://github.com/gofrolist/retell-clone/issues/92)) ([eb58003](https://github.com/gofrolist/retell-clone/commit/eb58003875b652da6b119fdfc9f03bcd927140f2))
+
 ## [0.8.0](https://github.com/gofrolist/retell-clone/compare/v0.7.0...v0.8.0) (2026-07-17)
 
 
