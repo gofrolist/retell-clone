@@ -17,13 +17,16 @@ export interface LlmModel {
   // STT→LLM→TTS pipeline and speaks with a Gemini native-audio voice, so the
   // voice picker must use the "gemini" provider (see SelectVoiceModal coupling).
   live?: boolean;
+  // Cosmetic "Suggested" pill in the model picker (LlmModelSelect) — our
+  // recommended default tiers. No wire/runtime effect.
+  suggested?: boolean;
 }
 
 // Stable (non-preview) conversational Gemini models,
 // per https://ai.google.dev/gemini-api/docs/models (2026-07-12).
 export const LLM_MODELS = [
-  { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", provider: "google" },
-  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite", provider: "google" },
+  { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", provider: "google", suggested: true },
+  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite", provider: "google", suggested: true },
   { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", provider: "google" },
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", provider: "google" },
   { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite", provider: "google" },

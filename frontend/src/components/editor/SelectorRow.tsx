@@ -1,13 +1,14 @@
 "use client";
 
 import { VoiceAvatar } from "@/components/agents/AgentsTable";
+import LlmModelSelect from "@/components/editor/LlmModelSelect";
 import Select from "@/components/ui/Select";
 import SelectVoiceModal from "@/components/voices/SelectVoiceModal";
 import { voiceNameFromId } from "@/lib/api";
-import { isLiveModel, LLM_MODELS } from "@/lib/models";
+import { isLiveModel } from "@/lib/models";
 import type { Voice } from "@/lib/types";
 import { withValue } from "@/lib/utils";
-import { BookOpen, ChevronDown, Clock4, Radio, Settings2, Sparkles } from "lucide-react";
+import { BookOpen, ChevronDown, Clock4, Settings2 } from "lucide-react";
 import { useState } from "react";
 
 const LANGUAGES: { value: string; label: string; flag: string }[] = [
@@ -38,11 +39,6 @@ export default function SelectorRow({
   const [voiceModalOpen, setVoiceModalOpen] = useState(false);
   const live = isLiveModel(model);
 
-  const modelOptions = withValue(
-    LLM_MODELS.map((m) => ({ value: m.id, label: m.label })),
-    model,
-  );
-
   const voiceName = voices.find((v) => v.voice_id === voiceId)?.voice_name ?? voiceNameFromId(voiceId);
 
   const languageOptions = withValue(LANGUAGES, language);
@@ -52,21 +48,7 @@ export default function SelectorRow({
     <div className="flex flex-wrap items-center gap-2">
       {onModel && (
         <>
-          <Select
-            value={model}
-            onChange={onModel}
-            prefix={
-              // Realtime (speech-to-speech) cue folded into the select's prefix
-              // icon so the header row doesn't grow and wrap; the label already
-              // reads "Live (Native Audio)".
-              live ? (
-                <Radio className="size-3.5 text-purple-600" />
-              ) : (
-                <Sparkles className="size-3.5 text-accent" />
-              )
-            }
-            options={modelOptions}
-          />
+          <LlmModelSelect value={model} onChange={onModel} />
           <button
             disabled
             title="Not available yet"
