@@ -6,7 +6,7 @@ import CopyId from "@/components/ui/CopyId";
 import StatusDot from "@/components/ui/StatusDot";
 import { UnderlineTabs } from "@/components/ui/Tabs";
 import { api } from "@/lib/api";
-import type { Call } from "@/lib/types";
+import type { Call, DetailLog } from "@/lib/types";
 import {
   formatCallTime,
   formatCost,
@@ -68,7 +68,7 @@ function DataPanel({ vars }: { vars?: Record<string, string> }) {
   );
 }
 
-function LogsPanel({ logs }: { logs?: import("@/lib/types").DetailLog[] }) {
+function LogsPanel({ logs }: { logs?: DetailLog[] }) {
   if (!logs || logs.length === 0) {
     return (
       <p className="py-8 text-center text-[13px] text-sub">

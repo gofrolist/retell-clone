@@ -368,12 +368,15 @@ const SENTIMENTS = new Set(["Positive", "Negative", "Neutral", "Unknown"]);
 export function uiCallFromRaw(c: RawCall): Call {
   const analysis = c.call_analysis ?? {};
   const sentiment = analysis.user_sentiment ?? "Unknown";
-  // Data tab: input vars first, mid-call extracted vars override.
-  const dynEntries = Object.entries({
-    ...(c.retell_llm_dynamic_variables ?? {}),
-    ...(c.collected_dynamic_variables ?? {}),
-  }).map(([k, v]) => [k, String(v)] as const);
-  const dynamic_variables = Object.fromEntries(dynEntries);
+  // Data tab: input vars first, mid-call extracted vars override. Values cross
+  // the wire as `unknown`; String() pins them to the Record<string,string> the
+  // panel renders (they're already string-coerced server-side).
+  const dynamic_variables: Record<string, string> = Object.fromEntries(
+    Object.entries({
+      ...(c.retell_llm_dynamic_variables ?? {}),
+      ...(c.collected_dynamic_variables ?? {}),
+    }).map(([k, v]) => [k, String(v)]),
+  );
   return {
     call_id: c.call_id,
     agent_id: c.agent_id,
