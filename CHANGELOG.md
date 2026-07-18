@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/gofrolist/retell-clone/compare/v0.8.4...v0.9.0) (2026-07-18)
+
+
+### Features
+
+* **dashboard:** populate call-history Data and Detail Logs tabs ([#101](https://github.com/gofrolist/retell-clone/issues/101)) ([1a23066](https://github.com/gofrolist/retell-clone/commit/1a2306655cf23b18210abeaed921a392bb0df3a1))
+
 ## [0.8.4](https://github.com/gofrolist/retell-clone/compare/v0.8.3...v0.8.4) (2026-07-18)
 
 
