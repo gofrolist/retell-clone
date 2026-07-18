@@ -256,6 +256,9 @@ export interface RawCall {
   };
   call_cost?: { combined_cost?: number };
   latency?: { e2e?: { p50?: number } };
+  retell_llm_dynamic_variables?: Record<string, unknown>;
+  collected_dynamic_variables?: Record<string, unknown>;
+  detail_logs?: { time_ms: number; level: string; message: string }[];
   [key: string]: unknown;
 }
 
@@ -365,6 +368,12 @@ const SENTIMENTS = new Set(["Positive", "Negative", "Neutral", "Unknown"]);
 export function uiCallFromRaw(c: RawCall): Call {
   const analysis = c.call_analysis ?? {};
   const sentiment = analysis.user_sentiment ?? "Unknown";
+  // Data tab: input vars first, mid-call extracted vars override.
+  const dynEntries = Object.entries({
+    ...(c.retell_llm_dynamic_variables ?? {}),
+    ...(c.collected_dynamic_variables ?? {}),
+  }).map(([k, v]) => [k, String(v)] as const);
+  const dynamic_variables = Object.fromEntries(dynEntries);
   return {
     call_id: c.call_id,
     agent_id: c.agent_id,
@@ -392,6 +401,8 @@ export function uiCallFromRaw(c: RawCall): Call {
       content: t.content,
       time: "",
     })),
+    dynamic_variables,
+    detail_logs: c.detail_logs,
   };
 }
 

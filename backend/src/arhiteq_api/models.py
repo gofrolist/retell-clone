@@ -246,6 +246,9 @@ class Call(Base):
     to_number: Mapped[str | None] = mapped_column(String(20), index=True)
     metadata_: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSON)
     retell_llm_dynamic_variables: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    # Variables extracted mid-call by the extract_dynamic_variable tool (worker
+    # sends these on finalize). Distinct from the input vars above.
+    collected_dynamic_variables: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     custom_sip_headers: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     start_timestamp: Mapped[int | None] = mapped_column(BigInteger)
     end_timestamp: Mapped[int | None] = mapped_column(BigInteger)

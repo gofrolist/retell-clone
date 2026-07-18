@@ -99,6 +99,16 @@ export interface Call {
   recording_url?: string;
   transcript?: TranscriptTurn[];
   contact_id?: string;
+  // Data tab: input vars merged with vars extracted mid-call.
+  dynamic_variables?: Record<string, string>;
+  // Detail Logs tab: synthesized timestamped lifecycle log lines.
+  detail_logs?: DetailLog[];
+}
+
+export interface DetailLog {
+  time_ms: number;
+  level: string; // "info" | "error"
+  message: string;
 }
 
 export interface ListCallsResponse {
