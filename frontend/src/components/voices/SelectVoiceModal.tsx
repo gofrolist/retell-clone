@@ -76,19 +76,17 @@ function PlayButton({
   // while clicks silently no-op (e.g. a scheme-less ARHITEQ_PUBLIC_API_URL).
   const canPlay = resolvePreviewUrl(voice.preview_audio_url) !== null;
   const playing = playingId === voice.voice_id;
+  // No committed sample (e.g. Gemini Live voices): render a same-size spacer
+  // so rows stay aligned, rather than a dead greyed-out button.
+  if (!canPlay) return <span className="size-7 shrink-0" aria-hidden />;
   return (
     <button
-      disabled={!canPlay}
-      title={canPlay ? undefined : "Preview not available yet"}
       onClick={(e) => {
         e.stopPropagation();
         onToggle(voice.voice_id, voice.preview_audio_url);
       }}
       aria-label={`${playing ? "Pause" : "Play"} ${voice.voice_name} preview`}
-      className={cn(
-        "flex size-7 shrink-0 items-center justify-center rounded-full border border-line bg-white transition-colors",
-        canPlay ? "cursor-pointer hover:bg-app" : "opacity-40 cursor-not-allowed",
-      )}
+      className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full border border-line bg-white transition-colors hover:bg-app"
     >
       {playing ? (
         <Pause className="size-3.5" />
@@ -142,7 +140,13 @@ export default function SelectVoiceModal({
     return [{ value: "all", label: "Accent" }, ...distinct.sort().map((a) => ({ value: a, label: a }))];
   }, [allVoices]);
 
-  const filtersActive = gender !== "all" || accent !== "all" || age !== "all" || search !== "";
+  // Gemini Live voices carry no gender/accent/age, so the trait filters would
+  // only ever yield "no matches" — hide and ignore them for that provider.
+  const supportsTraitFilters = provider !== "gemini";
+
+  const filtersActive =
+    (supportsTraitFilters && (gender !== "all" || accent !== "all" || age !== "all")) ||
+    search !== "";
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -151,14 +155,14 @@ export default function SelectVoiceModal({
         // Always keep the current voice reselectable, even when it belongs to
         // a provider whose tab is disabled (e.g. an imported "openai-Cimo").
         (v.provider === provider || v.voice_id === currentVoiceId) &&
-        (gender === "all" || v.gender === gender) &&
-        (accent === "all" || v.accent === accent) &&
-        (age === "all" || v.age === age) &&
+        (!supportsTraitFilters || gender === "all" || v.gender === gender) &&
+        (!supportsTraitFilters || accent === "all" || v.accent === accent) &&
+        (!supportsTraitFilters || age === "all" || v.age === age) &&
         (q === "" ||
           v.voice_name.toLowerCase().includes(q) ||
           v.voice_id.toLowerCase().includes(q)),
     );
-  }, [allVoices, currentVoiceId, provider, gender, accent, age, search]);
+  }, [allVoices, currentVoiceId, provider, supportsTraitFilters, gender, accent, age, search]);
 
   const recommended = useMemo(
     () => voices.filter((v) => v.recommended && v.provider === provider),
@@ -310,9 +314,13 @@ export default function SelectVoiceModal({
             Add custom voice
           </button>
         </Tooltip>
-        <Select value={gender} onChange={setGender} options={GENDERS} className="w-32" />
-        <Select value={accent} onChange={setAccent} options={accents} className="w-32" />
-        <Select value={age} onChange={setAge} options={AGES} className="w-36" />
+        {supportsTraitFilters && (
+          <>
+            <Select value={gender} onChange={setGender} options={GENDERS} className="w-32" />
+            <Select value={accent} onChange={setAccent} options={accents} className="w-32" />
+            <Select value={age} onChange={setAge} options={AGES} className="w-36" />
+          </>
+        )}
         <SearchInput value={search} onChange={setSearch} className="min-w-48 grow" />
       </div>
 
