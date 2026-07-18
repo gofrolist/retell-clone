@@ -39,6 +39,7 @@ from livekit.agents import Agent, AgentSession, JobContext, cli
 from arhiteq_worker import amd
 from arhiteq_worker import metrics
 from arhiteq_worker.config import CallConfig
+from arhiteq_worker.goodbye import looks_like_goodbye
 from arhiteq_worker.internal_api import InternalAPI, InternalAPIError
 from arhiteq_worker.state import CallState, now_ms
 from arhiteq_worker.tools import DTMF_CODES, build_tools
@@ -93,6 +94,19 @@ try:
     HANGUP_FLUSH_GRACE_S = max(0.0, float(os.getenv("ARHITEQ_HANGUP_FLUSH_GRACE_S", "1.0")))
 except ValueError:
     HANGUP_FLUSH_GRACE_S = 1.0
+
+# Live-only safety net: native-audio Gemini Live voices its goodbye but defers
+# the end_call tool call to its next turn (which only fires on fresh user
+# input), leaving seconds of dead air. When the agent voices a closing line and
+# the user then stays silent this long, we hang up proactively instead of
+# waiting for the model. Cancelled the instant the user speaks, so it never
+# fires mid-conversation. <= 0 disables. Parsed safely (see above).
+try:
+    LIVE_GOODBYE_HANGUP_GRACE_S = max(
+        0.0, float(os.getenv("ARHITEQ_LIVE_GOODBYE_HANGUP_GRACE_S", "1.5"))
+    )
+except ValueError:
+    LIVE_GOODBYE_HANGUP_GRACE_S = 1.5
 
 
 def _positive_int_env(name: str) -> int | None:
@@ -521,6 +535,39 @@ def _wire_session_events(
 ) -> None:
     last_llm_ttft: dict[str, float] = {}
 
+    # Live-only goodbye safety net (see LIVE_GOODBYE_HANGUP_GRACE_S). Gemini Live
+    # bakes the voice into the realtime model and has no separate TTS; the
+    # pipeline always sets one. A missing TTS therefore marks the native-audio
+    # session whose deferred end_call this guards against.
+    _live_goodbye = getattr(session, "tts", None) is None and LIVE_GOODBYE_HANGUP_GRACE_S > 0
+    _last_agent_text: dict[str, str] = {"text": ""}
+    _goodbye_timer: dict[str, asyncio.Task[Any] | None] = {"task": None}
+
+    def _cancel_goodbye_hangup() -> None:
+        # Also consume the last agent line: a stale goodbye must not re-arm on a
+        # later, non-speaking return to "listening" (e.g. after a silent tool
+        # call) and hang up on a caller who has since re-engaged.
+        _last_agent_text["text"] = ""
+        task = _goodbye_timer["task"]
+        _goodbye_timer["task"] = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _goodbye_hangup() -> None:
+        # Armed after the agent voiced a closing line; the user has now stayed
+        # silent for the whole grace, so end the call the model was slow to end
+        # itself. flush_grace keeps the goodbye's SIP tail from clipping.
+        await asyncio.sleep(LIVE_GOODBYE_HANGUP_GRACE_S)
+        _goodbye_timer["task"] = None
+        logger.info("live goodbye safety net: hanging up %s", state.call_id)
+        await runtime.end_call("agent_hangup", flush_grace=True)
+
+    def _arm_goodbye_hangup() -> None:
+        if not _live_goodbye or not looks_like_goodbye(_last_agent_text["text"]):
+            return
+        _cancel_goodbye_hangup()
+        _goodbye_timer["task"] = _spawn(_goodbye_hangup())
+
     @session.on("conversation_item_added")
     def _on_item(ev: Any) -> None:
         item = ev.item
@@ -528,23 +575,40 @@ def _wire_session_events(
         text = getattr(item, "text_content", None) or ""
         if role == "assistant":
             state.add_message("agent", text)
+            _last_agent_text["text"] = text
         elif role == "user":
             state.add_message("user", text)
 
     @session.on("user_input_transcribed")
     def _on_transcribed(ev: Any) -> None:
+        # The user is talking — never hang up on them.
+        _cancel_goodbye_hangup()
         if amd_window_open.get("open") and getattr(ev, "is_final", False):
             amd_speech.append(getattr(ev, "transcript", "") or "")
 
+    @session.on("agent_state_changed")
+    def _on_agent_state(ev: Any) -> None:
+        new_state = getattr(ev, "new_state", None)
+        if new_state in ("speaking", "thinking"):
+            # A fresh agent turn — the previous line wasn't the last word.
+            _cancel_goodbye_hangup()
+        elif new_state == "listening":
+            # Agent finished a turn; if it was a sign-off, start the countdown.
+            _arm_goodbye_hangup()
+
     @session.on("user_state_changed")
     def _on_user_state(ev: Any) -> None:
-        # user_away_timeout fired (maps end_call_after_silence_ms).
-        if getattr(ev, "new_state", None) == "away":
+        new_state = getattr(ev, "new_state", None)
+        if new_state == "speaking":
+            _cancel_goodbye_hangup()  # user re-engaged
+        elif new_state == "away":
+            # user_away_timeout fired (maps end_call_after_silence_ms).
             state.set_reason_once("inactivity")
             _spawn(runtime.end_call("inactivity"))
 
     @session.on("close")
     def _on_close(ev: Any) -> None:
+        _cancel_goodbye_hangup()
         state.ended_at_ms = state.ended_at_ms or now_ms()
         reason = str(getattr(ev, "reason", "") or "")
         if "participant_disconnected" in reason:
