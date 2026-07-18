@@ -4,14 +4,18 @@ import { formatUsdPerMin, llmDisplayCostPerMin } from "@/lib/estimates";
 import { isLiveModel, LLM_MODELS, type LlmModel } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronUp, Radio } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 /** The Gemini "spark" mark with its blue→purple→pink gradient. */
 function GeminiMark({ className }: { className?: string }) {
+  // Per-instance gradient id: this mark renders many times (trigger + every
+  // option), and a shared literal id is invalid and can drop the fill to black
+  // when the first-defining instance unmounts (Safari/Firefox).
+  const gradId = useId();
   return (
     <svg viewBox="0 0 16 16" aria-hidden className={className}>
       <defs>
-        <linearGradient id="arhiteq-gemini-mark" x1="0" y1="0" x2="16" y2="16" gradientUnits="userSpaceOnUse">
+        <linearGradient id={gradId} x1="0" y1="0" x2="16" y2="16" gradientUnits="userSpaceOnUse">
           <stop offset="0" stopColor="#4285F4" />
           <stop offset="0.5" stopColor="#9B72CB" />
           <stop offset="1" stopColor="#D96570" />
@@ -19,7 +23,7 @@ function GeminiMark({ className }: { className?: string }) {
       </defs>
       <path
         d="M8 0c0 4.42-3.58 8-8 8 4.42 0 8 3.58 8 8 0-4.42 3.58-8 8-8-4.42 0-8-3.58-8-8Z"
-        fill="url(#arhiteq-gemini-mark)"
+        fill={`url(#${gradId})`}
       />
     </svg>
   );
@@ -56,6 +60,7 @@ export default function LlmModelSelect({
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   // Catalog plus, if the stored id isn't a preset (e.g. an imported model),
@@ -66,8 +71,17 @@ export default function LlmModelSelect({
     return [{ id: value, label: value, provider: "google", live: isLiveModel(value) }, ...LLM_MODELS];
   }, [value]);
 
-  const selected = options.find((m) => m.id === value) ?? options[0];
+  // Undefined when nothing is stored yet, so the trigger shows a placeholder
+  // instead of pretending the first catalog model is selected.
+  const selected = value ? options.find((m) => m.id === value) : undefined;
   const selectedLive = isLiveModel(value);
+
+  // Return focus to the trigger whenever the popover closes via keyboard or a
+  // pick, so a keyboard user doesn't get dropped back to <body>.
+  function close({ refocus = true } = {}) {
+    setOpen(false);
+    if (refocus) triggerRef.current?.focus();
+  }
 
   // Close on outside click.
   useEffect(() => {
@@ -91,13 +105,13 @@ export default function LlmModelSelect({
 
   function pick(id: string) {
     onChange?.(id);
-    setOpen(false);
+    close();
   }
 
   function onListKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Escape") {
       e.preventDefault();
-      setOpen(false);
+      close();
       return;
     }
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -112,10 +126,13 @@ export default function LlmModelSelect({
   return (
     <div ref={rootRef} className={cn("relative", className)}>
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((o) => !o)}
         onKeyDown={(e) => {
-          if (!open && (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ")) {
+          // Enter/Space activate the button natively (-> onClick toggles); only
+          // ArrowDown needs handling here, and only to suppress page scroll.
+          if (!open && e.key === "ArrowDown") {
             e.preventDefault();
             setOpen(true);
           }
@@ -129,7 +146,9 @@ export default function LlmModelSelect({
         ) : (
           <GeminiMark className="size-3.5 shrink-0" />
         )}
-        <span className="truncate">{selected?.label ?? value}</span>
+        <span className={cn("truncate", !selected && "text-faint")}>
+          {selected?.label ?? "Select a model"}
+        </span>
         {open ? (
           <ChevronUp className="ml-auto size-3.5 shrink-0 text-faint" />
         ) : (
