@@ -544,6 +544,10 @@ def _wire_session_events(
     _goodbye_timer: dict[str, asyncio.Task[Any] | None] = {"task": None}
 
     def _cancel_goodbye_hangup() -> None:
+        # Also consume the last agent line: a stale goodbye must not re-arm on a
+        # later, non-speaking return to "listening" (e.g. after a silent tool
+        # call) and hang up on a caller who has since re-engaged.
+        _last_agent_text["text"] = ""
         task = _goodbye_timer["task"]
         _goodbye_timer["task"] = None
         if task is not None and not task.done():

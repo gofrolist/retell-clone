@@ -23,6 +23,7 @@ from arhiteq_worker.goodbye import looks_like_goodbye
         "Bye now.",
         "Bye-bye!",
         "Good night, sleep well.",
+        "Good night!",
         "Have a great day!",
         "Have a wonderful evening.",
         "Talk to you later.",
@@ -31,6 +32,10 @@ from arhiteq_worker.goodbye import looks_like_goodbye
         "Farewell for now.",
         "Alright, take it easy.",
         "GOODBYE.",  # case-insensitive
+        # Recall gap (was missed by the rigid patterns):
+        "Have a good rest of your day!",
+        "You take good care now.",
+        "Okay, take care, friend — talk soon!",
     ],
 )
 def test_detects_closing_lines(text: str) -> None:
@@ -47,6 +52,13 @@ def test_detects_closing_lines(text: str) -> None:
         "Sounds good! Are you making coffee, or going out for some?",
         "Is there anything else I can help you with today?",
         "Maybe we can chat about the weather.",  # 'maybe' must not trip 'bye'
+        # Mid-sentence uses of soft cues must NOT arm a hangup (they end a clause,
+        # not the call) — this is the core "never fires mid-conversation" property:
+        "Sure, I'll take care of that for you.",
+        "We can talk later about your appointment.",
+        "Did you have a good night's sleep?",
+        "Let me see you through this.",
+        "I'll have a good look at it and get back to you.",
     ],
 )
 def test_ignores_non_closing_lines(text: str) -> None:
