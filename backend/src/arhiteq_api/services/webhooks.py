@@ -18,7 +18,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import security, signature
 from ..config import get_settings
-from ..models import Agent, ApiKey, Call, WebhookDelivery, Workspace, now_ms
+from ..models import (
+    DEFAULT_WEBHOOK_EVENTS,
+    DEFAULT_WEBHOOK_TIMEOUT_MS,
+    Agent,
+    ApiKey,
+    Call,
+    WebhookDelivery,
+    Workspace,
+    now_ms,
+)
 from ..schemas import call_to_dict
 from .metrics import WEBHOOK_DELIVERIES
 
@@ -33,8 +42,9 @@ class WebhookTarget:
 
     url: str
     timeout_seconds: float
-    # None = deliver every event; a set restricts to those event names. Only the
-    # agent-level URL can subscribe; the workspace fallback always gets all.
+    # None = deliver every event (the workspace-level catch-all). A set restricts
+    # to those event names; an agent-level target always carries a concrete set
+    # (its subscription, or DEFAULT_WEBHOOK_EVENTS when unconfigured).
     events: frozenset[str] | None
 
     def wants(self, event: str) -> bool:
@@ -46,23 +56,17 @@ async def resolve_webhook_target(session: AsyncSession, call: Call) -> WebhookTa
     settings = get_settings()
     agent = await session.get(Agent, call.agent_id)
     if agent is not None and agent.webhook_url:
-        timeout = (
-            agent.webhook_timeout_ms / 1000
-            if agent.webhook_timeout_ms
-            else settings.webhook_timeout_seconds
+        # Null timeout/events fall back to the agent-level defaults the dashboard
+        # displays, so what the operator sees is what actually ships.
+        timeout = (agent.webhook_timeout_ms or DEFAULT_WEBHOOK_TIMEOUT_MS) / 1000
+        events = frozenset(
+            agent.webhook_events if agent.webhook_events is not None else DEFAULT_WEBHOOK_EVENTS
         )
-        events = frozenset(agent.webhook_events) if agent.webhook_events is not None else None
         return WebhookTarget(agent.webhook_url, timeout, events)
     ws = await session.get(Workspace, call.workspace_id)
     if ws is not None and ws.webhook_url:
         return WebhookTarget(ws.webhook_url, settings.webhook_timeout_seconds, None)
     return None
-
-
-async def resolve_webhook_url(session: AsyncSession, call: Call) -> str | None:
-    """Agent-level webhook URL wins over workspace-level (Retell semantics)."""
-    target = await resolve_webhook_target(session, call)
-    return target.url if target is not None else None
 
 
 async def signing_key(session: AsyncSession, workspace_id: str) -> str | None:

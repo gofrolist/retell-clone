@@ -42,9 +42,9 @@ def now_ms() -> int:
 
 # The full Retell webhook-event catalog offered in the dashboard "Set Up"
 # selector. An agent's `webhook_events` subscription may only name events from
-# this set; null means "all of them". The worker currently *fires* only
-# call_started / call_ended / call_analyzed; the transcript/transfer events are
-# accepted for Retell parity and will deliver once the worker emits them.
+# this set. The worker currently *fires* only call_started / call_ended /
+# call_analyzed; the transcript/transfer events are accepted for Retell parity
+# and will deliver once the worker emits them.
 WEBHOOK_EVENT_TYPES = (
     "call_started",
     "call_ended",
@@ -55,6 +55,17 @@ WEBHOOK_EVENT_TYPES = (
     "transfer_cancelled",
     "transfer_ended",
 )
+
+# What an agent-level webhook subscribes to when `webhook_events` is null — the
+# events the worker actually fires today. This is the source of truth the
+# dashboard's default-checked boxes mirror; keep the two in sync. (The
+# workspace-level fallback webhook is a catch-all and still receives everything.)
+DEFAULT_WEBHOOK_EVENTS = ("call_started", "call_ended", "call_analyzed")
+
+# Agent-level webhook timeout when `webhook_timeout_ms` is null. Mirrors the
+# dashboard's default slider position; distinct from the workspace fallback,
+# which uses the platform-wide config.webhook_timeout_seconds.
+DEFAULT_WEBHOOK_TIMEOUT_MS = 5000
 
 
 class Base(DeclarativeBase):
@@ -207,9 +218,9 @@ class Agent(Base):
     ambient_sound_volume: Mapped[float] = mapped_column(Float, default=1.0)
     webhook_url: Mapped[str | None] = mapped_column(Text)
     # Per-agent overrides for outbound webhooks (Retell "Webhook Settings").
-    # webhook_timeout_ms: null -> platform default (config.webhook_timeout_seconds).
-    # webhook_events: null -> deliver every event; a list restricts to those
-    # event names (backward compatible — pre-existing agents stay null).
+    # webhook_timeout_ms: null -> DEFAULT_WEBHOOK_TIMEOUT_MS.
+    # webhook_events: null -> DEFAULT_WEBHOOK_EVENTS; a list restricts to those
+    # event names (an empty list receives nothing).
     webhook_timeout_ms: Mapped[int | None] = mapped_column(BigInteger)
     webhook_events: Mapped[list[Any] | None] = mapped_column(JSON)
     boosted_keywords: Mapped[list[Any] | None] = mapped_column(JSON)

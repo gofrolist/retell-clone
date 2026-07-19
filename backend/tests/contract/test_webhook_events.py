@@ -18,6 +18,7 @@ from tests.conftest import (
     COMPANION_AGENT_ID,
     FROM_NUMBER,
     INTERNAL_HEADERS,
+    WORKSPACE_ID,
 )
 
 AGENT_WEBHOOK_URL = "https://consumer.example/functions/v1/agent-hook"
@@ -70,9 +71,9 @@ async def test_agent_events_subscription_filters_delivery(client):
 
 
 @respx.mock
-async def test_agent_null_events_still_delivers_all(client):
-    # webhook_url set, webhook_events left null → every event delivered (the
-    # pre-existing behavior must not regress).
+async def test_agent_null_events_delivers_default_set(client):
+    # webhook_url set, webhook_events left null → the default subscription
+    # (call_started/ended/analyzed). finalize fires call_ended + call_analyzed.
     await _set_agent_webhook(COMPANION_AGENT_ID, webhook_url=AGENT_WEBHOOK_URL)
     route = respx.post(AGENT_WEBHOOK_URL).mock(return_value=Response(200))
 
@@ -170,3 +171,54 @@ async def test_update_agent_accepts_transfer_events_for_retell_parity(client):
     )
     assert resp.status_code == 200
     assert resp.json()["webhook_events"] == events
+
+
+async def test_update_agent_dedupes_events_and_coerces_int_timeout(client):
+    # PATCH normalizes like the create (Pydantic) path: de-dupe events, accept an
+    # integer-valued float timeout.
+    resp = await client.patch(
+        f"/update-agent/{COMPANION_AGENT_ID}",
+        headers=AUTH_HEADERS,
+        json={
+            "webhook_events": ["call_ended", "call_ended", "call_started"],
+            "webhook_timeout_ms": 5000.0,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["webhook_events"] == ["call_ended", "call_started"]
+    assert body["webhook_timeout_ms"] == 5000
+
+
+async def test_update_agent_rejects_fractional_timeout(client):
+    resp = await client.patch(
+        f"/update-agent/{COMPANION_AGENT_ID}",
+        headers=AUTH_HEADERS,
+        json={"webhook_timeout_ms": 5000.5},
+    )
+    assert resp.status_code == 422
+
+
+async def test_resolve_target_uses_agent_defaults_when_null(client):
+    # Null timeout/events resolve to the agent-level defaults the dashboard shows
+    # (5s, the three call_* events) — NOT the platform 10s / "all events".
+    from arhiteq_api.models import DEFAULT_WEBHOOK_EVENTS, Call
+    from arhiteq_api.services.webhooks import resolve_webhook_target
+
+    await _set_agent_webhook(COMPANION_AGENT_ID, webhook_url=AGENT_WEBHOOK_URL)
+    async with session_factory()() as session:
+        call = Call(
+            call_id="call_resolve_test",
+            workspace_id=WORKSPACE_ID,
+            agent_id=COMPANION_AGENT_ID,
+            direction="outbound",
+        )
+        session.add(call)
+        await session.commit()
+        target = await resolve_webhook_target(session, call)
+
+    assert target is not None
+    assert target.timeout_seconds == 5.0
+    assert target.events == frozenset(DEFAULT_WEBHOOK_EVENTS)
+    assert target.wants("call_ended") is True
+    assert target.wants("transfer_started") is False

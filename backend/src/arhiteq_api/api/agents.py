@@ -1,5 +1,3 @@
-import json
-
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -8,9 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import security, signature
 from ..auth import require_api_key
-from ..config import get_settings
 from ..db import get_session
 from ..models import (
+    DEFAULT_WEBHOOK_TIMEOUT_MS,
     WEBHOOK_EVENT_TYPES,
     Agent,
     AgentFolder,
@@ -20,7 +18,7 @@ from ..models import (
     Workspace,
     now_ms,
 )
-from ..schemas import CreateAgentRequest, TestWebhookRequest, agent_to_dict, call_to_dict
+from ..schemas import CreateAgentRequest, TestWebhookRequest, agent_to_dict
 from ..services import webhooks
 from ._deps import apply_patch, get_owned
 from .chat_agents import CHAT_VOICE_ID
@@ -79,17 +77,23 @@ _MUTABLE_FIELDS = {
 
 
 def _validate_webhook_patch(payload: dict) -> None:
-    """Guard the webhook overrides on PATCH (create goes through Pydantic).
+    """Validate + normalize the webhook overrides on PATCH, in place.
 
-    apply_patch writes raw payload values straight onto the ORM object, so the
-    same bounds CreateAgentRequest enforces have to be re-checked here.
+    apply_patch writes raw payload values straight onto the ORM object, so this
+    has to mirror what CreateAgentRequest's Pydantic validators do: accept
+    integer-valued timeouts within bounds and de-dupe the event list.
     """
     if "webhook_timeout_ms" in payload:
         t = payload["webhook_timeout_ms"]
-        if t is not None and (
-            not isinstance(t, int) or isinstance(t, bool) or not 1000 <= t <= 30000
-        ):
-            raise HTTPException(422, detail="webhook_timeout_ms must be between 1000 and 30000")
+        if t is not None:
+            # Match Pydantic: bools are not ints, and a fractional float is not
+            # a valid integer (but 5000.0 coerces to 5000).
+            if isinstance(t, bool) or not isinstance(t, (int, float)) or t != int(t):
+                raise HTTPException(422, detail="webhook_timeout_ms must be an integer")
+            t = int(t)
+            if not 1000 <= t <= 30000:
+                raise HTTPException(422, detail="webhook_timeout_ms must be between 1000 and 30000")
+            payload["webhook_timeout_ms"] = t
     if "webhook_events" in payload:
         events = payload["webhook_events"]
         if events is not None:
@@ -104,6 +108,7 @@ def _validate_webhook_patch(payload: dict) -> None:
                         f"allowed: {', '.join(WEBHOOK_EVENT_TYPES)}"
                     ),
                 )
+            payload["webhook_events"] = list(dict.fromkeys(events))
 
 
 async def _validate_folder_id(session, folder_id, workspace_id: str) -> None:
@@ -209,14 +214,15 @@ async def publish_agent(
     return agent_to_dict(agent)
 
 
-def _sample_call_payload(agent: Agent) -> dict:
-    """A representative, non-persisted call object for the Test button.
+def _sample_call(agent: Agent) -> Call:
+    """A representative, non-persisted Call for the Test button.
 
-    Built via call_to_dict so the sample stays byte-identical in shape to a real
-    delivery. Marked with metadata so consumers can drop it if they choose.
+    Fed through webhooks.build_event_body so the signed sample stays byte-
+    identical in shape to a real delivery. Marked with metadata so consumers can
+    drop it if they choose.
     """
     ts = now_ms()
-    sample = Call(
+    return Call(
         call_id="call_test_webhook",
         workspace_id=agent.workspace_id,
         agent_id=agent.agent_id,
@@ -240,7 +246,6 @@ def _sample_call_payload(agent: Agent) -> dict:
             "in_voicemail": False,
         },
     )
-    return call_to_dict(sample)
 
 
 @router.post("/test-agent-webhook/{agent_id}")
@@ -273,18 +278,9 @@ async def test_agent_webhook(
     if key is None:
         raise HTTPException(409, detail="No active API key available to sign the webhook")
 
-    raw_body = json.dumps(
-        {"event": body.event, "call": _sample_call_payload(agent)}, separators=(",", ":")
-    )
-    timeout = (
-        body.webhook_timeout_ms / 1000
-        if body.webhook_timeout_ms
-        else (
-            agent.webhook_timeout_ms / 1000
-            if agent.webhook_timeout_ms
-            else get_settings().webhook_timeout_seconds
-        )
-    )
+    raw_body = webhooks.build_event_body(body.event, _sample_call(agent))
+    timeout_ms = body.webhook_timeout_ms or agent.webhook_timeout_ms or DEFAULT_WEBHOOK_TIMEOUT_MS
+    timeout = timeout_ms / 1000
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
