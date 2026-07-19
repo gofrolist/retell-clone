@@ -29,6 +29,9 @@ contacts CRUD (`/list-contacts`, `/create-contact`, `/update-contact/{id}`,
 
 Known intentional deviations (all additive or dashboard-only):
 - `call_analysis` carries **both** `summary` and `call_summary` (consumer compat).
+- `POST /v2/create-web-call` returns an Arhiteq-extra field `livekit_server_url`
+  (the browser-reachable LiveKit signalling URL to connect to; additive,
+  contract-safe).
 - Optional `agent_id` on create-agent / create-chat-agent (id-preserving import).
 - Auth additionally accepts Arhiteq dashboard session JWTs (Google Sign-In).
 - Not implemented (no consumer, dashboard-only in Retell): SIP-trunk

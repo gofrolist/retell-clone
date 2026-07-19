@@ -75,3 +75,11 @@ def test_tool_call_object_shape() -> None:
         "retell_llm_dynamic_variables": {"phone": "+15551234567", "first_name": "John"},
         "metadata": {"lead_id": "L1"},
     }
+
+
+def test_web_call_config_parses_type_and_direction() -> None:
+    cfg = CallConfig.from_dict({**CONFIG_DICT, "call_type": "web_call", "direction": "inbound"})
+    assert cfg.call_type == "web_call"
+    assert cfg.direction == "inbound"
+    # Web calls resolve {{call_type}} like any call.
+    assert cfg.resolution_variables()["call_type"] == "web_call"

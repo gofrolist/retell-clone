@@ -412,13 +412,32 @@ def _is_sip_participant(p: rtc.RemoteParticipant) -> bool:
     return any(key.startswith("sip.") for key in p.attributes)
 
 
-async def _wait_for_sip_participant(ctx: JobContext, timeout: float) -> rtc.RemoteParticipant:
+def _is_web_participant(p: rtc.RemoteParticipant) -> bool:
+    """Browser callers join as STANDARD participants (agents/egress excluded)."""
+    return getattr(p, "kind", None) == rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD
+
+
+async def _wait_for_participant(
+    ctx: JobContext,
+    predicate: Callable[[rtc.RemoteParticipant], bool],
+    kind: rtc.ParticipantKind.ValueType,
+    timeout: float,
+) -> rtc.RemoteParticipant:
     for p in ctx.room.remote_participants.values():
-        if _is_sip_participant(p):
+        if predicate(p):
             return p
-    return await asyncio.wait_for(
-        ctx.wait_for_participant(kind=rtc.ParticipantKind.PARTICIPANT_KIND_SIP),
-        timeout,
+    return await asyncio.wait_for(ctx.wait_for_participant(kind=kind), timeout)
+
+
+async def _wait_for_sip_participant(ctx: JobContext, timeout: float) -> rtc.RemoteParticipant:
+    return await _wait_for_participant(
+        ctx, _is_sip_participant, rtc.ParticipantKind.PARTICIPANT_KIND_SIP, timeout
+    )
+
+
+async def _wait_for_web_participant(ctx: JobContext, timeout: float) -> rtc.RemoteParticipant:
+    return await _wait_for_participant(
+        ctx, _is_web_participant, rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD, timeout
     )
 
 
@@ -712,7 +731,11 @@ async def entrypoint(ctx: JobContext) -> None:
 
     if participant is None:
         try:
-            participant = await _wait_for_sip_participant(ctx, timeout=DIAL_TIMEOUT_S)
+            if cfg.call_type == "web_call":
+                # Web test call: the caller is a browser, not a SIP leg.
+                participant = await _wait_for_web_participant(ctx, timeout=DIAL_TIMEOUT_S)
+            else:
+                participant = await _wait_for_sip_participant(ctx, timeout=DIAL_TIMEOUT_S)
         except asyncio.TimeoutError:
             participant = None
 

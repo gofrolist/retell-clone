@@ -27,6 +27,10 @@ router = APIRouter(tags=["calls"])
 
 E164 = re.compile(r"^\+[1-9]\d{6,14}$")
 
+# Warn once per process when create-web-call has to fall back to the internal
+# LiveKit URL because ARHITEQ_PUBLIC_LIVEKIT_URL is unset.
+_warned_public_livekit_fallback = False
+
 
 def _coerce_dynamic_variables(raw: dict | None) -> dict[str, str]:
     # Stored verbatim: arbitrary string keys, values coerced to strings
@@ -84,6 +88,7 @@ async def create_phone_call(
 
     # Retell signals a full channel pool with 429; consumers match
     # /concurrency limit|429/i and re-queue instead of marking the lead failed.
+    await concurrency.expire_stale_web_calls(session, api_key.workspace_id)
     if await concurrency.count_live_calls(session, api_key.workspace_id) >= (
         concurrency.CONCURRENCY_LIMIT
     ):
@@ -233,6 +238,15 @@ async def create_web_call(
 ):
     agent = await _get_workspace_agent(session, api_key.workspace_id, body.agent_id)
 
+    # Same 429 gate as create-phone-call — consumers match /concurrency limit|429/i.
+    await concurrency.expire_stale_web_calls(session, api_key.workspace_id)
+    if await concurrency.count_live_calls(session, api_key.workspace_id) >= (
+        concurrency.CONCURRENCY_LIMIT
+    ):
+        raise HTTPException(
+            429, detail=f"Concurrency limit reached ({concurrency.CONCURRENCY_LIMIT})"
+        )
+
     call = Call(
         call_id=new_call_id(),
         workspace_id=api_key.workspace_id,
@@ -249,7 +263,32 @@ async def create_web_call(
     call.access_token = _web_call_access_token(call)
     session.add(call)
     await session.commit()
-    return web_call_to_dict(call)
+
+    try:
+        await telephony.dispatch_agent(call)
+    except Exception:
+        log.exception("failed to dispatch agent for web call %s", call.call_id)
+        call.call_status = "error"
+        call.disconnection_reason = "error_telephony"
+        await session.commit()
+        raise HTTPException(500, detail="Failed to start web call agent")
+
+    settings = get_settings()
+    public_url = settings.public_livekit_url
+    if not public_url:
+        global _warned_public_livekit_fallback
+        if not _warned_public_livekit_fallback:
+            _warned_public_livekit_fallback = True
+            log.warning(
+                "ARHITEQ_PUBLIC_LIVEKIT_URL is not set; returning LIVEKIT_URL (%s) as "
+                "livekit_server_url — fine for local dev, wrong (and internal) anywhere else",
+                settings.livekit_url,
+            )
+        public_url = settings.livekit_url
+    out = web_call_to_dict(call)
+    # Arhiteq extra (contract-safe): where the browser should connect.
+    out["livekit_server_url"] = public_url
+    return out
 
 
 @router.patch("/v2/update-call/{call_id}")

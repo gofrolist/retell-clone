@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     # (env: ARHITEQ_SIP_OUTBOUND_TRUNK_ID, matching the Helm chart).
     sip_outbound_trunk_id: str = ""
 
+    # Browser-reachable LiveKit URL (wss://livekit.<domain>), returned to web
+    # call clients; the in-cluster livekit_url is not reachable from browsers.
+    # Empty = fall back to livekit_url (right for local dev). The Helm chart
+    # already sets ARHITEQ_PUBLIC_LIVEKIT_URL in the api configmap.
+    public_livekit_url: str = ""
+
     # Google GenAI (Gemini) for post-call analysis.
     # In prod the worker authenticates to Vertex via ADC (workload identity),
     # not an API key; the analysis client mirrors that when use_vertexai is set
