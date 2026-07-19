@@ -179,6 +179,22 @@ export interface RawAgent {
   [key: string]: unknown;
 }
 
+export interface ChatMessage {
+  message_id: string;
+  role: "agent" | "user";
+  content: string;
+  created_timestamp: number;
+}
+
+export interface RawChat {
+  chat_id: string;
+  agent_id: string;
+  chat_status: string;
+  message_with_tool_calls: ChatMessage[];
+  transcript: string;
+  [key: string]: unknown;
+}
+
 export interface RawLlm {
   llm_id: string;
   model: string;
@@ -520,6 +536,19 @@ export const api = {
       `/test-agent-webhook/${encodeURIComponent(agentId)}`,
       post(body),
     ),
+
+  // ------------------------------------------------------ Test LLM (text chat)
+  createChat: (agentId: string) =>
+    request<RawChat>("/create-chat", post({ agent_id: agentId })),
+
+  createChatCompletion: (chatId: string, content: string) =>
+    request<{ messages: ChatMessage[] }>(
+      "/create-chat-completion",
+      post({ chat_id: chatId, content }),
+    ),
+
+  endChat: (chatId: string) =>
+    request<void>(`/end-chat/${encodeURIComponent(chatId)}`, { method: "PATCH" }),
 
   updateLlm: (llmId: string, body: Partial<RawLlm>) =>
     request<RawLlm>(`/update-retell-llm/${encodeURIComponent(llmId)}`, patch(body)),
