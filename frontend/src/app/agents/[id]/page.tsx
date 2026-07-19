@@ -270,8 +270,13 @@ export default function AgentEditorPage({
           </Accordion>
           <Accordion icon={Webhook} title="Webhook Settings">
             <WebhookSection
+              agentId={agent.agent_id}
               url={view.webhook_url ?? ""}
               onUrl={(v) => setAgentField("webhook_url", v || null)}
+              timeoutMs={num(view.webhook_timeout_ms, 5000)}
+              onTimeoutMs={(v) => setAgentField("webhook_timeout_ms", v)}
+              events={view.webhook_events ?? null}
+              onEvents={(v) => setAgentField("webhook_events", v)}
             />
           </Accordion>
           <Accordion icon={Plug} title="MCPs">

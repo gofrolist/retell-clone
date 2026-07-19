@@ -49,7 +49,14 @@ def assert_url_safe(url: str) -> None:
     if not host:
         raise UnsafeUrlError("missing host")
     try:
-        infos = socket.getaddrinfo(host, parsed.port or 443, proto=socket.IPPROTO_TCP)
+        # `.port` raises ValueError on a malformed authority (bad/out-of-range
+        # port); surface it as an UnsafeUrlError so callers get a clean reject
+        # rather than an unhandled 500.
+        port = parsed.port or 443
+    except ValueError as exc:
+        raise UnsafeUrlError(f"invalid port in {url!r}: {exc}") from exc
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as exc:
         raise UnsafeUrlError(f"cannot resolve {host}: {exc}") from exc
     for info in infos:

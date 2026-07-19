@@ -7,9 +7,9 @@ fields we don't process, and rejecting them would break drop-in compatibility.
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .models import Agent, Call, PhoneNumber, RetellLLM
+from .models import WEBHOOK_EVENT_TYPES, Agent, Call, PhoneNumber, RetellLLM
 
 
 class CompatModel(BaseModel):
@@ -78,6 +78,10 @@ class CreateAgentRequest(CompatModel):
     ambient_sound: str | None = None
     ambient_sound_volume: float | None = None
     webhook_url: str | None = None
+    # Per-agent webhook overrides (dashboard "Webhook Settings"). Additive to
+    # Retell's shape. timeout: null = platform default; events: null = all.
+    webhook_timeout_ms: int | None = Field(default=None, ge=1000, le=30000)
+    webhook_events: list[str] | None = None
     boosted_keywords: list[str] | None = None
     pronunciation_dictionary: list[dict[str, Any]] | None = None
     normalize_for_speech: bool | None = None
@@ -93,6 +97,41 @@ class CreateAgentRequest(CompatModel):
     opt_out_sensitive_data_storage: bool | None = None
     # Arhiteq extra (dashboard folders); absent from Retell's public API.
     folder_id: str | None = None
+
+    @field_validator("webhook_events")
+    @classmethod
+    def _known_events(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        unknown = [e for e in v if e not in WEBHOOK_EVENT_TYPES]
+        if unknown:
+            raise ValueError(
+                f"unknown webhook event(s): {', '.join(unknown)}; "
+                f"allowed: {', '.join(WEBHOOK_EVENT_TYPES)}"
+            )
+        # De-dupe while preserving the caller's order.
+        return list(dict.fromkeys(v))
+
+
+class TestWebhookRequest(CompatModel):
+    """Dashboard "Test" button (Arhiteq-extra; not in Retell's public API).
+
+    webhook_url lets the dashboard validate the on-screen, possibly-unsaved URL
+    before the user saves; null falls back to the agent/workspace URL.
+    """
+
+    webhook_url: str | None = None
+    webhook_timeout_ms: int | None = Field(default=None, ge=1000, le=30000)
+    event: str = "call_ended"
+
+    @field_validator("event")
+    @classmethod
+    def _known_event(cls, v: str) -> str:
+        if v not in WEBHOOK_EVENT_TYPES:
+            raise ValueError(
+                f"unknown webhook event: {v}; allowed: {', '.join(WEBHOOK_EVENT_TYPES)}"
+            )
+        return v
 
 
 class CreatePhoneNumberRequest(CompatModel):
@@ -218,6 +257,8 @@ def agent_to_dict(agent: Agent) -> dict[str, Any]:
         "ambient_sound": agent.ambient_sound,
         "ambient_sound_volume": agent.ambient_sound_volume,
         "webhook_url": agent.webhook_url,
+        "webhook_timeout_ms": agent.webhook_timeout_ms,
+        "webhook_events": agent.webhook_events,
         "boosted_keywords": agent.boosted_keywords,
         "pronunciation_dictionary": agent.pronunciation_dictionary,
         "normalize_for_speech": agent.normalize_for_speech,

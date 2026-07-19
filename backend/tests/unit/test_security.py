@@ -36,6 +36,13 @@ class TestAssertUrlSafe:
         with pytest.raises(security.UnsafeUrlError):
             security.assert_url_safe("https:///path-only")
 
+    def test_rejects_malformed_port_as_unsafe(self, strict_settings):
+        # A bad/out-of-range port makes urlparse().port raise ValueError; it must
+        # surface as UnsafeUrlError, not an unhandled crash (500 for callers).
+        for url in ("https://example.com:99999/hook", "https://example.com:notaport/hook"):
+            with pytest.raises(security.UnsafeUrlError):
+                security.assert_url_safe(url)
+
     def test_allows_public_ip(self, strict_settings):
         security.assert_url_safe("https://8.8.8.8/webhook")
 
