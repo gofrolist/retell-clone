@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.10.0](https://github.com/gofrolist/retell-clone/compare/v0.9.0...v0.10.0) (2026-07-19)
+
+
+### Features
+
+* **dashboard:** Retell-style agent Webhook Settings (test, timeout, events) ([#121](https://github.com/gofrolist/retell-clone/issues/121)) ([6d77c92](https://github.com/gofrolist/retell-clone/commit/6d77c92b3863ecc5db83faeb395bf4c77a738515))
+* **dashboard:** Retell-style LLM model picker dropdown ([#117](https://github.com/gofrolist/retell-clone/issues/117)) ([39b05c1](https://github.com/gofrolist/retell-clone/commit/39b05c141bafd5e95084a05f3dc7595b18e6155d))
+* **dashboard:** working Test LLM chat in the agent editor ([#122](https://github.com/gofrolist/retell-clone/issues/122)) ([40ab965](https://github.com/gofrolist/retell-clone/commit/40ab965c7eb29b394c7e379ad4c45f7c54db0822))
+* live Test Audio web calls in the agent editor ([#123](https://github.com/gofrolist/retell-clone/issues/123)) ([d646241](https://github.com/gofrolist/retell-clone/commit/d646241ecd311b4c7941e50e0e5dac58006f3a48))
+
+
+### Bug Fixes
+
+* **dashboard:** collapse Functions panel by default on agent page ([#120](https://github.com/gofrolist/retell-clone/issues/120)) ([df23af4](https://github.com/gofrolist/retell-clone/commit/df23af4255d8a929b5753503e77c2739a23bda65))
+* **deps:** relax google-auth to stay compatible with google-genai ([#119](https://github.com/gofrolist/retell-clone/issues/119)) ([893ab00](https://github.com/gofrolist/retell-clone/commit/893ab008fee197e04f88d64e15b3cf2f23397b0d))
+
 ## [0.9.0](https://github.com/gofrolist/retell-clone/compare/v0.8.4...v0.9.0) (2026-07-18)
 
 
