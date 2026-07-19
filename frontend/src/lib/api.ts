@@ -195,6 +195,15 @@ export interface RawChat {
   [key: string]: unknown;
 }
 
+export interface RawWebCall {
+  call_id: string;
+  access_token: string;
+  /** Arhiteq extra: browser-reachable LiveKit signalling URL. */
+  livekit_server_url: string;
+  agent_id: string;
+  call_status: string;
+}
+
 export interface RawLlm {
   llm_id: string;
   model: string;
@@ -549,6 +558,10 @@ export const api = {
 
   endChat: (chatId: string) =>
     request<void>(`/end-chat/${encodeURIComponent(chatId)}`, { method: "PATCH" }),
+
+  // --------------------------------------------------- Test Audio (web call)
+  createWebCall: (agentId: string) =>
+    request<RawWebCall>("/v2/create-web-call", post({ agent_id: agentId })),
 
   updateLlm: (llmId: string, body: Partial<RawLlm>) =>
     request<RawLlm>(`/update-retell-llm/${encodeURIComponent(llmId)}`, patch(body)),
