@@ -3,7 +3,7 @@
 import { PillTabs } from "@/components/ui/Tabs";
 import { api, type ChatMessage } from "@/lib/api";
 import { formatDuration } from "@/lib/utils";
-import { Room, RoomEvent, Track } from "livekit-client";
+import { DisconnectReason, Room, RoomEvent, Track } from "livekit-client";
 import { Braces, Info, Loader2, Mic, Phone, Play, RotateCcw, Send } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
@@ -162,9 +162,19 @@ function AudioTab({ agentId }: { agentId: string }) {
       room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
         setAgentSpeaking(speakers.some((p) => p.identity !== room.localParticipant.identity));
       });
-      // The worker left (it ended the call server-side): leave too.
-      room.on(RoomEvent.ParticipantDisconnected, () => void room.disconnect());
-      room.on(RoomEvent.Disconnected, () => {
+      // The worker left (it ended the call server-side): leave too. Scoped to
+      // the agent — this event also fires for other participant churn (egress
+      // recorder, reconnect blips), which must not tear down the call.
+      room.on(RoomEvent.ParticipantDisconnected, (p) => {
+        if (p.isAgent) void room.disconnect();
+      });
+      room.on(RoomEvent.ConnectionStateChanged, (s) => {
+        console.info(`[TestAudio] connection state: ${s}`);
+      });
+      room.on(RoomEvent.Disconnected, (reason) => {
+        console.warn(
+          `[TestAudio] room disconnected: ${reason !== undefined ? (DisconnectReason[reason] ?? reason) : "unknown"}`,
+        );
         // Only clear the ref if it still points at this room — an orphaned
         // loser from a double-start (or a room replaced after this one was
         // superseded) must not stomp on a surviving call's ref.
@@ -178,22 +188,36 @@ function AudioTab({ agentId }: { agentId: string }) {
       // Register before connect so the agent's greeting is never missed.
       room.registerTextStreamHandler("lk.transcription", (reader, participantInfo) => {
         void (async () => {
-          const text = await reader.readAll();
-          if (!text) return;
           const attrs = reader.info.attributes ?? {};
           const id = attrs["lk.segment_id"] ?? reader.info.id;
           const trackId = attrs["lk.transcribed_track_id"] ?? "";
           const isUser =
             room.localParticipant.audioTrackPublications.has(trackId) ||
             participantInfo.identity === room.localParticipant.identity;
-          setSegments((prev) => {
-            const seg: TranscriptSegment = { id, role: isUser ? "user" : "agent", text };
-            const i = prev.findIndex((s) => s.id === id);
-            if (i < 0) return [...prev, seg];
-            const next = prev.slice();
-            next[i] = seg;
-            return next;
-          });
+          // Render incrementally: readAll() would hold the bubble until the
+          // segment completes, so a call cut mid-utterance showed nothing (or,
+          // on abort, silently truncated text). Streaming keeps every word
+          // that actually arrived on screen as it arrives.
+          let text = "";
+          try {
+            for await (const chunk of reader) {
+              text += chunk;
+              if (!text) continue;
+              const seg: TranscriptSegment = { id, role: isUser ? "user" : "agent", text };
+              setSegments((prev) => {
+                const i = prev.findIndex((s) => s.id === id);
+                if (i < 0) return [...prev, seg];
+                const next = prev.slice();
+                next[i] = seg;
+                return next;
+              });
+            }
+          } catch (e) {
+            // Expected on room disconnect mid-utterance (keep the partial text
+            // already rendered), but also reached by real stream/protocol
+            // errors — log so a broken transcript is diagnosable.
+            console.warn(`[TestAudio] transcription stream ${id} ended abnormally:`, e);
+          }
         })();
       });
       const call = await api.createWebCall(agentId);
