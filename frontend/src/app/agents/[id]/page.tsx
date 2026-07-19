@@ -198,7 +198,7 @@ export default function AgentEditorPage({
 
         {/* middle: settings accordions */}
         <div className="min-w-[320px] flex-[0.8] overflow-y-auto rounded-xl border border-line bg-card">
-          <Accordion icon={LayoutGrid} title="Functions" defaultOpen>
+          <Accordion icon={LayoutGrid} title="Functions">
             {llmView ? (
               <FunctionsSection
                 tools={llmView.general_tools ?? []}
