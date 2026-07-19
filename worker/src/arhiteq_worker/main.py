@@ -634,6 +634,13 @@ def _wire_session_events(
             state.set_reason_once("user_hangup")
         elif "error" in reason:
             state.set_reason_once("error_unknown")
+        else:
+            return
+        # The session died out from under the job (caller hung up or the model
+        # errored) — nothing else ends the job in this path: the agent
+        # participant itself keeps the room alive, so without delete_room the
+        # job and any egress recording run on and the call never finalizes.
+        _spawn(runtime.end_call(state.disconnection_reason or "user_hangup"))
 
     # TODO: metrics_collected is deprecated in livekit-agents ≥1.3 in favor
     # of session_usage_updated / ChatMessage.metrics; it still fires today
