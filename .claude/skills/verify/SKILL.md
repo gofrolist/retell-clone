@@ -35,8 +35,16 @@ cd frontend && NEXT_PUBLIC_API_KEY=<seeded key> bun run dev
 - Agent editor lives at `/agents/{agent_id}`.
 
 ## Worker
-A live voice call needs LiveKit + SIP + provider keys — not driveable
-locally. Closest end-to-end: fetch a real `GET /internal/calls/{id}/config`
+A live PHONE call needs SIP — not driveable locally. But a live WEB call is:
+`make worker` (needs `uv sync` in worker/ first, plus the Google/Cartesia
+keys in root .env), then agent editor → Test Audio → Run Test talks to the
+real agent through local LiveKit. Gemini Live models need
+`ARHITEQ_GEMINI_LIVE_LOCATION=us-east1` in root .env (Vertex serves Live
+native-audio regionally; `global` fails with 1008).
+Mic permission is a native Chrome prompt — browser automation can't click
+it, and synthetic (JS/CDP) clicks may not carry the user activation
+getUserMedia wants: have the human click Run Test.
+No-SIP fallback: fetch a real `GET /internal/calls/{id}/config`
 payload from the running API and replay the worker's exact chain
 (`CallConfig.from_dict` → `resolution_variables()` → `resolve_template`)
 in `uv run --only-group dev python` inside `worker/`.
