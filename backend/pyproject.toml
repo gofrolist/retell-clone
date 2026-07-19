@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Arhiteq control plane — Retell-compatible voice agent API"
 requires-python = ">=3.14"
 dependencies = [
-    "fastapi>=0.115",
+    "fastapi>=0.139.2",
     "uvicorn[standard]>=0.51.0",
     "sqlalchemy[asyncio]>=2.0.51",
     "asyncpg>=0.29",
