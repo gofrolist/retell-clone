@@ -2,15 +2,17 @@
 
 import logging
 import os
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import require_internal_token
 from ..db import get_session, session_factory
-from ..models import Agent, Call, PhoneNumber, RetellLLM, now_ms
+from ..models import Agent, Call, Contact, PhoneNumber, RetellLLM, now_ms
 from ..schemas import agent_to_dict, llm_to_dict
 from ..services import inbound as inbound_svc
 from ..services import webhooks
@@ -91,6 +93,41 @@ async def get_agent_config(
     }
 
 
+async def _contact_variables(
+    session: AsyncSession, workspace_id: str, from_number: str
+) -> dict[str, str]:
+    """first_name/last_name of the caller's contact, if one exists.
+
+    Merged BENEATH webhook-supplied dynamic variables — the contact only
+    fills gaps, so consumers that already send first_name are unaffected.
+    """
+    # Contacts are stored as typed in the dashboard, so match the common
+    # spellings of the caller id: E.164, bare digits, and the NANP national
+    # form with or without the leading 1.
+    digits = re.sub(r"\D", "", from_number)
+    candidates = {from_number}
+    if digits:
+        candidates.update({digits, "+" + digits})
+        if len(digits) == 10:
+            candidates.update({"1" + digits, "+1" + digits})
+        if len(digits) == 11 and digits.startswith("1"):
+            candidates.add(digits[1:])
+    contact = (
+        await session.scalars(
+            select(Contact)
+            .where(Contact.workspace_id == workspace_id, Contact.phone_number.in_(candidates))
+            .limit(1)
+        )
+    ).first()
+    if contact is None:
+        return {}
+    return {
+        key: value
+        for key, value in (("first_name", contact.first_name), ("last_name", contact.last_name))
+        if value
+    }
+
+
 class InboundResolveRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     from_number: str
@@ -109,6 +146,8 @@ async def resolve_inbound(
     override_agent_id, dyn_vars = await inbound_svc.resolve_inbound(
         number, body.from_number, body.to_number, _function_secret()
     )
+    contact_vars = await _contact_variables(session, number.workspace_id, body.from_number)
+    dyn_vars = {**contact_vars, **dyn_vars}
     agent_id = override_agent_id or number.inbound_agent_id
     if not agent_id:
         raise HTTPException(404, detail=f"No inbound agent for {body.to_number}")
