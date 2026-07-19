@@ -83,15 +83,18 @@ function AudioTab({ agentId }: { agentId: string }) {
 
   // Hang up when the panel goes away (page navigation). Null the ref first so
   // any in-flight start() sees it change and knows the call was cancelled.
-  useEffect(
-    () => () => {
+  // The flag must be re-armed on setup: StrictMode runs mount → cleanup →
+  // remount on the same instance, and a stuck-true flag silently disables
+  // every future start().
+  useEffect(() => {
+    unmountedRef.current = false;
+    return () => {
       unmountedRef.current = true;
       const room = roomRef.current;
       roomRef.current = null;
       void room?.disconnect();
-    },
-    [],
-  );
+    };
+  }, []);
 
   const hangUp = () => void roomRef.current?.disconnect();
 
