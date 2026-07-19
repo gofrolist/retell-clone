@@ -57,6 +57,14 @@ function AudioTab({ agentId }: { agentId: string }) {
   const [elapsed, setElapsed] = useState(0);
   const [agentSpeaking, setAgentSpeaking] = useState(false);
   const roomRef = useRef<Room | null>(null);
+  // Synchronous re-entrancy guard: set at the top of start(), before any
+  // await, so a rapid double-click on "Run Test" can't spin up two Rooms —
+  // state alone can't close this window since both clicks share a render.
+  const startingRef = useRef(false);
+  // Flips true in the unmount cleanup so a start() continuation resumed
+  // after the panel is gone knows to bail instead of connecting a call
+  // nobody can hang up.
+  const unmountedRef = useRef(false);
   const audioRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -73,12 +81,24 @@ function AudioTab({ agentId }: { agentId: string }) {
     return () => clearInterval(t);
   }, [phase]);
 
-  // Hang up when the panel goes away (page navigation).
-  useEffect(() => () => void roomRef.current?.disconnect(), []);
+  // Hang up when the panel goes away (page navigation). Null the ref first so
+  // any in-flight start() sees it change and knows the call was cancelled.
+  useEffect(
+    () => () => {
+      unmountedRef.current = true;
+      const room = roomRef.current;
+      roomRef.current = null;
+      void room?.disconnect();
+    },
+    [],
+  );
 
   const hangUp = () => void roomRef.current?.disconnect();
 
   const start = async () => {
+    // Bail out synchronously if a call is already starting or live.
+    if (startingRef.current || roomRef.current) return;
+    startingRef.current = true;
     setError(null);
     setSegments([]);
     setElapsed(0);
@@ -87,7 +107,13 @@ function AudioTab({ agentId }: { agentId: string }) {
       const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
       mic.getTracks().forEach((t) => t.stop());
     } catch {
+      startingRef.current = false;
       setError("Microphone access is blocked — allow it in the browser and retry.");
+      return;
+    }
+    // The panel unmounted while the preflight was pending: nothing to attach to.
+    if (unmountedRef.current) {
+      startingRef.current = false;
       return;
     }
     setPhase("connecting");
@@ -103,9 +129,15 @@ function AudioTab({ agentId }: { agentId: string }) {
       // The worker left (it ended the call server-side): leave too.
       room.on(RoomEvent.ParticipantDisconnected, () => void room.disconnect());
       room.on(RoomEvent.Disconnected, () => {
-        roomRef.current = null;
+        // Only clear the ref if it still points at this room — an orphaned
+        // loser from a double-start (or a room replaced after this one was
+        // superseded) must not stomp on a surviving call's ref.
+        if (roomRef.current === room) roomRef.current = null;
+        startingRef.current = false;
         setAgentSpeaking(false);
         setPhase((p) => (p === "idle" ? p : "ended"));
+        // Drop attached remote audio elements so "Run Again" starts clean.
+        audioRef.current?.replaceChildren();
       });
       // Register before connect so the agent's greeting is never missed.
       room.registerTextStreamHandler("lk.transcription", (reader, participantInfo) => {
@@ -129,11 +161,26 @@ function AudioTab({ agentId }: { agentId: string }) {
         })();
       });
       const call = await api.createWebCall(agentId);
+      // Cancelled (unmount, or superseded) while awaiting the call: leave quietly.
+      if (roomRef.current !== room) {
+        void room.disconnect();
+        return;
+      }
       await room.connect(call.livekit_server_url, call.access_token);
+      if (roomRef.current !== room) {
+        void room.disconnect();
+        return;
+      }
       await room.localParticipant.setMicrophoneEnabled(true);
+      if (roomRef.current !== room) {
+        void room.disconnect();
+        return;
+      }
+      startingRef.current = false;
       setPhase("active");
     } catch (e) {
-      roomRef.current = null;
+      if (roomRef.current === room) roomRef.current = null;
+      startingRef.current = false;
       void room.disconnect();
       setPhase("idle");
       setError(e instanceof Error ? e.message : "Failed to start the test call");
