@@ -2,6 +2,7 @@
 
 import { PillTabs } from "@/components/ui/Tabs";
 import { api, type ChatMessage } from "@/lib/api";
+import { formatDuration } from "@/lib/utils";
 import { Room, RoomEvent, Track } from "livekit-client";
 import { Braces, Info, Loader2, Mic, Phone, Play, RotateCcw, Send } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -43,6 +44,20 @@ export default function TestPanel({ agentId }: { agentId: string }) {
 
 type CallPhase = "idle" | "preflight" | "connecting" | "active" | "ended";
 
+/** Shared chat-bubble styling for the Audio transcript and the LLM chat. */
+const bubbleClass = (isUser: boolean) =>
+  isUser
+    ? "ml-auto max-w-[85%] rounded-2xl rounded-br-sm bg-accent px-3.5 py-2 text-[13px] text-white"
+    : "mr-auto max-w-[85%] rounded-2xl rounded-bl-sm border border-line bg-app px-3.5 py-2 text-[13px] text-ink whitespace-pre-wrap";
+
+/** Keep the newest content in view whenever `dep` changes. */
+function useAutoScrollToBottom(ref: React.RefObject<HTMLDivElement | null>, dep: unknown) {
+  useEffect(() => {
+    const el = ref.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, [ref, dep]);
+}
+
 interface TranscriptSegment {
   id: string;
   role: "agent" | "user";
@@ -69,10 +84,7 @@ function AudioTab({ agentId }: { agentId: string }) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Keep the newest transcript line in view.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, [segments]);
+  useAutoScrollToBottom(scrollRef, segments);
 
   // Call timer.
   useEffect(() => {
@@ -96,7 +108,19 @@ function AudioTab({ agentId }: { agentId: string }) {
     };
   }, []);
 
-  const hangUp = () => void roomRef.current?.disconnect();
+  const hangUp = () => {
+    const room = roomRef.current;
+    if (!room) return;
+    // Null the ref FIRST: an in-flight start() sees the change at its next
+    // guard and bails — Room.disconnect() alone is a no-op before connect
+    // has begun, so the ref change is the real cancellation signal.
+    roomRef.current = null;
+    startingRef.current = false;
+    void room.disconnect();
+    setAgentSpeaking(false);
+    setPhase("ended");
+    audioRef.current?.replaceChildren();
+  };
 
   const start = async () => {
     // Bail out synchronously if a call is already starting or live.
@@ -124,6 +148,13 @@ function AudioTab({ agentId }: { agentId: string }) {
     setPhase("connecting");
     const room = new Room();
     roomRef.current = room;
+    // Cancelled (hang-up, unmount, or superseded) while awaiting: leave quietly.
+    const bailIfCancelled = () => {
+      if (roomRef.current === room) return false;
+      startingRef.current = false;
+      void room.disconnect();
+      return true;
+    };
     try {
       room.on(RoomEvent.TrackSubscribed, (track) => {
         if (track.kind === Track.Kind.Audio) audioRef.current?.appendChild(track.attach());
@@ -166,37 +197,24 @@ function AudioTab({ agentId }: { agentId: string }) {
         })();
       });
       const call = await api.createWebCall(agentId);
-      // Cancelled (unmount, or superseded) while awaiting the call: leave quietly.
-      if (roomRef.current !== room) {
-        startingRef.current = false;
-        void room.disconnect();
-        return;
-      }
+      if (bailIfCancelled()) return;
       await room.connect(call.livekit_server_url, call.access_token);
-      if (roomRef.current !== room) {
-        startingRef.current = false;
-        void room.disconnect();
-        return;
-      }
+      if (bailIfCancelled()) return;
       await room.localParticipant.setMicrophoneEnabled(true);
-      if (roomRef.current !== room) {
-        startingRef.current = false;
-        void room.disconnect();
-        return;
-      }
+      if (bailIfCancelled()) return;
       startingRef.current = false;
       setPhase("active");
     } catch (e) {
-      if (roomRef.current === room) roomRef.current = null;
+      const cancelled = roomRef.current !== room;
+      if (!cancelled) roomRef.current = null;
       startingRef.current = false;
       void room.disconnect();
+      if (cancelled) return; // deliberate hang-up or unmount — not a failure
       setPhase("idle");
       setError(e instanceof Error ? e.message : "Failed to start the test call");
     }
   };
 
-  const mins = String(Math.floor(elapsed / 60)).padStart(2, "0");
-  const secs = String(elapsed % 60).padStart(2, "0");
   const inCall = phase === "connecting" || phase === "active";
 
   return (
@@ -206,14 +224,7 @@ function AudioTab({ agentId }: { agentId: string }) {
       {segments.length > 0 || phase === "active" ? (
         <div ref={scrollRef} className="min-h-0 grow space-y-3 overflow-y-auto px-4 py-4">
           {segments.map((m) => (
-            <div
-              key={m.id}
-              className={
-                m.role === "user"
-                  ? "ml-auto max-w-[85%] rounded-2xl rounded-br-sm bg-accent px-3.5 py-2 text-[13px] text-white"
-                  : "mr-auto max-w-[85%] rounded-2xl rounded-bl-sm border border-line bg-app px-3.5 py-2 text-[13px] text-ink whitespace-pre-wrap"
-              }
-            >
+            <div key={m.id} className={bubbleClass(m.role === "user")}>
               {m.text}
             </div>
           ))}
@@ -242,7 +253,7 @@ function AudioTab({ agentId }: { agentId: string }) {
           {inCall ? (
             <>
               <span className="text-xs tabular-nums text-sub">
-                {phase === "connecting" ? "Connecting…" : `${mins}:${secs}`}
+                {phase === "connecting" ? "Connecting…" : formatDuration(elapsed * 1000)}
               </span>
               <button
                 onClick={hangUp}
@@ -291,11 +302,9 @@ function LlmChat({ agentId }: { agentId: string }) {
     chatIdRef.current = chatId;
   }, [chatId]);
 
-  // Keep the newest message (and the typing indicator) in view.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, [messages, sending]);
+  // Keep the newest message (and the typing indicator) in view: the dep moves
+  // by a half step when the indicator appears so both changes trigger a scroll.
+  useAutoScrollToBottom(scrollRef, sending ? messages.length + 0.5 : messages.length);
 
   // Auto-grow the textarea up to the max height so multi-line input is visible.
   useEffect(() => {
@@ -377,14 +386,7 @@ function LlmChat({ agentId }: { agentId: string }) {
           </div>
         ) : (
           messages.map((m) => (
-            <div
-              key={m.message_id}
-              className={
-                m.role === "user"
-                  ? "ml-auto max-w-[85%] rounded-2xl rounded-br-sm bg-accent px-3.5 py-2 text-[13px] text-white"
-                  : "mr-auto max-w-[85%] rounded-2xl rounded-bl-sm border border-line bg-app px-3.5 py-2 text-[13px] text-ink whitespace-pre-wrap"
-              }
-            >
+            <div key={m.message_id} className={bubbleClass(m.role === "user")}>
               {m.content}
             </div>
           ))
