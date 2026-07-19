@@ -1,6 +1,7 @@
 """register-phone-call, create-web-call, update-call, delete-call,
 rerun-call-analysis."""
 
+from arhiteq_api.config import get_settings
 from tests.conftest import AGENT_ID, AUTH_HEADERS, OTHER_AUTH_HEADERS
 
 
@@ -97,6 +98,40 @@ async def test_create_web_call_unknown_agent_is_non_2xx(client):
         "/v2/create-web-call", headers=AUTH_HEADERS, json={"agent_id": "agent_nope"}
     )
     assert resp.status_code == 422
+
+
+async def test_create_web_call_dispatches_agent(client, monkeypatch):
+    dispatched: list[str] = []
+
+    async def _fake_dispatch(call):
+        dispatched.append(call.call_id)
+
+    monkeypatch.setattr("arhiteq_api.services.telephony.dispatch_agent", _fake_dispatch)
+    resp = await client.post(
+        "/v2/create-web-call", headers=AUTH_HEADERS, json={"agent_id": AGENT_ID}
+    )
+    assert resp.status_code == 201
+    assert dispatched == [resp.json()["call_id"]]
+
+
+async def test_create_web_call_returns_livekit_server_url(client):
+    resp = await client.post(
+        "/v2/create-web-call", headers=AUTH_HEADERS, json={"agent_id": AGENT_ID}
+    )
+    assert resp.status_code == 201
+    # public_livekit_url is unset in tests, so the field falls back to livekit_url.
+    assert resp.json()["livekit_server_url"] == get_settings().livekit_url
+
+
+async def test_create_web_call_dispatch_failure_is_500(client, monkeypatch):
+    async def _boom(call):
+        raise RuntimeError("livekit down")
+
+    monkeypatch.setattr("arhiteq_api.services.telephony.dispatch_agent", _boom)
+    resp = await client.post(
+        "/v2/create-web-call", headers=AUTH_HEADERS, json={"agent_id": AGENT_ID}
+    )
+    assert resp.status_code == 500
 
 
 # ── update-call ─────────────────────────────────────────────────────────────

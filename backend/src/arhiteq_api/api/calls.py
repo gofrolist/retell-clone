@@ -249,7 +249,21 @@ async def create_web_call(
     call.access_token = _web_call_access_token(call)
     session.add(call)
     await session.commit()
-    return web_call_to_dict(call)
+
+    try:
+        await telephony.dispatch_agent(call)
+    except Exception:
+        log.exception("failed to dispatch agent for web call %s", call.call_id)
+        call.call_status = "error"
+        call.disconnection_reason = "error_telephony"
+        await session.commit()
+        raise HTTPException(500, detail="Failed to start web call agent")
+
+    settings = get_settings()
+    out = web_call_to_dict(call)
+    # Arhiteq extra (contract-safe): where the browser should connect.
+    out["livekit_server_url"] = settings.public_livekit_url or settings.livekit_url
+    return out
 
 
 @router.patch("/v2/update-call/{call_id}")

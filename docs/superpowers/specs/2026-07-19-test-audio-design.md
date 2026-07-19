@@ -52,13 +52,12 @@ Native LiveKit end-to-end. Alternatives rejected:
    endpoint returns non-2xx (the call cannot work without it).
 2. Returns the frozen Retell `V2WebCallResponse` shape **plus one extra
    field** (extra fields are contract-safe): the browser-reachable LiveKit
-   URL, from new setting `ARHITEQ_LIVEKIT_PUBLIC_URL`, defaulting to
+   URL, from new setting `ARHITEQ_PUBLIC_LIVEKIT_URL`, defaulting to
    `LIVEKIT_URL` so local dev (`ws://localhost:7880`) needs no new config.
 
 Field name: `livekit_server_url`.
 
-Operator note: prod must set `ARHITEQ_LIVEKIT_PUBLIC_URL=wss://livekit.arhiteq.com`
-in the `infra/private` values (not committed here).
+Operator note: the Helm chart already sets `ARHITEQ_PUBLIC_LIVEKIT_URL` in the api configmap.
 
 Tests: contract tests keep asserting the frozen Retell fields; new tests
 assert dispatch is created (mocked LiveKit API) and the extra field is

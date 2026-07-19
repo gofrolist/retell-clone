@@ -143,6 +143,7 @@ def _stub_telephony(monkeypatch):
         return None
 
     monkeypatch.setattr("arhiteq_api.services.telephony.start_outbound_call", _noop)
+    monkeypatch.setattr("arhiteq_api.services.telephony.dispatch_agent", _noop)
 
 
 OTHER_API_KEY = "key_other_0123456789abcdef0123456789ab"
