@@ -8,8 +8,14 @@ from httpx import Response
 from sqlalchemy import update
 
 from arhiteq_api.db import session_factory
-from arhiteq_api.models import PhoneNumber
-from tests.conftest import AGENT_ID, COMPANION_AGENT_ID, FROM_NUMBER, INTERNAL_HEADERS
+from arhiteq_api.models import Contact, PhoneNumber
+from tests.conftest import (
+    AGENT_ID,
+    COMPANION_AGENT_ID,
+    FROM_NUMBER,
+    INTERNAL_HEADERS,
+    WORKSPACE_ID,
+)
 
 ROUTER_URL = "https://consumer.example/functions/v1/inbound-call-router"
 CALLER = "+18155141544"
@@ -88,6 +94,74 @@ async def test_no_webhook_uses_default_agent(client):
     resp = await _resolve(client)
     assert resp.status_code == 200
     assert resp.json()["agent"]["agent_id"] == COMPANION_AGENT_ID
+
+
+async def _add_contact(
+    phone: str = CALLER,
+    first_name: str = "Evgenii",
+    last_name: str = "Vasilenko",
+    workspace_id: str = WORKSPACE_ID,
+):
+    async with session_factory()() as session:
+        session.add(
+            Contact(
+                workspace_id=workspace_id,
+                phone_number=phone,
+                first_name=first_name,
+                last_name=last_name,
+            )
+        )
+        await session.commit()
+
+
+async def test_contact_fills_name_variables_without_webhook(client):
+    await _set_inbound_webhook(None)
+    await _add_contact()
+    resp = await _resolve(client)
+    assert resp.status_code == 200
+    dyn = resp.json()["dynamic_variables"]
+    assert dyn["first_name"] == "Evgenii"
+    assert dyn["last_name"] == "Vasilenko"
+
+
+@respx.mock
+async def test_webhook_variables_win_over_contact(client):
+    await _set_inbound_webhook()
+    await _add_contact()
+    respx.post(ROUTER_URL).mock(
+        return_value=Response(
+            200,
+            json={"call_inbound": {"dynamic_variables": {"first_name": "John"}}},
+        )
+    )
+    resp = await _resolve(client)
+    dyn = resp.json()["dynamic_variables"]
+    assert dyn["first_name"] == "John"  # webhook wins
+    assert dyn["last_name"] == "Vasilenko"  # contact fills the gap
+
+
+async def test_contact_matches_non_e164_stored_number(client):
+    await _set_inbound_webhook(None)
+    # NANP number saved without the +1 country code still matches the caller
+    await _add_contact(phone=CALLER.removeprefix("+1"))
+    resp = await _resolve(client)
+    assert resp.json()["dynamic_variables"]["first_name"] == "Evgenii"
+
+
+async def test_contact_in_other_workspace_is_ignored(client, other_workspace):
+    await _set_inbound_webhook(None)
+    await _add_contact(workspace_id=other_workspace)
+    resp = await _resolve(client)
+    assert "first_name" not in resp.json()["dynamic_variables"]
+
+
+async def test_empty_contact_names_are_omitted(client):
+    await _set_inbound_webhook(None)
+    await _add_contact(first_name="", last_name="")
+    resp = await _resolve(client)
+    dyn = resp.json()["dynamic_variables"]
+    assert "first_name" not in dyn
+    assert "last_name" not in dyn
 
 
 @respx.mock
