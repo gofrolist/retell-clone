@@ -10,6 +10,7 @@ from ..auth import require_api_key
 from ..config import get_settings
 from ..db import get_session
 from ..models import Agent, ApiKey, Chat, RetellLLM, now_ms
+from ..services.gemini import build_genai_client, genai_credentials_available
 from ..services.template_variables import ChatVariables, resolve_template
 from ..schemas_extra import (
     CreateChatCompletionRequest,
@@ -57,9 +58,9 @@ def _resolve_chat_prompt(general_prompt: str, chat: Chat) -> str:
 
 
 async def _agent_reply(chat: Chat, session: AsyncSession) -> str:
-    """Generate the agent's next turn via Gemini; canned reply without a key."""
+    """Generate the agent's next turn via Gemini; canned reply without creds."""
     settings = get_settings()
-    if not settings.google_api_key:
+    if not genai_credentials_available(settings):
         return _FALLBACK_REPLY
 
     general_prompt = "You are a helpful assistant."
@@ -74,9 +75,7 @@ async def _agent_reply(chat: Chat, session: AsyncSession) -> str:
         for m in (chat.messages or [])
     )
     try:
-        from google import genai
-
-        client = genai.Client(api_key=settings.google_api_key)
+        client = build_genai_client(settings)
         resp = await client.aio.models.generate_content(
             model=settings.analysis_model,
             contents=_CHAT_PROMPT.format(general_prompt=general_prompt, history=history),

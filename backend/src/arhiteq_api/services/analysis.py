@@ -12,6 +12,7 @@ import logging
 from typing import Any
 
 from ..config import get_settings
+from .gemini import build_genai_client, genai_credentials_available
 from .metrics import ANALYSIS_RUNS
 
 log = logging.getLogger(__name__)
@@ -55,7 +56,7 @@ async def analyze_call(
     settings = get_settings()
     # Vertex mode authenticates via ADC (workload identity); API-key mode needs
     # a key. Skip (fallback) only when neither credential path is available.
-    if not transcript or not (settings.google_genai_use_vertexai or settings.google_api_key):
+    if not transcript or not genai_credentials_available(settings):
         result = _fallback(in_voicemail_hint)
         if disconnection_reason == "machine_detected":
             result["in_voicemail"] = True
@@ -63,13 +64,7 @@ async def analyze_call(
         return result
 
     try:
-        from google import genai
-
-        if settings.google_genai_use_vertexai:
-            # ADC + GOOGLE_CLOUD_{PROJECT,LOCATION} from env, same as the worker.
-            client = genai.Client(vertexai=True)
-        else:
-            client = genai.Client(api_key=settings.google_api_key)
+        client = build_genai_client(settings)
         prompt = _PROMPT.format(
             transcript=transcript[:30000],
             direction=direction,

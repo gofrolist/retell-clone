@@ -1,6 +1,10 @@
 """Chat surface: create-chat, get-chat, list-chat, create-chat-completion,
 end-chat."""
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+from arhiteq_api.config import Settings
 from tests.conftest import AGENT_ID, AUTH_HEADERS
 
 
@@ -45,6 +49,35 @@ def test_chat_prompt_resolves_system_and_user_variables():
     assert "{{current_time}}" not in resolved
     assert "{{session_duration}}" not in resolved
     assert "1 minute 3" in resolved  # ~90s elapsed, tolerant of test runtime
+
+
+async def test_chat_completion_uses_vertex_client_when_configured(client, monkeypatch):
+    # In Vertex mode the reply must go through genai.Client(vertexai=True) (ADC),
+    # not the Developer API — mirrors the analysis path so the two can't drift.
+    from arhiteq_api.api import chats
+
+    chat = await _create_chat(client)
+    monkeypatch.setattr(
+        chats,
+        "get_settings",
+        lambda: Settings(google_genai_use_vertexai=True, analysis_model="gemini-x"),
+    )
+    fake = SimpleNamespace(
+        aio=SimpleNamespace(
+            models=SimpleNamespace(
+                generate_content=AsyncMock(return_value=SimpleNamespace(text="Hi from Vertex!"))
+            )
+        )
+    )
+    with patch("google.genai.Client", return_value=fake) as mk:
+        resp = await client.post(
+            "/create-chat-completion",
+            headers=AUTH_HEADERS,
+            json={"chat_id": chat["chat_id"], "content": "hello"},
+        )
+    assert resp.status_code == 201
+    assert resp.json()["messages"][0]["content"] == "Hi from Vertex!"
+    mk.assert_called_once_with(vertexai=True)
 
 
 async def test_create_chat_unknown_agent_is_non_2xx(client):
