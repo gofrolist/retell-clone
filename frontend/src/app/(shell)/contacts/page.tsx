@@ -5,13 +5,24 @@ import { Field, TextInput } from "@/components/ui/Field";
 import LoadError from "@/components/ui/LoadError";
 import Modal from "@/components/ui/Modal";
 import RowMenu from "@/components/ui/RowMenu";
+import Select from "@/components/ui/Select";
 import Toggle from "@/components/ui/Toggle";
 import { api } from "@/lib/api";
-import type { Contact } from "@/lib/types";
 import { useApiData } from "@/lib/useApiData";
 import { cn, formatDate, truncateId } from "@/lib/utils";
 import { Contact as ContactIcon, Plug2, Plus, X } from "lucide-react";
 import { useState } from "react";
+
+const TIMEZONE_OPTIONS = [
+  { value: "", label: "Not set" },
+  { value: "America/New_York", label: "Eastern (New York)" },
+  { value: "America/Chicago", label: "Central (Chicago)" },
+  { value: "America/Denver", label: "Mountain (Denver)" },
+  { value: "America/Phoenix", label: "Arizona (Phoenix)" },
+  { value: "America/Los_Angeles", label: "Pacific (Los Angeles)" },
+  { value: "America/Anchorage", label: "Alaska (Anchorage)" },
+  { value: "Pacific/Honolulu", label: "Hawaii (Honolulu)" },
+];
 
 function AddContactModal({
   open,
@@ -25,6 +36,7 @@ function AddContactModal({
   const [phoneNumber, setPhoneNumber] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
+  const [timezone, setTimezone] = useState("");
   const [externalId, setExternalId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -33,6 +45,7 @@ function AddContactModal({
     setPhoneNumber("");
     setFirstName("");
     setLastName("");
+    setTimezone("");
     setExternalId("");
     setError(null);
     onClose();
@@ -46,6 +59,7 @@ function AddContactModal({
         phone_number: phoneNumber.trim(),
         first_name: firstName.trim(),
         last_name: lastName.trim(),
+        ...(timezone ? { timezone } : {}),
         ...(externalId.trim() ? { external_id: externalId.trim() } : {}),
       });
       onCreated();
@@ -90,6 +104,9 @@ function AddContactModal({
             <TextInput value={lastName} onChange={(e) => setLastName(e.target.value)} />
           </Field>
         </div>
+        <Field label="Timezone" hint="Used to answer time questions and time the calls right.">
+          <Select value={timezone} onChange={setTimezone} options={TIMEZONE_OPTIONS} className="w-full" />
+        </Field>
         <Field label="External ID" hint="Optional — your CRM or system identifier.">
           <TextInput value={externalId} onChange={(e) => setExternalId(e.target.value)} />
         </Field>
@@ -114,6 +131,18 @@ export default function ContactsPage() {
     );
     try {
       await api.updateContact(id, { do_not_call: v });
+    } catch {
+      setContacts(prev); // revert optimistic update
+    }
+  };
+
+  const setTimezone = async (id: string, v: string) => {
+    const prev = contacts;
+    setContacts((cur) =>
+      (cur ?? []).map((c) => (c.contact_id === id ? { ...c, timezone: v || null } : c)),
+    );
+    try {
+      await api.updateContact(id, { timezone: v || null });
     } catch {
       setContacts(prev); // revert optimistic update
     }
@@ -174,6 +203,7 @@ export default function ContactsPage() {
                 "Phone Number",
                 "First Name",
                 "Last Name",
+                "Timezone",
                 "Contact ID",
                 "Related Conversations",
                 "Latest Conversation",
@@ -190,21 +220,21 @@ export default function ContactsPage() {
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={9} className="px-4 py-10 text-center text-[13px] text-sub">
+                <td colSpan={10} className="px-4 py-10 text-center text-[13px] text-sub">
                   Loading contacts…
                 </td>
               </tr>
             )}
             {!loading && error && (
               <tr>
-                <td colSpan={9} className="px-4 py-10 text-center text-[13px]">
+                <td colSpan={10} className="px-4 py-10 text-center text-[13px]">
                   <LoadError error={error} onRetry={reload} />
                 </td>
               </tr>
             )}
             {!loading && !error && contacts.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-4 py-10 text-center text-[13px] text-sub">
+                <td colSpan={10} className="px-4 py-10 text-center text-[13px] text-sub">
                   No contacts yet. Add one to enrich call data with names.
                 </td>
               </tr>
@@ -214,6 +244,13 @@ export default function ContactsPage() {
                 <td className="py-3 pl-4 pr-3 tabular-nums">{c.phone_number}</td>
                 <td className="px-3 py-3">{c.first_name}</td>
                 <td className="px-3 py-3">{c.last_name}</td>
+                <td className="px-3 py-3">
+                  <Select
+                    value={c.timezone ?? ""}
+                    onChange={(v) => setTimezone(c.contact_id, v)}
+                    options={TIMEZONE_OPTIONS}
+                  />
+                </td>
                 <td className="px-3 py-3 font-mono text-[12.5px] text-sub">
                   {truncateId(c.contact_id, 16)}
                 </td>

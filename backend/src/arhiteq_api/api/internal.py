@@ -96,7 +96,7 @@ async def get_agent_config(
 async def _contact_variables(
     session: AsyncSession, workspace_id: str, from_number: str
 ) -> dict[str, str]:
-    """first_name/last_name of the caller's contact, if one exists.
+    """first_name/last_name/user_timezone of the caller's contact, if one exists.
 
     Merged BENEATH webhook-supplied dynamic variables — the contact only
     fills gaps, so consumers that already send first_name are unaffected.
@@ -123,7 +123,13 @@ async def _contact_variables(
         return {}
     return {
         key: value
-        for key, value in (("first_name", contact.first_name), ("last_name", contact.last_name))
+        for key, value in (
+            ("first_name", contact.first_name),
+            ("last_name", contact.last_name),
+            # Consumer prompts read {{user_timezone}} (Retell's nested
+            # {{current_time_{{user_timezone}}}} pattern).
+            ("user_timezone", contact.timezone),
+        )
         if value
     }
 
@@ -149,8 +155,10 @@ async def resolve_inbound(
     # Caller facts fill gaps beneath webhook-supplied variables: {{phone}} is
     # used in tool arguments by consumer prompts, so without a webhook it must
     # still resolve to the caller id. An empty-string webhook value never
-    # erases a known caller fact.
-    base_vars = {"phone": body.from_number}
+    # erases a known caller fact. user_timezone always resolves so prompts can
+    # rely on {{current_time_{{user_timezone}}}} (Retell's un-suffixed time
+    # variables default to America/Los_Angeles too).
+    base_vars = {"phone": body.from_number, "user_timezone": "America/Los_Angeles"}
     base_vars.update(await _contact_variables(session, number.workspace_id, body.from_number))
     merged = dict(base_vars)
     merged.update({k: v for k, v in dyn_vars.items() if v != "" or k not in base_vars})

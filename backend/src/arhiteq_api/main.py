@@ -64,6 +64,10 @@ def _apply_column_backfills(sync_conn) -> None:
             text(f"ALTER TABLE calls ADD COLUMN {guard}collected_dynamic_variables JSON")
         )
 
+    contact_cols = {c["name"] for c in inspect(sync_conn).get_columns("contacts")}
+    if "timezone" not in contact_cols:
+        sync_conn.execute(text(f"ALTER TABLE contacts ADD COLUMN {guard}timezone VARCHAR(64)"))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

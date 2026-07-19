@@ -100,6 +100,7 @@ async def _add_contact(
     phone: str = CALLER,
     first_name: str = "Evgenii",
     last_name: str = "Vasilenko",
+    timezone: str | None = None,
     workspace_id: str = WORKSPACE_ID,
 ):
     async with session_factory()() as session:
@@ -109,6 +110,7 @@ async def _add_contact(
                 phone_number=phone,
                 first_name=first_name,
                 last_name=last_name,
+                timezone=timezone,
             )
         )
         await session.commit()
@@ -122,6 +124,21 @@ async def test_contact_fills_name_variables_without_webhook(client):
     dyn = resp.json()["dynamic_variables"]
     assert dyn["first_name"] == "Evgenii"
     assert dyn["last_name"] == "Vasilenko"
+
+
+async def test_contact_timezone_becomes_user_timezone(client):
+    await _set_inbound_webhook(None)
+    await _add_contact(timezone="America/New_York")
+    resp = await _resolve(client)
+    dyn = resp.json()["dynamic_variables"]
+    assert dyn["user_timezone"] == "America/New_York"
+
+
+async def test_user_timezone_defaults_when_contact_has_none(client):
+    await _set_inbound_webhook(None)
+    await _add_contact()
+    resp = await _resolve(client)
+    assert resp.json()["dynamic_variables"]["user_timezone"] == "America/Los_Angeles"
 
 
 async def test_phone_defaults_to_caller_id(client):

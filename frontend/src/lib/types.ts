@@ -154,6 +154,7 @@ export interface Contact {
   phone_number: string;
   first_name: string;
   last_name: string;
+  timezone?: string | null;
   related_conversations: number;
   latest_conversation: number; // ms epoch
   do_not_call: boolean;

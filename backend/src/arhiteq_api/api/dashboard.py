@@ -231,6 +231,7 @@ def _contact_to_dict(c: Contact, related: int = 0, latest: int | None = None) ->
         "phone_number": c.phone_number,
         "first_name": c.first_name,
         "last_name": c.last_name,
+        "timezone": c.timezone,
         "do_not_call": c.do_not_call,
         "external_id": c.external_id,
         "related_conversations": related,
@@ -242,6 +243,7 @@ class CreateContactRequest(CompatModel):
     phone_number: str
     first_name: str = ""
     last_name: str = ""
+    timezone: str | None = None
     do_not_call: bool = False
     external_id: str | None = None
 
@@ -298,7 +300,14 @@ async def update_contact(
     if contact is None or contact.workspace_id != api_key.workspace_id:
         raise HTTPException(404, detail="Contact not found")
     payload = await request.json()
-    for field in ("phone_number", "first_name", "last_name", "do_not_call", "external_id"):
+    for field in (
+        "phone_number",
+        "first_name",
+        "last_name",
+        "timezone",
+        "do_not_call",
+        "external_id",
+    ):
         if field in payload:
             setattr(contact, field, payload[field])
     await session.commit()
