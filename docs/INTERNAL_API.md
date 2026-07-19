@@ -19,8 +19,9 @@ The control plane looks up the DID, creates the call row, invokes the
 number's inbound webhook (Surface 2A, ≤9.5s timeout) and merges the response,
 falling back to the DID's default inbound agent on any error.
 Caller facts are merged beneath the webhook's dynamic variables: `phone`
-defaults to `from_number`, and a workspace contact matching `from_number`
-contributes `first_name`/`last_name`. Webhook values win, except that an
+defaults to `from_number`, `user_timezone` defaults to `America/Los_Angeles`,
+and a workspace contact matching `from_number` contributes
+`first_name`/`last_name`/`user_timezone`. Webhook values win, except that an
 empty-string webhook value never erases one of these caller facts.
 Returns `200` with the same shape as `/internal/calls/{call_id}/config`.
 `404` if the DID is unknown.

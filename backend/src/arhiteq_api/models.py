@@ -403,6 +403,9 @@ class Contact(Base):
     phone_number: Mapped[str] = mapped_column(String(20), index=True)
     first_name: Mapped[str] = mapped_column(String(255), default="")
     last_name: Mapped[str] = mapped_column(String(255), default="")
+    # IANA name, e.g. "America/Los_Angeles" — surfaces as {{user_timezone}}
+    # on inbound calls from this number.
+    timezone: Mapped[str | None] = mapped_column(String(64))
     do_not_call: Mapped[bool] = mapped_column(Boolean, default=False)
     external_id: Mapped[str | None] = mapped_column(String(255))
     created_at_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
