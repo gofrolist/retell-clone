@@ -8,6 +8,7 @@ what the consumer's `verify-webhook.ts` expects.
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -26,13 +27,42 @@ log = logging.getLogger(__name__)
 RETRY_BACKOFF_SECONDS = [10, 60, 300]
 
 
-async def resolve_webhook_url(session: AsyncSession, call: Call) -> str | None:
-    """Agent-level webhook URL wins over workspace-level (Retell semantics)."""
+@dataclass(frozen=True)
+class WebhookTarget:
+    """Resolved outbound-webhook config for one call."""
+
+    url: str
+    timeout_seconds: float
+    # None = deliver every event; a set restricts to those event names. Only the
+    # agent-level URL can subscribe; the workspace fallback always gets all.
+    events: frozenset[str] | None
+
+    def wants(self, event: str) -> bool:
+        return self.events is None or event in self.events
+
+
+async def resolve_webhook_target(session: AsyncSession, call: Call) -> WebhookTarget | None:
+    """Agent-level webhook (URL + overrides) wins over the workspace fallback."""
+    settings = get_settings()
     agent = await session.get(Agent, call.agent_id)
     if agent is not None and agent.webhook_url:
-        return agent.webhook_url
+        timeout = (
+            agent.webhook_timeout_ms / 1000
+            if agent.webhook_timeout_ms
+            else settings.webhook_timeout_seconds
+        )
+        events = frozenset(agent.webhook_events) if agent.webhook_events is not None else None
+        return WebhookTarget(agent.webhook_url, timeout, events)
     ws = await session.get(Workspace, call.workspace_id)
-    return ws.webhook_url if ws is not None else None
+    if ws is not None and ws.webhook_url:
+        return WebhookTarget(ws.webhook_url, settings.webhook_timeout_seconds, None)
+    return None
+
+
+async def resolve_webhook_url(session: AsyncSession, call: Call) -> str | None:
+    """Agent-level webhook URL wins over workspace-level (Retell semantics)."""
+    target = await resolve_webhook_target(session, call)
+    return target.url if target is not None else None
 
 
 async def signing_key(session: AsyncSession, workspace_id: str) -> str | None:
@@ -52,9 +82,13 @@ def build_event_body(event: str, call: Call) -> str:
 
 async def send_event(session: AsyncSession, call: Call, event: str) -> None:
     """Deliver one event, with in-process retries. Persists a delivery row."""
-    url = await resolve_webhook_url(session, call)
-    if not url:
+    target = await resolve_webhook_target(session, call)
+    if target is None:
         return
+    if not target.wants(event):
+        # Agent unsubscribed from this event in its Webhook Settings.
+        return
+    url = target.url
     try:
         # DNS resolution is blocking; keep it off the event loop.
         await run_in_threadpool(security.assert_url_safe, url)
@@ -73,7 +107,7 @@ async def send_event(session: AsyncSession, call: Call, event: str) -> None:
     await session.commit()
 
     settings = get_settings()
-    async with httpx.AsyncClient(timeout=settings.webhook_timeout_seconds) as client:
+    async with httpx.AsyncClient(timeout=target.timeout_seconds) as client:
         for attempt in range(settings.webhook_max_attempts):
             delivery.attempts = attempt + 1
             try:

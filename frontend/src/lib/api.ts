@@ -166,6 +166,8 @@ export interface RawAgent {
   version: number;
   is_published: boolean;
   webhook_url: string | null;
+  webhook_timeout_ms?: number | null;
+  webhook_events?: string[] | null;
   interruption_sensitivity: number;
   responsiveness: number;
   reminder_trigger_ms: number;
@@ -509,6 +511,15 @@ export const api = {
 
   updateAgent: (agentId: string, body: Partial<RawAgent>) =>
     request<RawAgent>(`/update-agent/${encodeURIComponent(agentId)}`, patch(body)),
+
+  testAgentWebhook: (
+    agentId: string,
+    body: { webhook_url?: string | null; webhook_timeout_ms?: number | null; event?: string },
+  ) =>
+    request<{ ok: boolean; status_code: number | null; error: string | null }>(
+      `/test-agent-webhook/${encodeURIComponent(agentId)}`,
+      post(body),
+    ),
 
   updateLlm: (llmId: string, body: Partial<RawLlm>) =>
     request<RawLlm>(`/update-retell-llm/${encodeURIComponent(llmId)}`, patch(body)),

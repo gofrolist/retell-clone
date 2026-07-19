@@ -40,6 +40,23 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+# The full Retell webhook-event catalog offered in the dashboard "Set Up"
+# selector. An agent's `webhook_events` subscription may only name events from
+# this set; null means "all of them". The worker currently *fires* only
+# call_started / call_ended / call_analyzed; the transcript/transfer events are
+# accepted for Retell parity and will deliver once the worker emits them.
+WEBHOOK_EVENT_TYPES = (
+    "call_started",
+    "call_ended",
+    "call_analyzed",
+    "transcript_updated",
+    "transfer_started",
+    "transfer_bridged",
+    "transfer_cancelled",
+    "transfer_ended",
+)
+
+
 class Base(DeclarativeBase):
     type_annotation_map = {dict[str, Any]: JSON, list[Any]: JSON}
 
@@ -189,6 +206,12 @@ class Agent(Base):
     ambient_sound: Mapped[str | None] = mapped_column(String(64))
     ambient_sound_volume: Mapped[float] = mapped_column(Float, default=1.0)
     webhook_url: Mapped[str | None] = mapped_column(Text)
+    # Per-agent overrides for outbound webhooks (Retell "Webhook Settings").
+    # webhook_timeout_ms: null -> platform default (config.webhook_timeout_seconds).
+    # webhook_events: null -> deliver every event; a list restricts to those
+    # event names (backward compatible — pre-existing agents stay null).
+    webhook_timeout_ms: Mapped[int | None] = mapped_column(BigInteger)
+    webhook_events: Mapped[list[Any] | None] = mapped_column(JSON)
     boosted_keywords: Mapped[list[Any] | None] = mapped_column(JSON)
     pronunciation_dictionary: Mapped[list[Any] | None] = mapped_column(JSON)
     normalize_for_speech: Mapped[bool] = mapped_column(Boolean, default=True)

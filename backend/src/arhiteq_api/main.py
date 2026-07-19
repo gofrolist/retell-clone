@@ -53,6 +53,10 @@ def _apply_column_backfills(sync_conn) -> None:
         sync_conn.execute(
             text("CREATE INDEX IF NOT EXISTS ix_agents_folder_id ON agents (folder_id)")
         )
+    if "webhook_timeout_ms" not in agent_cols:
+        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}webhook_timeout_ms BIGINT"))
+    if "webhook_events" not in agent_cols:
+        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}webhook_events JSON"))
 
     call_cols = {c["name"] for c in inspect(sync_conn).get_columns("calls")}
     if "collected_dynamic_variables" not in call_cols:
