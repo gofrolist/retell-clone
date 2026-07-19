@@ -286,7 +286,7 @@ export default function AgentEditorPage({
 
         {/* right: test panel */}
         <div className="min-w-[340px] flex-1 overflow-hidden rounded-xl border border-line bg-card">
-          <TestPanel />
+          <TestPanel agentId={agent.agent_id} />
         </div>
       </div>
     </div>
