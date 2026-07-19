@@ -146,8 +146,15 @@ async def resolve_inbound(
     override_agent_id, dyn_vars = await inbound_svc.resolve_inbound(
         number, body.from_number, body.to_number, _function_secret()
     )
-    contact_vars = await _contact_variables(session, number.workspace_id, body.from_number)
-    dyn_vars = {**contact_vars, **dyn_vars}
+    # Caller facts fill gaps beneath webhook-supplied variables: {{phone}} is
+    # used in tool arguments by consumer prompts, so without a webhook it must
+    # still resolve to the caller id. An empty-string webhook value never
+    # erases a known caller fact.
+    base_vars = {"phone": body.from_number}
+    base_vars.update(await _contact_variables(session, number.workspace_id, body.from_number))
+    merged = dict(base_vars)
+    merged.update({k: v for k, v in dyn_vars.items() if v != "" or k not in base_vars})
+    dyn_vars = merged
     agent_id = override_agent_id or number.inbound_agent_id
     if not agent_id:
         raise HTTPException(404, detail=f"No inbound agent for {body.to_number}")
