@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.10.1](https://github.com/gofrolist/retell-clone/compare/v0.10.0...v0.10.1) (2026-07-19)
+
+
+### Bug Fixes
+
+* default {{phone}} to caller id on inbound; empty webhook values never erase caller facts ([#127](https://github.com/gofrolist/retell-clone/issues/127)) ([3fca878](https://github.com/gofrolist/retell-clone/commit/3fca87801f61e515f5fdefbb90b4039b9dbc4a0c))
+* end the call job when the caller disconnects; harden Test Audio teardown ([#124](https://github.com/gofrolist/retell-clone/issues/124)) ([00fa1bb](https://github.com/gofrolist/retell-clone/commit/00fa1bbc436d83fdef1e9685d4d36229f80e1350))
+* resolve {{first_name}}/{{last_name}} from contacts on inbound calls ([#125](https://github.com/gofrolist/retell-clone/issues/125)) ([1821c00](https://github.com/gofrolist/retell-clone/commit/1821c00beb2b392a193b831a6d1430f6b7aedeea))
+
 ## [0.10.0](https://github.com/gofrolist/retell-clone/compare/v0.9.0...v0.10.0) (2026-07-19)
 
 
