@@ -124,6 +124,43 @@ async def test_contact_fills_name_variables_without_webhook(client):
     assert dyn["last_name"] == "Vasilenko"
 
 
+async def test_phone_defaults_to_caller_id(client):
+    await _set_inbound_webhook(None)
+    resp = await _resolve(client)
+    assert resp.json()["dynamic_variables"]["phone"] == CALLER
+
+
+@respx.mock
+async def test_webhook_phone_overrides_caller_id_default(client):
+    await _set_inbound_webhook()
+    respx.post(ROUTER_URL).mock(
+        return_value=Response(
+            200,
+            json={"call_inbound": {"dynamic_variables": {"phone": "+10000000000"}}},
+        )
+    )
+    resp = await _resolve(client)
+    assert resp.json()["dynamic_variables"]["phone"] == "+10000000000"
+
+
+@respx.mock
+async def test_empty_webhook_value_does_not_erase_contact_name(client):
+    await _set_inbound_webhook()
+    await _add_contact()
+    # Dispatchers send first_name:"" for nameless leads — the contact's name
+    # must survive, but empty values for unknown keys pass through verbatim.
+    respx.post(ROUTER_URL).mock(
+        return_value=Response(
+            200,
+            json={"call_inbound": {"dynamic_variables": {"first_name": "", "state": ""}}},
+        )
+    )
+    resp = await _resolve(client)
+    dyn = resp.json()["dynamic_variables"]
+    assert dyn["first_name"] == "Evgenii"
+    assert dyn["state"] == ""
+
+
 @respx.mock
 async def test_webhook_variables_win_over_contact(client):
     await _set_inbound_webhook()
