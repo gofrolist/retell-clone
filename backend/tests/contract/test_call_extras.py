@@ -133,6 +133,37 @@ async def test_create_web_call_dispatch_failure_is_500(client, monkeypatch):
     )
     assert resp.status_code == 500
 
+    # The 500 doesn't carry a call_id (the call was created then degraded), so
+    # look the row up via list-calls and confirm it was marked failed rather
+    # than left silently "registered".
+    rows = (
+        await client.post(
+            "/v2/list-calls",
+            headers=AUTH_HEADERS,
+            json={"filter_criteria": {"agent_id": [AGENT_ID]}, "limit": 10},
+        )
+    ).json()
+    assert len(rows) == 1
+    got = await client.get(f"/v2/get-call/{rows[0]['call_id']}", headers=AUTH_HEADERS)
+    assert got.status_code == 200
+    body = got.json()
+    assert body["call_status"] == "error"
+    assert body["disconnection_reason"] == "error_telephony"
+
+
+async def test_create_web_call_uses_public_livekit_url_when_set(client, monkeypatch):
+    from arhiteq_api.config import Settings
+
+    monkeypatch.setattr(
+        "arhiteq_api.api.calls.get_settings",
+        lambda: Settings(public_livekit_url="wss://livekit.example.com"),
+    )
+    resp = await client.post(
+        "/v2/create-web-call", headers=AUTH_HEADERS, json={"agent_id": AGENT_ID}
+    )
+    assert resp.status_code == 201
+    assert resp.json()["livekit_server_url"] == "wss://livekit.example.com"
+
 
 # ── update-call ─────────────────────────────────────────────────────────────
 
