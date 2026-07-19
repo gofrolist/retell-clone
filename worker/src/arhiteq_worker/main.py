@@ -34,7 +34,7 @@ from typing import Any
 
 import httpx
 from livekit import api, rtc
-from livekit.agents import Agent, AgentSession, JobContext, cli
+from livekit.agents import Agent, AgentSession, CloseReason, JobContext, RoomInputOptions, cli
 
 from arhiteq_worker import amd
 from arhiteq_worker import metrics
@@ -58,6 +58,7 @@ def _spawn(coro: Any) -> asyncio.Task[Any]:
     task = asyncio.create_task(coro)
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+    task.add_done_callback(_log_task_exception)
     return task
 
 
@@ -627,20 +628,19 @@ def _wire_session_events(
 
     @session.on("close")
     def _on_close(ev: Any) -> None:
+        # Reason attribution only — teardown is the framework's job:
+        # delete_room_on_close (session.start) deletes the room on ANY close,
+        # which ends the job and drives the finalize shutdown callback.
+        # CloseReason is a str enum, so compare members, never str(ev.reason)
+        # (that yields "CloseReason.PARTICIPANT_DISCONNECTED" and matches
+        # nothing).
         _cancel_goodbye_hangup()
         state.ended_at_ms = state.ended_at_ms or now_ms()
-        reason = str(getattr(ev, "reason", "") or "")
-        if "participant_disconnected" in reason:
+        reason = getattr(ev, "reason", None)
+        if reason == CloseReason.PARTICIPANT_DISCONNECTED:
             state.set_reason_once("user_hangup")
-        elif "error" in reason:
+        elif reason == CloseReason.ERROR:
             state.set_reason_once("error_unknown")
-        else:
-            return
-        # The session died out from under the job (caller hung up or the model
-        # errored) — nothing else ends the job in this path: the agent
-        # participant itself keeps the room alive, so without delete_room the
-        # job and any egress recording run on and the call never finalizes.
-        _spawn(runtime.end_call(state.disconnection_reason or "user_hangup"))
 
     # TODO: metrics_collected is deprecated in livekit-agents ≥1.3 in favor
     # of session_usage_updated / ChatMessage.metrics; it still fires today
@@ -880,7 +880,16 @@ async def entrypoint(ctx: JobContext) -> None:
     # session.start can raise here (the other two swallow their own failures),
     # so a genuine session failure still aborts the call.
     await asyncio.gather(
-        session.start(agent=agent, room=ctx.room),
+        session.start(
+            agent=agent,
+            room=ctx.room,
+            # Delete the room on ANY session close (caller hangup, model error,
+            # shutdown). Without this the agent participant keeps the room —
+            # and its egress recording — alive forever after a caller hangup,
+            # and the job never reaches finalize. Redundant deletes after an
+            # agent-initiated end_call are no-ops (NOT_FOUND is swallowed).
+            room_input_options=RoomInputOptions(delete_room_on_close=True),
+        ),
         _post_call_started(),
         _start_recording(lkapi, ctx.room.name, cfg.call_id, state),
     )

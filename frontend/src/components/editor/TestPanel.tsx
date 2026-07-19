@@ -212,9 +212,11 @@ function AudioTab({ agentId }: { agentId: string }) {
                 return next;
               });
             }
-          } catch {
-            // Stream aborted (room disconnected mid-utterance) — keep the
-            // partial text already rendered.
+          } catch (e) {
+            // Expected on room disconnect mid-utterance (keep the partial text
+            // already rendered), but also reached by real stream/protocol
+            // errors — log so a broken transcript is diagnosable.
+            console.warn(`[TestAudio] transcription stream ${id} ended abnormally:`, e);
           }
         })();
       });
