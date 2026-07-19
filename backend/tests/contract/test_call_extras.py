@@ -151,6 +151,55 @@ async def test_create_web_call_dispatch_failure_is_500(client, monkeypatch):
     assert body["disconnection_reason"] == "error_telephony"
 
 
+async def test_create_web_call_429_at_concurrency_limit(client, monkeypatch):
+    from arhiteq_api.api import concurrency
+
+    monkeypatch.setattr(concurrency, "CONCURRENCY_LIMIT", 1)
+    first = await client.post(
+        "/v2/create-web-call", headers=AUTH_HEADERS, json={"agent_id": AGENT_ID}
+    )
+    assert first.status_code == 201  # this registered call fills the only slot
+    resp = await client.post(
+        "/v2/create-web-call", headers=AUTH_HEADERS, json={"agent_id": AGENT_ID}
+    )
+    assert resp.status_code == 429
+    # Consumers match /concurrency limit|429/i — keep the wording.
+    assert "Concurrency limit" in resp.json()["detail"]
+
+
+async def test_stale_registered_web_call_is_swept_and_frees_the_slot(client, monkeypatch):
+    from sqlalchemy import update
+
+    import arhiteq_api.db as db_module
+    from arhiteq_api.api import concurrency
+    from arhiteq_api.models import Call, now_ms
+
+    monkeypatch.setattr(concurrency, "CONCURRENCY_LIMIT", 1)
+    stale = (
+        await client.post("/v2/create-web-call", headers=AUTH_HEADERS, json={"agent_id": AGENT_ID})
+    ).json()
+    # Backdate below the TTL cutoff: a dead worker never answered this call.
+    async with db_module.session_factory()() as session:
+        await session.execute(
+            update(Call)
+            .where(Call.call_id == stale["call_id"])
+            .values(created_at_ms=now_ms() - concurrency.WEB_CALL_REGISTERED_TTL_MS - 1)
+        )
+        await session.commit()
+
+    # Would 429 if the stale registered row still occupied the only slot.
+    resp = await client.post(
+        "/v2/create-web-call", headers=AUTH_HEADERS, json={"agent_id": AGENT_ID}
+    )
+    assert resp.status_code == 201
+
+    got = await client.get(f"/v2/get-call/{stale['call_id']}", headers=AUTH_HEADERS)
+    assert got.status_code == 200
+    body = got.json()
+    assert body["call_status"] == "not_connected"
+    assert body["disconnection_reason"] == "dial_no_answer"
+
+
 async def test_create_web_call_uses_public_livekit_url_when_set(client, monkeypatch):
     from arhiteq_api.config import Settings
 
