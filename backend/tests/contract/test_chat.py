@@ -80,6 +80,87 @@ async def test_chat_completion_uses_vertex_client_when_configured(client, monkey
     mk.assert_called_once_with(vertexai=True)
 
 
+async def test_chat_completion_flags_fallback_without_creds(client):
+    # Test env has no Gemini creds, so the reply is the canned placeholder and
+    # must be flagged is_fallback so the dashboard can warn instead of passing
+    # it off as a real answer.
+    chat = await _create_chat(client)
+    resp = await client.post(
+        "/create-chat-completion",
+        headers=AUTH_HEADERS,
+        json={"chat_id": chat["chat_id"], "content": "hi"},
+    )
+    assert resp.status_code == 201
+    assert resp.json().get("is_fallback") is True
+
+
+async def _set_llm_model(model: str) -> None:
+    from arhiteq_api.db import session_factory
+    from arhiteq_api.models import RetellLLM
+    from tests.conftest import LLM_ID
+
+    async with session_factory()() as s:
+        llm = await s.get(RetellLLM, LLM_ID)
+        llm.model = model
+        await s.commit()
+
+
+def _fake_genai(text: str):
+    fake = SimpleNamespace(
+        aio=SimpleNamespace(
+            models=SimpleNamespace(
+                generate_content=AsyncMock(return_value=SimpleNamespace(text=text))
+            )
+        )
+    )
+    return fake, patch("google.genai.Client", return_value=fake)
+
+
+async def test_chat_completion_uses_agent_text_model_and_no_fallback_flag(client, monkeypatch):
+    from arhiteq_api.api import chats
+
+    await _set_llm_model("gemini-3.5-flash")
+    chat = await _create_chat(client)
+    monkeypatch.setattr(
+        chats,
+        "get_settings",
+        lambda: Settings(google_genai_use_vertexai=True, analysis_model="gemini-analysis"),
+    )
+    fake, patcher = _fake_genai("real reply")
+    with patcher:
+        resp = await client.post(
+            "/create-chat-completion",
+            headers=AUTH_HEADERS,
+            json={"chat_id": chat["chat_id"], "content": "hi"},
+        )
+    body = resp.json()
+    assert body["messages"][0]["content"] == "real reply"
+    assert "is_fallback" not in body
+    # The agent's own text model is tested, not the platform analysis model.
+    assert fake.aio.models.generate_content.call_args.kwargs["model"] == "gemini-3.5-flash"
+
+
+async def test_chat_completion_live_model_falls_back_to_analysis_model(client, monkeypatch):
+    from arhiteq_api.api import chats
+
+    # Live (native-audio) models can't serve text generate_content.
+    await _set_llm_model("gemini-live-2.5-flash-native-audio")
+    chat = await _create_chat(client)
+    monkeypatch.setattr(
+        chats,
+        "get_settings",
+        lambda: Settings(google_genai_use_vertexai=True, analysis_model="gemini-analysis"),
+    )
+    fake, patcher = _fake_genai("ok")
+    with patcher:
+        await client.post(
+            "/create-chat-completion",
+            headers=AUTH_HEADERS,
+            json={"chat_id": chat["chat_id"], "content": "hi"},
+        )
+    assert fake.aio.models.generate_content.call_args.kwargs["model"] == "gemini-analysis"
+
+
 async def test_create_chat_unknown_agent_is_non_2xx(client):
     resp = await client.post("/create-chat", headers=AUTH_HEADERS, json={"agent_id": "agent_nope"})
     assert resp.status_code == 422

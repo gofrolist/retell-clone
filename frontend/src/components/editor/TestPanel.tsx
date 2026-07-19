@@ -28,7 +28,14 @@ export default function TestPanel({ agentId }: { agentId: string }) {
         </button>
       </div>
 
-      {tab === "audio" ? <AudioTab /> : <LlmChat agentId={agentId} />}
+      {/* Both tabs stay mounted (toggled with `hidden`) so the LLM chat keeps
+          its conversation when the user peeks at the Audio tab. */}
+      <div className={tab === "audio" ? "flex min-h-0 grow flex-col" : "hidden"}>
+        <AudioTab />
+      </div>
+      <div className={tab === "llm" ? "flex min-h-0 grow flex-col" : "hidden"}>
+        <LlmChat agentId={agentId} />
+      </div>
     </div>
   );
 }
@@ -72,6 +79,13 @@ function LlmChat({ agentId }: { agentId: string }) {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Mirror chatId into a ref so the unmount cleanup ends the right chat without
+  // re-subscribing the effect on every id change.
+  const chatIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    chatIdRef.current = chatId;
+  }, [chatId]);
 
   // Keep the newest message (and the typing indicator) in view.
   useEffect(() => {
@@ -79,15 +93,35 @@ function LlmChat({ agentId }: { agentId: string }) {
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, [messages, sending]);
 
+  // Auto-grow the textarea up to the max height so multi-line input is visible.
+  useEffect(() => {
+    const ta = inputRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight, 112)}px`;
+  }, [input]);
+
+  // End the chat when the panel goes away (page navigation) so test sessions
+  // don't linger as `ongoing` rows.
+  useEffect(
+    () => () => {
+      if (chatIdRef.current) api.endChat(chatIdRef.current).catch(() => {});
+    },
+    [],
+  );
+
   const send = async () => {
     const content = input.trim();
     if (!content || sending) return;
     setError(null);
     setInput("");
-    setMessages((m) => [
-      ...m,
-      { message_id: `local_${m.length}`, role: "user", content, created_timestamp: 0 },
-    ]);
+    const userMsg: ChatMessage = {
+      message_id: `local_${Date.now()}`,
+      role: "user",
+      content,
+      created_timestamp: 0,
+    };
+    setMessages((m) => [...m, userMsg]);
     setSending(true);
     try {
       // Create the chat lazily on the first turn so an untouched tab makes no
@@ -97,9 +131,19 @@ function LlmChat({ agentId }: { agentId: string }) {
         id = (await api.createChat(agentId)).chat_id;
         setChatId(id);
       }
-      const { messages: replies } = await api.createChatCompletion(id, content);
-      setMessages((m) => [...m, ...replies]);
+      const res = await api.createChatCompletion(id, content);
+      setMessages((m) => [...m, ...res.messages]);
+      if (res.is_fallback) {
+        setError(
+          "Showing a fallback reply — the agent's LLM isn't configured or the call failed. Check the backend logs / Gemini credentials.",
+        );
+      }
     } catch (e) {
+      // The optimistic user turn never reached the backend; drop it (so the
+      // local view can't drift from the chat's server history) and restore the
+      // text so the user can retry.
+      setMessages((m) => m.filter((x) => x !== userMsg));
+      setInput(content);
       setError(e instanceof Error ? e.message : "Failed to get a reply");
     } finally {
       setSending(false);
@@ -153,6 +197,7 @@ function LlmChat({ agentId }: { agentId: string }) {
         {error && <p className="mb-2 px-1 text-xs text-bad">{error}</p>}
         <div className="flex items-end gap-2">
           <textarea
+            ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {

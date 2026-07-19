@@ -542,7 +542,7 @@ export const api = {
     request<RawChat>("/create-chat", post({ agent_id: agentId })),
 
   createChatCompletion: (chatId: string, content: string) =>
-    request<{ messages: ChatMessage[] }>(
+    request<{ messages: ChatMessage[]; is_fallback?: boolean }>(
       "/create-chat-completion",
       post({ chat_id: chatId, content }),
     ),

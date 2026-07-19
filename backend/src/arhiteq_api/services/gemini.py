@@ -14,6 +14,18 @@ from typing import Any
 
 from ..config import Settings
 
+# Gemini Live (speech-to-speech) model id markers — kept in lockstep with the
+# worker's _LIVE_MODEL_MARKERS and the frontend's LIVE_MODEL_MARKERS. Live
+# models are realtime-audio only and can't serve text `generate_content`, so
+# text callers (e.g. Test-LLM chat) must not target them.
+_LIVE_MODEL_MARKERS = ("native-audio", "-live-", "flash-live", "live-2.5")
+
+
+def is_live_model(model: str | None) -> bool:
+    """True when a wire model id names a Gemini Live (realtime-audio) model."""
+    m = (model or "").lower()
+    return any(marker in m for marker in _LIVE_MODEL_MARKERS)
+
 
 def genai_credentials_available(settings: Settings) -> bool:
     """True when either credential path (Vertex ADC or an API key) is usable."""

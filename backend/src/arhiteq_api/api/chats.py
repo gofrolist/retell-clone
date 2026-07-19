@@ -10,7 +10,7 @@ from ..auth import require_api_key
 from ..config import get_settings
 from ..db import get_session
 from ..models import Agent, ApiKey, Chat, RetellLLM, now_ms
-from ..services.gemini import build_genai_client, genai_credentials_available
+from ..services.gemini import build_genai_client, genai_credentials_available, is_live_model
 from ..services.template_variables import ChatVariables, resolve_template
 from ..schemas_extra import (
     CreateChatCompletionRequest,
@@ -57,18 +57,30 @@ def _resolve_chat_prompt(general_prompt: str, chat: Chat) -> str:
     return resolve_template(general_prompt, variables)
 
 
-async def _agent_reply(chat: Chat, session: AsyncSession) -> str:
-    """Generate the agent's next turn via Gemini; canned reply without creds."""
+async def _agent_reply(chat: Chat, session: AsyncSession) -> tuple[str, bool]:
+    """Generate the agent's next turn via Gemini.
+
+    Returns (reply, used_fallback). used_fallback is True when the reply is the
+    canned placeholder (no creds, model error, or empty response) rather than a
+    real model turn — so the Test-LLM UI can flag it instead of passing a fake
+    answer off as success.
+    """
     settings = get_settings()
     if not genai_credentials_available(settings):
-        return _FALLBACK_REPLY
+        return _FALLBACK_REPLY, True
 
     general_prompt = "You are a helpful assistant."
+    # Test the agent's own text model; Live (native-audio) models can't serve
+    # generate_content, so fall back to the platform analysis model for those.
+    model = settings.analysis_model
     agent = await session.get(Agent, chat.agent_id)
     if agent and (llm_id := (agent.response_engine or {}).get("llm_id")):
         llm = await session.get(RetellLLM, llm_id)
-        if llm and llm.general_prompt:
-            general_prompt = _resolve_chat_prompt(llm.general_prompt, chat)
+        if llm:
+            if llm.general_prompt:
+                general_prompt = _resolve_chat_prompt(llm.general_prompt, chat)
+            if llm.model and not is_live_model(llm.model):
+                model = llm.model
 
     history = "".join(
         f"{'Agent' if m.get('role') == 'agent' else 'User'}: {m.get('content', '')}\n"
@@ -77,14 +89,15 @@ async def _agent_reply(chat: Chat, session: AsyncSession) -> str:
     try:
         client = build_genai_client(settings)
         resp = await client.aio.models.generate_content(
-            model=settings.analysis_model,
+            model=model,
             contents=_CHAT_PROMPT.format(general_prompt=general_prompt, history=history),
             config={"temperature": 0.3},
         )
-        return (resp.text or "").strip() or _FALLBACK_REPLY
+        text = (resp.text or "").strip()
+        return (text, False) if text else (_FALLBACK_REPLY, True)
     except Exception:  # noqa: BLE001
         log.exception("chat completion failed for %s", chat.chat_id)
-        return _FALLBACK_REPLY
+        return _FALLBACK_REPLY, True
 
 
 @router.post("/create-chat", status_code=201)
@@ -193,11 +206,17 @@ async def create_chat_completion(
 
     user_message = _message("user", body.content)
     chat.messages = (chat.messages or []) + [user_message]
-    agent_message = _message("agent", await _agent_reply(chat, session))
+    reply, used_fallback = await _agent_reply(chat, session)
+    agent_message = _message("agent", reply)
     chat.messages = chat.messages + [agent_message]
     await session.commit()
     # Retell returns only the messages generated during this completion.
-    return {"messages": [agent_message]}
+    # `is_fallback` is an Arhiteq-extra (additive) so the dashboard's Test-LLM
+    # tab can flag a canned reply rather than render it as a real answer.
+    result: dict[str, Any] = {"messages": [agent_message]}
+    if used_fallback:
+        result["is_fallback"] = True
+    return result
 
 
 @router.patch("/end-chat/{chat_id}", status_code=204)
