@@ -41,7 +41,7 @@ export default function TestPanel({ agentId }: { agentId: string }) {
   );
 }
 
-type CallPhase = "idle" | "connecting" | "active" | "ended";
+type CallPhase = "idle" | "preflight" | "connecting" | "active" | "ended";
 
 interface TranscriptSegment {
   id: string;
@@ -105,12 +105,14 @@ function AudioTab({ agentId }: { agentId: string }) {
     setError(null);
     setSegments([]);
     setElapsed(0);
+    setPhase("preflight");
     // Preflight mic permission: a denial must abort before any call exists.
     try {
       const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
       mic.getTracks().forEach((t) => t.stop());
     } catch {
       startingRef.current = false;
+      setPhase("idle");
       setError("Microphone access is blocked — allow it in the browser and retry.");
       return;
     }
@@ -166,16 +168,19 @@ function AudioTab({ agentId }: { agentId: string }) {
       const call = await api.createWebCall(agentId);
       // Cancelled (unmount, or superseded) while awaiting the call: leave quietly.
       if (roomRef.current !== room) {
+        startingRef.current = false;
         void room.disconnect();
         return;
       }
       await room.connect(call.livekit_server_url, call.access_token);
       if (roomRef.current !== room) {
+        startingRef.current = false;
         void room.disconnect();
         return;
       }
       await room.localParticipant.setMicrophoneEnabled(true);
       if (roomRef.current !== room) {
+        startingRef.current = false;
         void room.disconnect();
         return;
       }
@@ -247,6 +252,14 @@ function AudioTab({ agentId }: { agentId: string }) {
                 End Call
               </button>
             </>
+          ) : phase === "preflight" ? (
+            <button
+              disabled
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-line bg-white px-5 text-[13px] font-medium opacity-50 shadow-sm cursor-not-allowed"
+            >
+              <Loader2 className="size-3.5 animate-spin" />
+              Waiting for microphone…
+            </button>
           ) : (
             <button
               onClick={() => void start()}

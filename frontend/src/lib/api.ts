@@ -202,6 +202,7 @@ export interface RawWebCall {
   livekit_server_url: string;
   agent_id: string;
   call_status: string;
+  [key: string]: unknown;
 }
 
 export interface RawLlm {
