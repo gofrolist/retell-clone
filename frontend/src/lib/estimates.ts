@@ -226,6 +226,27 @@ export function estimateLatency(llm: RawLlm | null): Estimate {
   return total(rows);
 }
 
+// Representative input-token budget per turn for the model-picker cost badge.
+// Roughly a small system prompt plus early conversation history — a fixed
+// figure so each catalog model shows a stable, prompt-independent price.
+const DISPLAY_INPUT_TOKENS_PER_TURN = 1500;
+
+/**
+ * Prompt-independent per-minute LLM cost for the model picker badge (mirrors
+ * Retell's "$0.08/min" hint). This is the model's own token cost only — the
+ * real per-agent figure (with STT/TTS/infra) is `estimateCost`. Live models
+ * report their audio-minute cost.
+ */
+export function llmDisplayCostPerMin(model: string): number {
+  if (isLiveModel(model)) return GEMINI_LIVE_COST_PER_MIN;
+  const rate = getLlmRate(model);
+  return (
+    TURNS_PER_MIN *
+    ((DISPLAY_INPUT_TOKENS_PER_TURN / 1e6) * rate.inputPer1M +
+      (OUTPUT_TOKENS_PER_TURN / 1e6) * rate.outputPer1M)
+  );
+}
+
 export function formatUsdPerMin(v: number): string {
   return `${formatCost(v)}/min`;
 }
