@@ -165,6 +165,8 @@ export default function AgentEditorPage({
             <SelectorRow
               model={llmView?.model ?? ""}
               onModel={llm ? (v) => setLlmField("model", v) : undefined}
+              temperature={num(llmView?.model_temperature, 0)}
+              onTemperature={llm ? (v) => setLlmField("model_temperature", v) : undefined}
               voiceId={view.voice_id}
               onVoice={(v) => setAgentField("voice_id", v)}
               language={view.language}

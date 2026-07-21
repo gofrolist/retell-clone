@@ -2,13 +2,14 @@
 
 import { VoiceAvatar } from "@/components/agents/AgentsTable";
 import LlmModelSelect from "@/components/editor/LlmModelSelect";
+import ModelSettingsPopover from "@/components/editor/ModelSettingsPopover";
 import Select from "@/components/ui/Select";
 import SelectVoiceModal from "@/components/voices/SelectVoiceModal";
 import { voiceNameFromId } from "@/lib/api";
 import { isLiveModel } from "@/lib/models";
 import type { Voice } from "@/lib/types";
 import { withValue } from "@/lib/utils";
-import { BookOpen, ChevronDown, Clock4, Settings2 } from "lucide-react";
+import { BookOpen, ChevronDown, Clock4 } from "lucide-react";
 import { useState } from "react";
 
 const LANGUAGES: { value: string; label: string; flag: string }[] = [
@@ -22,6 +23,8 @@ const LANGUAGES: { value: string; label: string; flag: string }[] = [
 export default function SelectorRow({
   model,
   onModel,
+  temperature,
+  onTemperature,
   voiceId,
   onVoice,
   language,
@@ -30,6 +33,8 @@ export default function SelectorRow({
 }: {
   model: string;
   onModel?: (v: string) => void;
+  temperature?: number;
+  onTemperature?: (v: number) => void;
   voiceId: string;
   onVoice: (v: string) => void;
   language: string;
@@ -49,14 +54,13 @@ export default function SelectorRow({
       {onModel && (
         <>
           <LlmModelSelect value={model} onChange={onModel} />
-          <button
-            disabled
-            title="Not available yet"
-            className="flex size-9 items-center justify-center rounded-lg border border-line bg-white text-sub opacity-40 cursor-not-allowed"
-            aria-label="Model settings"
-          >
-            <Settings2 className="size-4" />
-          </button>
+          {onTemperature && (
+            <ModelSettingsPopover
+              temperature={temperature ?? 0}
+              onTemperature={onTemperature}
+              live={live}
+            />
+          )}
         </>
       )}
       <button
