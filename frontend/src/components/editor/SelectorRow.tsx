@@ -51,18 +51,22 @@ export default function SelectorRow({
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      {onModel && (
-        <>
-          <LlmModelSelect value={model} onChange={onModel} />
-          {onTemperature && (
+      {onModel &&
+        (onTemperature ? (
+          // Retell groups the model picker and its settings gear into one
+          // segmented control, so the knob's connection to the model is visible.
+          <div className="flex items-stretch rounded-lg border border-line bg-white">
+            <LlmModelSelect value={model} onChange={onModel} attached />
             <ModelSettingsPopover
               temperature={temperature ?? 0}
               onTemperature={onTemperature}
               live={live}
+              attached
             />
-          )}
-        </>
-      )}
+          </div>
+        ) : (
+          <LlmModelSelect value={model} onChange={onModel} />
+        ))}
       <button
         onClick={() => setVoiceModalOpen(true)}
         className="inline-flex h-9 items-center gap-2 rounded-lg border border-line bg-white pl-2 pr-2.5 text-[13px] font-medium transition-colors hover:bg-app cursor-pointer"

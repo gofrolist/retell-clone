@@ -16,11 +16,14 @@ export default function ModelSettingsPopover({
   temperature,
   onTemperature,
   live,
+  attached = false,
 }: {
   temperature: number;
   onTemperature: (v: number) => void;
   /** Native-audio Live sessions ignore the knob; disclose that in place. */
   live: boolean;
+  /** Render as the right segment of a grouped control (border comes from the wrapper). */
+  attached?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(temperature);
@@ -62,7 +65,8 @@ export default function ModelSettingsPopover({
         aria-expanded={open}
         aria-label="Model settings"
         className={cn(
-          "flex size-9 items-center justify-center rounded-lg border border-line bg-white text-sub transition-colors hover:bg-app cursor-pointer",
+          "flex size-9 items-center justify-center bg-white text-sub transition-colors hover:bg-app cursor-pointer",
+          attached ? "rounded-r-lg focus:bg-app" : "rounded-lg border border-line",
           open && "bg-app",
         )}
       >
