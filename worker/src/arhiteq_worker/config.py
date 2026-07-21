@@ -31,6 +31,27 @@ def _str(value: Any, default: str) -> str:
     return value if isinstance(value, str) and value else default
 
 
+def gemini_live_temperature(raw: str | None) -> float | None:
+    """Parse ARHITEQ_GEMINI_LIVE_TEMPERATURE: a float in 0..2, else None.
+
+    None means "leave the model's default sampling temperature in place".
+    Retell's model_temperature is deliberately NOT forwarded to Gemini Live:
+    native-audio models sample text and audio tokens with a single temperature,
+    and low values (agents commonly carry Retell's text-LLM 0) degenerate the
+    speech into droning/repeated syllables. Google recommends the default
+    temperature for native audio; an operator can still pin one via this env.
+    """
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    if not 0.0 <= value <= 2.0:
+        return None
+    return value
+
+
 @dataclass(slots=True)
 class AgentConfig:
     voice_id: str = ""

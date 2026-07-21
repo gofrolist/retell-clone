@@ -38,7 +38,7 @@ from livekit.agents import Agent, AgentSession, CloseReason, JobContext, RoomInp
 
 from arhiteq_worker import amd
 from arhiteq_worker import metrics
-from arhiteq_worker.config import CallConfig
+from arhiteq_worker.config import CallConfig, gemini_live_temperature
 from arhiteq_worker.goodbye import looks_like_goodbye
 from arhiteq_worker.internal_api import InternalAPI, InternalAPIError
 from arhiteq_worker.state import CallState, now_ms
@@ -135,6 +135,10 @@ GEMINI_LIVE_LOCATION = os.getenv("ARHITEQ_GEMINI_LIVE_LOCATION") or None
 # min of audio). Unset / 0 = leave the model/plugin defaults in place.
 GEMINI_LIVE_TRIGGER_TOKENS = _positive_int_env("ARHITEQ_GEMINI_LIVE_TRIGGER_TOKENS")
 GEMINI_LIVE_TARGET_TOKENS = _positive_int_env("ARHITEQ_GEMINI_LIVE_TARGET_TOKENS")
+# Native audio runs at the model's default sampling temperature — the agent's
+# model_temperature is a text-LLM knob and low values (Retell default 0)
+# degenerate Live speech into droning/repeated syllables. Set 0..2 to pin one.
+GEMINI_LIVE_TEMPERATURE = gemini_live_temperature(os.getenv("ARHITEQ_GEMINI_LIVE_TEMPERATURE"))
 # Markers that identify a Live API (realtime) model id. Matched loosely so new
 # Live model names Just Work: "gemini-live-2.5-flash-native-audio",
 # "gemini-2.5-flash-native-audio-preview-…", "gemini-3.1-flash-live-preview".
@@ -258,7 +262,6 @@ def _build_realtime_model(google_plugin: Any, cfg: CallConfig) -> Any:
         # where the plugin would reject it.
         "model": DEFAULT_GEMINI_LIVE_MODEL,
         "voice": resolve_gemini_voice(cfg.agent.voice_id),
-        "temperature": cfg.llm.model_temperature,
         "input_audio_transcription": genai_types.AudioTranscriptionConfig(),
         "output_audio_transcription": genai_types.AudioTranscriptionConfig(),
         "session_resumption": genai_types.SessionResumptionConfig(),
@@ -266,6 +269,10 @@ def _build_realtime_model(google_plugin: Any, cfg: CallConfig) -> Any:
             **compression_kwargs
         ),
     }
+    if GEMINI_LIVE_TEMPERATURE is not None:
+        # cfg.llm.model_temperature intentionally does not reach Live sessions
+        # (see gemini_live_temperature) — only the explicit env override does.
+        opts["temperature"] = GEMINI_LIVE_TEMPERATURE
     if GEMINI_LIVE_LOCATION:
         # A region override implies Vertex — the Live models we ship are Vertex.
         opts["vertexai"] = True
