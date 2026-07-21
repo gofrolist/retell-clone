@@ -28,6 +28,16 @@ export function formatCallTime(ts: number): string {
   );
 }
 
+/** "Jul 19, 2026 · 02:00 PM CDT" — Retell's contacts timestamp format. */
+export function formatDateTimeZone(ts: number): string {
+  const d = new Date(ts);
+  return (
+    d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) +
+    " · " +
+    d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZoneName: "short" })
+  );
+}
+
 export function formatDate(ts: number): string {
   return new Date(ts).toLocaleDateString("en-US", {
     month: "short",

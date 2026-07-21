@@ -1,28 +1,192 @@
 "use client";
 
+import ContactDrawer, { TIMEZONE_OPTIONS } from "@/components/contacts/ContactDrawer";
+import ManageTablePanel, {
+  CONTACT_COLUMNS,
+  DEFAULT_COLUMNS,
+  loadColumnConfig,
+  saveColumnConfig,
+  type ColumnConfig,
+  type ContactColumnKey,
+} from "@/components/contacts/ManageTablePanel";
 import Button from "@/components/ui/Button";
 import { Field, TextInput } from "@/components/ui/Field";
 import LoadError from "@/components/ui/LoadError";
 import Modal from "@/components/ui/Modal";
 import RowMenu from "@/components/ui/RowMenu";
 import Select from "@/components/ui/Select";
-import Toggle from "@/components/ui/Toggle";
+import SearchInput from "@/components/ui/SearchInput";
 import { api } from "@/lib/api";
+import type { Contact } from "@/lib/types";
 import { useApiData } from "@/lib/useApiData";
-import { cn, formatDate, truncateId } from "@/lib/utils";
-import { Contact as ContactIcon, Plug2, Plus, X } from "lucide-react";
-import { useState } from "react";
+import { cn, formatDateTimeZone } from "@/lib/utils";
+import {
+  ChevronDown,
+  Contact as ContactIcon,
+  Database,
+  Info,
+  ListFilter,
+  Plug2,
+  Plus,
+  RefreshCw,
+  Settings,
+  SlidersHorizontal,
+  UserPlus,
+  X,
+} from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-const TIMEZONE_OPTIONS = [
-  { value: "", label: "Not set" },
-  { value: "America/New_York", label: "Eastern (New York)" },
-  { value: "America/Chicago", label: "Central (Chicago)" },
-  { value: "America/Denver", label: "Mountain (Denver)" },
-  { value: "America/Phoenix", label: "Arizona (Phoenix)" },
-  { value: "America/Los_Angeles", label: "Pacific (Los Angeles)" },
-  { value: "America/Anchorage", label: "Alaska (Anchorage)" },
-  { value: "Pacific/Honolulu", label: "Hawaii (Honolulu)" },
+// ------------------------------------------------------------------ filters
+
+type FilterField =
+  | "phone_number"
+  | "contact_id"
+  | "external_id"
+  | "do_not_call"
+  | "latest_conversation";
+
+const FILTER_FIELDS: { field: FilterField; label: string }[] = [
+  { field: "phone_number", label: "Phone Number" },
+  { field: "contact_id", label: "Contact ID" },
+  { field: "external_id", label: "External ID" },
+  { field: "do_not_call", label: "Do Not Call" },
+  { field: "latest_conversation", label: "Latest Conversation" },
 ];
+
+interface ContactFilter {
+  field: FilterField;
+  value: string; // text query | "yes"/"no" | from-date (yyyy-mm-dd)
+  value2?: string; // latest_conversation only: to-date
+}
+
+function matchesFilter(c: Contact, f: ContactFilter): boolean {
+  switch (f.field) {
+    case "phone_number":
+      return c.phone_number.toLowerCase().includes(f.value.toLowerCase());
+    case "contact_id":
+      return c.contact_id.toLowerCase().includes(f.value.toLowerCase());
+    case "external_id":
+      return (c.external_id ?? "").toLowerCase().includes(f.value.toLowerCase());
+    case "do_not_call":
+      return c.do_not_call === (f.value === "yes");
+    case "latest_conversation": {
+      if (!c.latest_conversation) return false;
+      if (f.value && c.latest_conversation < new Date(`${f.value}T00:00:00`).getTime())
+        return false;
+      if (f.value2 && c.latest_conversation > new Date(`${f.value2}T23:59:59.999`).getTime())
+        return false;
+      return true;
+    }
+  }
+}
+
+function filterChipLabel(f: ContactFilter): string {
+  const label = FILTER_FIELDS.find((x) => x.field === f.field)?.label ?? f.field;
+  if (f.field === "do_not_call") return `${label}: ${f.value === "yes" ? "Yes" : "No"}`;
+  if (f.field === "latest_conversation")
+    return `${label}: ${f.value || "…"} – ${f.value2 || "…"}`;
+  return `${label}: ${f.value}`;
+}
+
+function FilterMenu({
+  onApply,
+  onClose,
+}: {
+  onApply: (f: ContactFilter) => void;
+  onClose: () => void;
+}) {
+  const [field, setField] = useState<FilterField | null>(null);
+  const [value, setValue] = useState("");
+  const [value2, setValue2] = useState("");
+
+  const apply = () => {
+    if (!field) return;
+    onApply({ field, value, ...(field === "latest_conversation" ? { value2 } : {}) });
+    onClose();
+  };
+
+  const dateInput = (v: string, set: (v: string) => void, label: string) => (
+    <label className="block text-[13px]">
+      <span className="mb-1 block font-medium">{label}</span>
+      <input
+        type="date"
+        value={v}
+        onChange={(e) => set(e.target.value)}
+        className="h-9 w-full rounded-lg border border-line bg-white px-3 text-[13px] outline-none focus:border-accent"
+      />
+    </label>
+  );
+
+  return (
+    <>
+      <div className="fixed inset-0 z-20" onClick={onClose} />
+      <div className="absolute left-0 top-full z-30 mt-1 w-72 rounded-xl border border-line bg-white p-1.5 shadow-lg">
+        {field === null ? (
+          FILTER_FIELDS.map((f) => (
+            <button
+              key={f.field}
+              onClick={() => {
+                setField(f.field);
+                if (f.field === "do_not_call") setValue("yes");
+              }}
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] hover:bg-app cursor-pointer"
+            >
+              <Plus className="size-3.5 text-sub" />
+              {f.label}
+            </button>
+          ))
+        ) : (
+          <div className="space-y-2.5 p-1.5">
+            <div className="text-[13px] font-semibold">
+              {FILTER_FIELDS.find((x) => x.field === field)?.label}
+            </div>
+            {field === "do_not_call" ? (
+              <Select
+                value={value}
+                onChange={setValue}
+                options={[
+                  { value: "yes", label: "Yes" },
+                  { value: "no", label: "No" },
+                ]}
+                className="w-full"
+              />
+            ) : field === "latest_conversation" ? (
+              <>
+                {dateInput(value, setValue, "From")}
+                {dateInput(value2, setValue2, "To")}
+              </>
+            ) : (
+              <TextInput
+                autoFocus
+                placeholder="Contains…"
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && value.trim() && apply()}
+              />
+            )}
+            <div className="flex justify-end gap-2 pt-1">
+              <Button size="sm" variant="ghost" onClick={onClose}>
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={
+                  field === "latest_conversation" ? !value && !value2 : !value.trim()
+                }
+                onClick={apply}
+              >
+                Apply
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+// -------------------------------------------------------------- add contact
 
 function AddContactModal({
   open,
@@ -116,58 +280,144 @@ function AddContactModal({
   );
 }
 
+// -------------------------------------------------------------------- cells
+
+function cellContent(c: Contact, key: ContactColumnKey): React.ReactNode {
+  switch (key) {
+    case "phone_number":
+      return <span className="tabular-nums">{c.phone_number}</span>;
+    case "first_name":
+      return c.first_name || "—";
+    case "last_name":
+      return c.last_name || "—";
+    case "timezone":
+      return c.timezone || "—";
+    case "contact_id":
+      return <span className="font-mono text-[12.5px] text-sub">{c.contact_id}</span>;
+    case "related_conversations":
+      return <span className="tabular-nums">{c.related_conversations}</span>;
+    case "latest_conversation":
+      return c.latest_conversation ? (
+        formatDateTimeZone(c.latest_conversation)
+      ) : (
+        <span className="text-sub">—</span>
+      );
+    case "do_not_call":
+      return c.do_not_call ? <span className="font-medium text-bad">Yes</span> : "No";
+    case "external_id":
+      return c.external_id || <span className="text-sub">—</span>;
+  }
+}
+
+/** Keeps the drawer deep-linkable (?contact=…) without a Suspense-gated hook. */
+function setContactParam(id: string | null) {
+  const url = new URL(window.location.href);
+  if (id) url.searchParams.set("contact", id);
+  else url.searchParams.delete("contact");
+  window.history.replaceState(null, "", url);
+}
+
+// --------------------------------------------------------------------- page
+
 export default function ContactsPage() {
   const { data, setData: setContacts, loading, error, setError, reload } = useApiData(
     () => api.listContacts(),
   );
-  const contacts = data ?? [];
+  const contacts = useMemo(() => data ?? [], [data]);
   const [bannerOpen, setBannerOpen] = useState(true);
   const [addOpen, setAddOpen] = useState(false);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [manageOpen, setManageOpen] = useState(false);
+  const [filters, setFilters] = useState<ContactFilter[]>([]);
+  const [search, setSearch] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const setDoNotCall = async (id: string, v: boolean) => {
-    const prev = contacts;
-    setContacts((cur) =>
-      (cur ?? []).map((c) => (c.contact_id === id ? { ...c, do_not_call: v } : c)),
-    );
-    try {
-      await api.updateContact(id, { do_not_call: v });
-    } catch {
-      setContacts(prev); // revert optimistic update
-    }
+  // Column prefs load after mount so SSR markup matches first client render.
+  const [columns, setColumns] = useState<ColumnConfig[]>(DEFAULT_COLUMNS);
+  useEffect(() => {
+    setColumns(loadColumnConfig());
+  }, []);
+  const visibleColumns = columns.filter((c) => c.visible);
+
+  // Deep link: open the drawer for ?contact=… once contacts arrive.
+  const openedFromUrl = useRef(false);
+  useEffect(() => {
+    if (openedFromUrl.current || !data) return;
+    openedFromUrl.current = true;
+    const id = new URLSearchParams(window.location.search).get("contact");
+    if (id && data.some((c) => c.contact_id === id)) setSelectedId(id);
+  }, [data]);
+
+  const rows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return contacts
+      .filter((c) => filters.every((f) => matchesFilter(c, f)))
+      .filter(
+        (c) =>
+          !q ||
+          [c.phone_number, c.first_name, c.last_name, c.contact_id, c.external_id ?? ""].some(
+            (v) => v.toLowerCase().includes(q),
+          ),
+      )
+      .sort((a, b) => (b.latest_conversation ?? 0) - (a.latest_conversation ?? 0));
+  }, [contacts, filters, search]);
+
+  const selected = selectedId
+    ? contacts.find((c) => c.contact_id === selectedId) ?? null
+    : null;
+
+  const openContact = (id: string | null) => {
+    setSelectedId(id);
+    setContactParam(id);
   };
 
-  const setTimezone = async (id: string, v: string) => {
-    const prev = contacts;
-    setContacts((cur) =>
-      (cur ?? []).map((c) => (c.contact_id === id ? { ...c, timezone: v || null } : c)),
-    );
-    try {
-      await api.updateContact(id, { timezone: v || null });
-    } catch {
-      setContacts(prev); // revert optimistic update
-    }
+  const navigate = (dir: 1 | -1) => {
+    if (!selectedId) return;
+    const idx = rows.findIndex((c) => c.contact_id === selectedId);
+    const next = rows[idx + dir];
+    if (next) openContact(next.contact_id);
   };
 
   const deleteContact = async (id: string) => {
     try {
       await api.deleteContact(id);
       setContacts((cur) => (cur ?? []).filter((c) => c.contact_id !== id));
+      if (selectedId === id) openContact(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to delete contact");
     }
   };
 
+  const actionItem = (
+    icon: React.ReactNode,
+    label: string,
+    onClick?: () => void,
+    disabled = false,
+  ) => (
+    <button
+      key={label}
+      disabled={disabled}
+      title={disabled ? "Not available yet" : undefined}
+      onClick={() => {
+        setActionsOpen(false);
+        onClick?.();
+      }}
+      className={cn(
+        "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px]",
+        disabled ? "cursor-not-allowed text-faint" : "hover:bg-app cursor-pointer",
+      )}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+
   return (
     <div className="flex h-full flex-col px-6 pt-5">
-      <div className="mb-4 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <ContactIcon className="size-4.5 text-sub" strokeWidth={1.8} />
-          <h1 className="text-[17px] font-semibold">Contacts</h1>
-        </div>
-        <Button variant="primary" onClick={() => setAddOpen(true)}>
-          <Plus className="size-3.5" />
-          Add Contact
-        </Button>
+      <div className="mb-4 flex items-center gap-2">
+        <ContactIcon className="size-4.5 text-sub" strokeWidth={1.8} />
+        <h1 className="text-[17px] font-semibold">Contacts</h1>
       </div>
 
       {bannerOpen && (
@@ -195,91 +445,168 @@ export default function ContactsPage() {
         </div>
       )}
 
+      <div className="mb-3 flex items-center gap-2">
+        <div className="relative">
+          <Button onClick={() => setFilterOpen((v) => !v)}>
+            <ListFilter className="size-3.5" />
+            Filter
+          </Button>
+          {filterOpen && (
+            <FilterMenu
+              onApply={(f) =>
+                setFilters((cur) => [...cur.filter((x) => x.field !== f.field), f])
+              }
+              onClose={() => setFilterOpen(false)}
+            />
+          )}
+        </div>
+
+        {filters.map((f) => (
+          <span
+            key={f.field}
+            className="flex items-center gap-1.5 rounded-lg border border-line bg-app px-2.5 py-1.5 text-[12.5px]"
+          >
+            {filterChipLabel(f)}
+            <button
+              onClick={() => setFilters((cur) => cur.filter((x) => x.field !== f.field))}
+              className="rounded p-0.5 text-faint hover:bg-black/5 hover:text-ink cursor-pointer"
+              aria-label={`Remove ${filterChipLabel(f)} filter`}
+            >
+              <X className="size-3" />
+            </button>
+          </span>
+        ))}
+
+        <div className="ml-auto flex items-center gap-2">
+          <SearchInput value={search} onChange={setSearch} placeholder="Search" className="w-64" />
+          <Button
+            variant="ghost"
+            aria-label="Manage table"
+            onClick={() => setManageOpen(true)}
+          >
+            <SlidersHorizontal className="size-4" />
+          </Button>
+          <div className="relative">
+            <Button variant="primary" onClick={() => setActionsOpen((v) => !v)}>
+              Actions
+              <ChevronDown className="size-3.5" />
+            </Button>
+            {actionsOpen && (
+              <>
+                <div className="fixed inset-0 z-20" onClick={() => setActionsOpen(false)} />
+                <div className="absolute right-0 top-full z-30 mt-1 w-64 rounded-xl border border-line bg-white p-1.5 shadow-lg">
+                  {actionItem(<Settings className="size-4" />, "Manage contact fields", undefined, true)}
+                  {actionItem(<Plug2 className="size-4" />, "Manage CRM sync", undefined, true)}
+                  {actionItem(<RefreshCw className="size-4" />, "Run full sync", undefined, true)}
+                  {actionItem(
+                    <Database className="size-4" />,
+                    "Backfill from Post-Call Data",
+                    undefined,
+                    true,
+                  )}
+                  {actionItem(<UserPlus className="size-4" />, "Add contact", () => setAddOpen(true))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
       <div className="min-h-0 grow overflow-auto rounded-t-lg border border-line border-b-0">
         <table className="w-full min-w-[880px] text-left">
           <thead className="sticky top-0 z-[1] bg-card">
             <tr className="border-b border-line text-[13px] text-sub">
-              {[
-                "Phone Number",
-                "First Name",
-                "Last Name",
-                "Timezone",
-                "Contact ID",
-                "Related Conversations",
-                "Latest Conversation",
-                "Do Not Call",
-                "External ID",
-                "",
-              ].map((h, i) => (
-                <th key={i} className="whitespace-nowrap px-3 py-2.5 font-medium first:pl-4">
-                  {h}
+              {visibleColumns.map((col) => (
+                <th key={col.key} className="whitespace-nowrap px-3 py-2.5 font-medium first:pl-4">
+                  <span className="inline-flex items-center gap-1">
+                    {CONTACT_COLUMNS[col.key].label}
+                    {col.key === "do_not_call" && (
+                      <Info
+                        className="size-3.5 text-faint"
+                        aria-label="Contacts marked Do Not Call are skipped by batch calls."
+                      />
+                    )}
+                  </span>
                 </th>
               ))}
+              <th className="w-10 px-3 py-2.5" />
             </tr>
           </thead>
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={10} className="px-4 py-10 text-center text-[13px] text-sub">
+                <td colSpan={visibleColumns.length + 1} className="px-4 py-10 text-center text-[13px] text-sub">
                   Loading contacts…
                 </td>
               </tr>
             )}
             {!loading && error && (
               <tr>
-                <td colSpan={10} className="px-4 py-10 text-center text-[13px]">
+                <td colSpan={visibleColumns.length + 1} className="px-4 py-10 text-center text-[13px]">
                   <LoadError error={error} onRetry={reload} />
                 </td>
               </tr>
             )}
-            {!loading && !error && contacts.length === 0 && (
+            {!loading && !error && rows.length === 0 && (
               <tr>
-                <td colSpan={10} className="px-4 py-10 text-center text-[13px] text-sub">
-                  No contacts yet. Add one to enrich call data with names.
+                <td colSpan={visibleColumns.length + 1} className="px-4 py-10 text-center text-[13px] text-sub">
+                  {contacts.length === 0
+                    ? "No contacts yet. Add one to enrich call data with names."
+                    : "No contacts match the current filters."}
                 </td>
               </tr>
             )}
-            {contacts.map((c) => (
-              <tr key={c.contact_id} className="border-b border-line/70 hover:bg-app/60">
-                <td className="py-3 pl-4 pr-3 tabular-nums">{c.phone_number}</td>
-                <td className="px-3 py-3">{c.first_name}</td>
-                <td className="px-3 py-3">{c.last_name}</td>
-                <td className="px-3 py-3">
-                  <Select
-                    value={c.timezone ?? ""}
-                    onChange={(v) => setTimezone(c.contact_id, v)}
-                    options={TIMEZONE_OPTIONS}
-                  />
-                </td>
-                <td className="px-3 py-3 font-mono text-[12.5px] text-sub">
-                  {truncateId(c.contact_id, 16)}
-                </td>
-                <td className="px-3 py-3 tabular-nums">{c.related_conversations}</td>
-                <td className="px-3 py-3 text-sub">
-                  {c.latest_conversation ? formatDate(c.latest_conversation) : "—"}
-                </td>
-                <td className="px-3 py-3">
-                  <span className="flex items-center gap-2">
-                    <Toggle
-                      checked={c.do_not_call}
-                      onChange={(v) => setDoNotCall(c.contact_id, v)}
-                    />
-                    <span className={cn("text-[12.5px]", c.do_not_call ? "font-medium text-bad" : "text-sub")}>
-                      {c.do_not_call ? "Yes" : "No"}
-                    </span>
-                  </span>
-                </td>
-                <td className="px-3 py-3 text-sub">{c.external_id ?? "-"}</td>
-                <td className="px-3 py-3">
-                  <RowMenu onDelete={() => deleteContact(c.contact_id)} />
-                </td>
-              </tr>
-            ))}
+            {!loading &&
+              !error &&
+              rows.map((c) => (
+                <tr
+                  key={c.contact_id}
+                  onClick={() => openContact(c.contact_id)}
+                  className={cn(
+                    "cursor-pointer border-b border-line/70 hover:bg-app/60",
+                    selectedId === c.contact_id && "bg-app/60",
+                  )}
+                >
+                  {visibleColumns.map((col) => (
+                    <td key={col.key} className="whitespace-nowrap px-3 py-3 text-[13px] first:pl-4">
+                      {cellContent(c, col.key)}
+                    </td>
+                  ))}
+                  <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                    <RowMenu onDelete={() => deleteContact(c.contact_id)} />
+                  </td>
+                </tr>
+              ))}
           </tbody>
         </table>
       </div>
 
       <AddContactModal open={addOpen} onClose={() => setAddOpen(false)} onCreated={reload} />
+
+      {manageOpen && (
+        <ManageTablePanel
+          columns={columns}
+          onClose={() => setManageOpen(false)}
+          onApply={(next) => {
+            setColumns(next);
+            saveColumnConfig(next);
+            setManageOpen(false);
+          }}
+        />
+      )}
+
+      {selected && (
+        <ContactDrawer
+          contact={selected}
+          onClose={() => openContact(null)}
+          onNavigate={navigate}
+          onUpdated={(updated) =>
+            setContacts((cur) =>
+              (cur ?? []).map((c) => (c.contact_id === updated.contact_id ? updated : c)),
+            )
+          }
+        />
+      )}
     </div>
   );
 }

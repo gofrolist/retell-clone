@@ -498,6 +498,8 @@ export interface ListCallsFilter {
   call_status?: string[];
   user_sentiment?: string[];
   direction?: string[];
+  from_number?: string[];
+  to_number?: string[];
   start_timestamp?: { lower_threshold?: number; upper_threshold?: number };
 }
 

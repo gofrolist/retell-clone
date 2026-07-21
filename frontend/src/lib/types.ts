@@ -156,9 +156,9 @@ export interface Contact {
   last_name: string;
   timezone?: string | null;
   related_conversations: number;
-  latest_conversation: number; // ms epoch
+  latest_conversation: number | null; // ms epoch; null = no conversations yet
   do_not_call: boolean;
-  external_id?: string;
+  external_id?: string | null;
 }
 
 export interface StatPoint {
