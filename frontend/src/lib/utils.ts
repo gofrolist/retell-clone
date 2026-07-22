@@ -12,7 +12,9 @@ export function formatDuration(ms: number): string {
 
 export function formatDurationLong(ms: number): string {
   const s = Math.round(ms / 1000);
-  const m = Math.floor(s / 60);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m ${s % 60}s`;
   return m > 0 ? `${m}m ${s % 60}s` : `${s}s`;
 }
 

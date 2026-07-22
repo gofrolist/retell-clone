@@ -16,6 +16,8 @@ import Modal from "@/components/ui/Modal";
 import RowMenu from "@/components/ui/RowMenu";
 import Select from "@/components/ui/Select";
 import SearchInput from "@/components/ui/SearchInput";
+import Toggle from "@/components/ui/Toggle";
+import Tooltip from "@/components/ui/Tooltip";
 import { api } from "@/lib/api";
 import type { Contact } from "@/lib/types";
 import { useApiData } from "@/lib/useApiData";
@@ -282,7 +284,11 @@ function AddContactModal({
 
 // -------------------------------------------------------------------- cells
 
-function cellContent(c: Contact, key: ContactColumnKey): React.ReactNode {
+function cellContent(
+  c: Contact,
+  key: ContactColumnKey,
+  onDoNotCall: (id: string, v: boolean) => void,
+): React.ReactNode {
   switch (key) {
     case "phone_number":
       return <span className="tabular-nums">{c.phone_number}</span>;
@@ -303,7 +309,13 @@ function cellContent(c: Contact, key: ContactColumnKey): React.ReactNode {
         <span className="text-sub">—</span>
       );
     case "do_not_call":
-      return c.do_not_call ? <span className="font-medium text-bad">Yes</span> : "No";
+      // One-click compliance action — must not require opening the drawer.
+      // stopPropagation keeps the row click (open drawer) out of the toggle.
+      return (
+        <span onClick={(e) => e.stopPropagation()} className="inline-flex">
+          <Toggle checked={c.do_not_call} onChange={(v) => onDoNotCall(c.contact_id, v)} />
+        </span>
+      );
     case "external_id":
       return c.external_id || <span className="text-sub">—</span>;
   }
@@ -386,6 +398,19 @@ export default function ContactsPage() {
       if (selectedId === id) openContact(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to delete contact");
+    }
+  };
+
+  // Optimistic per-row DNC flip; revert on failure.
+  const setDoNotCall = async (id: string, v: boolean) => {
+    const prev = data;
+    setContacts((cur) =>
+      (cur ?? []).map((c) => (c.contact_id === id ? { ...c, do_not_call: v } : c)),
+    );
+    try {
+      await api.updateContact(id, { do_not_call: v });
+    } catch {
+      setContacts(prev);
     }
   };
 
@@ -521,10 +546,9 @@ export default function ContactsPage() {
                   <span className="inline-flex items-center gap-1">
                     {CONTACT_COLUMNS[col.key].label}
                     {col.key === "do_not_call" && (
-                      <Info
-                        className="size-3.5 text-faint"
-                        aria-label="Contacts marked Do Not Call are skipped by batch calls."
-                      />
+                      <Tooltip label="Contacts marked Do Not Call are skipped by batch calls.">
+                        <Info className="size-3.5 text-faint" />
+                      </Tooltip>
                     )}
                   </span>
                 </th>
@@ -569,7 +593,7 @@ export default function ContactsPage() {
                 >
                   {visibleColumns.map((col) => (
                     <td key={col.key} className="whitespace-nowrap px-3 py-3 text-[13px] first:pl-4">
-                      {cellContent(c, col.key)}
+                      {cellContent(c, col.key, setDoNotCall)}
                     </td>
                   ))}
                   <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>

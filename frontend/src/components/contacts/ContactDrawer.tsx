@@ -21,7 +21,7 @@ import {
   User,
   X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export const TIMEZONE_OPTIONS = [
   { value: "", label: "Not set" },
@@ -34,15 +34,10 @@ export const TIMEZONE_OPTIONS = [
   { value: "Pacific/Honolulu", label: "Hawaii (Honolulu)" },
 ];
 
-/** "3h 16m 4s" / "16m 4s" / "42s" */
-function formatTotalTime(ms: number): string {
-  const s = Math.round(ms / 1000);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  if (h > 0) return `${h}h ${m}m ${s % 60}s`;
-  if (m > 0) return `${m}m ${s % 60}s`;
-  return `${s}s`;
-}
+// Per-direction leg cap for the conversations fetch; when a contact has more
+// calls than this the stats are computed over the latest slice and the UI
+// says so ("Showing latest N").
+const CALLS_FETCH_LIMIT = 100;
 
 function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -141,70 +136,108 @@ export default function ContactDrawer({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  const resetDraft = (c: Contact) => {
+    setEditing(false);
+    setFirstName(c.first_name);
+    setLastName(c.last_name);
+    setTimezone(c.timezone ?? "");
+    setDoNotCall(c.do_not_call);
+    setExternalId(c.external_id ?? "");
+    setSaveError(null);
+  };
+
   // Reset edit state when navigating between contacts.
   useEffect(() => {
-    setEditing(false);
-    setFirstName(contact.first_name);
-    setLastName(contact.last_name);
-    setTimezone(contact.timezone ?? "");
-    setDoNotCall(contact.do_not_call);
-    setExternalId(contact.external_id ?? "");
-    setSaveError(null);
+    resetDraft(contact);
+
   }, [contact]);
 
   // Conversations = calls where either leg is the contact's number. The
   // backend ANDs from_number/to_number filters, so query each leg and merge.
+  // Cached per contact for the drawer's lifetime and debounced so holding
+  // ArrowDown through the list doesn't fire two requests per keypress.
+  const callsCache = useRef(new Map<string, Call[]>());
   useEffect(() => {
     let cancelled = false;
-    setCalls(null);
     setCallsError(null);
     setOpenCall(null);
-    const leg = (key: "from_number" | "to_number") =>
-      api.listCalls({
-        limit: 100,
-        sort_order: "descending",
-        filter_criteria: { [key]: [contact.phone_number] },
-      });
-    Promise.all([leg("from_number"), leg("to_number")])
-      .then(([a, b]) => {
-        if (cancelled) return;
-        const seen = new Set<string>();
-        const merged = [...a.calls, ...b.calls]
-          .filter((c) => (seen.has(c.call_id) ? false : (seen.add(c.call_id), true)))
-          .sort((x, y) => y.start_timestamp - x.start_timestamp);
-        setCalls(merged);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setCallsError(e instanceof Error ? e.message : "Failed to load conversations");
-      });
+    const hit = callsCache.current.get(contact.contact_id);
+    if (hit) {
+      setCalls(hit);
+      return;
+    }
+    setCalls(null);
+    const timer = setTimeout(() => {
+      const leg = (key: "from_number" | "to_number") =>
+        api.listCalls({
+          limit: CALLS_FETCH_LIMIT,
+          sort_order: "descending",
+          filter_criteria: { [key]: [contact.phone_number] },
+        });
+      Promise.all([leg("from_number"), leg("to_number")])
+        .then(([a, b]) => {
+          const seen = new Set<string>();
+          const merged = [...a.calls, ...b.calls]
+            .filter((c) => (seen.has(c.call_id) ? false : (seen.add(c.call_id), true)))
+            .sort((x, y) => y.start_timestamp - x.start_timestamp);
+          callsCache.current.set(contact.contact_id, merged);
+          if (!cancelled) setCalls(merged);
+        })
+        .catch((e: unknown) => {
+          if (!cancelled)
+            setCallsError(e instanceof Error ? e.message : "Failed to load conversations");
+        });
+    }, 200);
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [contact.contact_id, contact.phone_number]);
 
-  // ↑/↓ moves between contacts, but not while a nested call drawer is open.
+  // ↑/↓ moves between contacts, but not while a nested call drawer is open,
+  // not while the user is typing in the edit form (arrows move the caret /
+  // drive the native select there), and never from a form control.
   useEffect(() => {
     if (openCall) return;
     const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      const inFormControl =
+        !!t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+      if (e.key === "Escape") {
+        // In edit mode Escape backs out of the edit, not the whole drawer —
+        // closing would silently discard the draft.
+        if (editing) resetDraft(contact);
+        else onClose();
+        return;
+      }
+      if (editing || inFormControl) return;
       if (e.key === "ArrowDown") onNavigate(1);
       if (e.key === "ArrowUp") onNavigate(-1);
-      if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [openCall, onNavigate, onClose]);
+
+  }, [openCall, editing, contact, onNavigate, onClose]);
 
   const save = async () => {
+    // PATCH only what actually changed — sending the full draft would
+    // overwrite concurrent edits (made since the contacts list was fetched)
+    // with this drawer's stale copies of the untouched fields.
+    const delta: Parameters<typeof api.updateContact>[1] = {};
+    if (firstName.trim() !== contact.first_name) delta.first_name = firstName.trim();
+    if (lastName.trim() !== contact.last_name) delta.last_name = lastName.trim();
+    if ((timezone || null) !== (contact.timezone ?? null)) delta.timezone = timezone || null;
+    if (doNotCall !== contact.do_not_call) delta.do_not_call = doNotCall;
+    if ((externalId.trim() || null) !== (contact.external_id ?? null))
+      delta.external_id = externalId.trim() || null;
+    if (Object.keys(delta).length === 0) {
+      setEditing(false);
+      return;
+    }
     setSaving(true);
     setSaveError(null);
     try {
-      const updated = await api.updateContact(contact.contact_id, {
-        first_name: firstName.trim(),
-        last_name: lastName.trim(),
-        timezone: timezone || null,
-        do_not_call: doNotCall,
-        external_id: externalId.trim() || null,
-      });
+      const updated = await api.updateContact(contact.contact_id, delta);
       // update-contact doesn't recompute conversation stats — keep ours.
       onUpdated({
         ...contact,
@@ -224,7 +257,10 @@ export default function ContactDrawer({
   const outbound = (calls?.length ?? 0) - inbound;
   const totalMs = calls?.reduce((sum, c) => sum + (c.duration_ms || 0), 0) ?? 0;
   const avgMs = calls && calls.length > 0 ? totalMs / calls.length : 0;
-  const conversationCount = calls?.length ?? contact.related_conversations;
+  // The server count is authoritative — the fetched list is capped per leg,
+  // so its length must never override related_conversations.
+  const conversationCount = contact.related_conversations;
+  const truncated = calls !== null && calls.length < contact.related_conversations;
 
   return (
     <div
@@ -354,6 +390,11 @@ export default function ContactDrawer({
           <div className="min-w-0 grow overflow-y-auto px-5 py-4">
             <h3 className="text-[14px] font-semibold">
               Conversations ({conversationCount})
+              {truncated && calls && (
+                <span className="ml-2 text-[12px] font-normal text-sub">
+                  showing latest {calls.length} — stats cover these only
+                </span>
+              )}
             </h3>
 
             {callsError && (
@@ -377,13 +418,13 @@ export default function ContactDrawer({
                   <div className="rounded-xl border border-line px-3.5 py-2.5">
                     <div className="text-[12px] text-sub">Total Time</div>
                     <div className="mt-0.5 text-[15px] font-semibold tabular-nums">
-                      {formatTotalTime(totalMs)}
+                      {formatDurationLong(totalMs)}
                     </div>
                   </div>
                   <div className="rounded-xl border border-line px-3.5 py-2.5">
                     <div className="text-[12px] text-sub">Avg/Call</div>
                     <div className="mt-0.5 text-[15px] font-semibold tabular-nums">
-                      {formatTotalTime(avgMs)}
+                      {formatDurationLong(avgMs)}
                     </div>
                   </div>
                 </div>

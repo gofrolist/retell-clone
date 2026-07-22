@@ -589,7 +589,23 @@ export function demoResponse<T>(path: string, init?: RequestInit): T {
     if (!a) throw new Error("LLM not found");
     return rawLlm(a) as T;
   }
-  if (route === "/v2/list-calls") return mockCalls.map(rawCall) as T;
+  if (route === "/v2/list-calls") {
+    // Honor the from_number/to_number filters the contact drawer relies on —
+    // returning everything would show every demo call under every contact.
+    let calls = mockCalls;
+    try {
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      const fc = body.filter_criteria ?? {};
+      const from: string[] | undefined = fc.from_number;
+      const to: string[] | undefined = fc.to_number;
+      if (from?.length) calls = calls.filter((c) => from.includes(c.from_number));
+      if (to?.length) calls = calls.filter((c) => to.includes(c.to_number));
+      if (typeof body.limit === "number") calls = calls.slice(0, body.limit);
+    } catch {
+      // Malformed body → unfiltered list, same as before.
+    }
+    return calls.map(rawCall) as T;
+  }
   if (route.startsWith("/v2/get-call/")) {
     const c = mockCalls.find((x) => x.call_id === route.split("/").pop());
     if (!c) throw new Error("Call not found");
