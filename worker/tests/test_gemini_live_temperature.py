@@ -16,13 +16,23 @@ def test_unset_env_means_model_default() -> None:
 
 
 @pytest.mark.parametrize("raw", ["", "abc", "nan", "0.5.1"])
-def test_unparseable_values_fall_back_to_model_default(raw: str) -> None:
-    assert gemini_live_temperature(raw) is None
+def test_unparseable_values_fall_back_to_model_default(
+    raw: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level("WARNING", logger="arhiteq-worker.config"):
+        assert gemini_live_temperature(raw) is None
+    # A rejected pin must be visible in logs — silence would be
+    # indistinguishable from the env being unset.
+    assert "ARHITEQ_GEMINI_LIVE_TEMPERATURE" in caplog.text
 
 
 @pytest.mark.parametrize("raw", ["-0.1", "2.5", "100"])
-def test_out_of_range_values_fall_back_to_model_default(raw: str) -> None:
-    assert gemini_live_temperature(raw) is None
+def test_out_of_range_values_fall_back_to_model_default(
+    raw: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level("WARNING", logger="arhiteq-worker.config"):
+        assert gemini_live_temperature(raw) is None
+    assert "ARHITEQ_GEMINI_LIVE_TEMPERATURE" in caplog.text
 
 
 @pytest.mark.parametrize(("raw", "expected"), [("0", 0.0), ("0.8", 0.8), ("1", 1.0), ("2", 2.0)])

@@ -7,10 +7,13 @@ Defaults mirror Retell agent defaults.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 from arhiteq_worker.variables import ResolutionVariables
+
+logger = logging.getLogger("arhiteq-worker.config")
 
 
 def _num(value: Any, default: float) -> float:
@@ -46,8 +49,15 @@ def gemini_live_temperature(raw: str | None) -> float | None:
     try:
         value = float(raw)
     except ValueError:
-        return None
-    if not 0.0 <= value <= 2.0:
+        value = None
+    if value is None or not 0.0 <= value <= 2.0:
+        # A rejected pin is otherwise indistinguishable from an unset one in
+        # the logs (the fallback is inaudible), so say it out loud.
+        logger.warning(
+            "ignoring ARHITEQ_GEMINI_LIVE_TEMPERATURE=%r: not a number in 0..2; "
+            "Live sessions use the model default",
+            raw,
+        )
         return None
     return value
 
