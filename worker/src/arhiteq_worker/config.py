@@ -7,10 +7,13 @@ Defaults mirror Retell agent defaults.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 from arhiteq_worker.variables import ResolutionVariables
+
+logger = logging.getLogger("arhiteq-worker.config")
 
 
 def _num(value: Any, default: float) -> float:
@@ -29,6 +32,34 @@ def _int(value: Any, default: int) -> int:
 
 def _str(value: Any, default: str) -> str:
     return value if isinstance(value, str) and value else default
+
+
+def gemini_live_temperature(raw: str | None) -> float | None:
+    """Parse ARHITEQ_GEMINI_LIVE_TEMPERATURE: a float in 0..2, else None.
+
+    None means "leave the model's default sampling temperature in place".
+    Retell's model_temperature is deliberately NOT forwarded to Gemini Live:
+    native-audio models sample text and audio tokens with a single temperature,
+    and low values (agents commonly carry Retell's text-LLM 0) degenerate the
+    speech into droning/repeated syllables. Google recommends the default
+    temperature for native audio; an operator can still pin one via this env.
+    """
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        value = None
+    if value is None or not 0.0 <= value <= 2.0:
+        # A rejected pin is otherwise indistinguishable from an unset one in
+        # the logs (the fallback is inaudible), so say it out loud.
+        logger.warning(
+            "ignoring ARHITEQ_GEMINI_LIVE_TEMPERATURE=%r: not a number in 0..2; "
+            "Live sessions use the model default",
+            raw,
+        )
+        return None
+    return value
 
 
 @dataclass(slots=True)
