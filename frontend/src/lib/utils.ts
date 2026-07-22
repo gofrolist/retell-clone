@@ -12,7 +12,9 @@ export function formatDuration(ms: number): string {
 
 export function formatDurationLong(ms: number): string {
   const s = Math.round(ms / 1000);
-  const m = Math.floor(s / 60);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m ${s % 60}s`;
   return m > 0 ? `${m}m ${s % 60}s` : `${s}s`;
 }
 
@@ -25,6 +27,16 @@ export function formatCallTime(ts: number): string {
     d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) +
     " · " +
     d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" })
+  );
+}
+
+/** "Jul 19, 2026 · 02:00 PM CDT" — Retell's contacts timestamp format. */
+export function formatDateTimeZone(ts: number): string {
+  const d = new Date(ts);
+  return (
+    d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) +
+    " · " +
+    d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZoneName: "short" })
   );
 }
 
