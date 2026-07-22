@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.12.0](https://github.com/gofrolist/retell-clone/compare/v0.11.0...v0.12.0) (2026-07-22)
+
+
+### Features
+
+* contacts page detail drawer, filters, and configurable table ([#132](https://github.com/gofrolist/retell-clone/issues/132)) ([0a884c1](https://github.com/gofrolist/retell-clone/commit/0a884c1c8386d8937c96d9ac4645a228b02764a8))
+* LLM temperature knob in the agent editor ([#131](https://github.com/gofrolist/retell-clone/issues/131)) ([6182884](https://github.com/gofrolist/retell-clone/commit/6182884e900bba64047f2338ace2d27dd9cafd4f))
+
+
+### Bug Fixes
+
+* don't forward model_temperature to Gemini Live native audio ([#130](https://github.com/gofrolist/retell-clone/issues/130)) ([0427faf](https://github.com/gofrolist/retell-clone/commit/0427faf4a6469ef55a79ac0f0a1f0449761fab46))
+
 ## [0.11.0](https://github.com/gofrolist/retell-clone/compare/v0.10.1...v0.11.0) (2026-07-19)
 
 
