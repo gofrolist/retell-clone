@@ -52,10 +52,13 @@ export default function LlmModelSelect({
   value,
   onChange,
   className,
+  attached = false,
 }: {
   value: string;
   onChange?: (v: string) => void;
   className?: string;
+  /** Render as the left segment of a grouped control (border comes from the wrapper). */
+  attached?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -139,7 +142,14 @@ export default function LlmModelSelect({
         }}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="inline-flex h-9 w-full items-center gap-2 rounded-lg border border-line bg-white pl-2.5 pr-2 text-[13px] font-medium outline-none transition-colors hover:bg-app focus:border-accent"
+        className={cn(
+          "inline-flex h-9 w-full items-center gap-2 bg-white pl-2.5 pr-2 text-[13px] font-medium outline-none transition-colors hover:bg-app",
+          attached
+            ? // No own border to tint, so keyboard focus needs an inset ring —
+              // focus:bg-app alone would be indistinguishable from hover.
+              "rounded-l-lg focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
+            : "rounded-lg border border-line focus:border-accent",
+        )}
       >
         {selectedLive ? (
           <Radio className="size-3.5 shrink-0 text-purple-600" />
