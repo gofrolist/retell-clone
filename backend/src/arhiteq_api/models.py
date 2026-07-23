@@ -210,6 +210,9 @@ class RetellLLM(Base):
     starting_state: Mapped[str | None] = mapped_column(String(255))
     default_dynamic_variables: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     knowledge_base_ids: Mapped[list[Any] | None] = mapped_column(JSON)
+    # Retell `mcps`: [{"name", "url", "headers"?, "query_params"?, "timeout_ms"?}]
+    # — stored and served; worker-side MCP tool execution is persist-only for now.
+    mcps: Mapped[list[Any] | None] = mapped_column(JSON)
     last_modification_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
 
 
@@ -270,6 +273,18 @@ class Agent(Base):
     stt_mode: Mapped[str] = mapped_column(String(32), default="fast")
     denoising_mode: Mapped[str] = mapped_column(String(32), default="noise-cancellation")
     opt_out_sensitive_data_storage: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Retell parity fields (stored + served; worker execution tracked in
+    # API_COVERAGE): {"mode": "post_call", "categories": [...]}.
+    pii_config: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    fallback_voice_ids: Mapped[list[Any] | None] = mapped_column(JSON)
+    allow_user_dtmf: Mapped[bool] = mapped_column(Boolean, default=True)
+    allow_dtmf_interruption: Mapped[bool] = mapped_column(Boolean, default=False)
+    # {"digit_limit": 1-50, "termination_key": "#", "timeout_ms": 1000-15000}
+    user_dtmf_options: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    opt_in_signed_url: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Same {"action": {...}} shape as voicemail_option (Retell parity).
+    ivr_option: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    call_screening_option: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     last_modification_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
     # Publishing model: single live version; publish-agent flips this on.
     is_published: Mapped[bool] = mapped_column(Boolean, default=True)

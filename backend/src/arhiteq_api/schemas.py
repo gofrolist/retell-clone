@@ -48,6 +48,7 @@ class CreateLLMRequest(CompatModel):
     start_speaker: str | None = None
     default_dynamic_variables: dict[str, str] | None = None
     knowledge_base_ids: list[str] | None = None
+    mcps: list[dict[str, Any]] | None = None
 
 
 class ResponseEngine(CompatModel):
@@ -95,6 +96,14 @@ class CreateAgentRequest(CompatModel):
     stt_mode: str | None = None
     denoising_mode: str | None = None
     opt_out_sensitive_data_storage: bool | None = None
+    pii_config: dict[str, Any] | None = None
+    fallback_voice_ids: list[str] | None = None
+    allow_user_dtmf: bool | None = None
+    allow_dtmf_interruption: bool | None = None
+    user_dtmf_options: dict[str, Any] | None = None
+    opt_in_signed_url: bool | None = None
+    ivr_option: dict[str, Any] | None = None
+    call_screening_option: dict[str, Any] | None = None
     # Arhiteq extra (dashboard folders); absent from Retell's public API.
     folder_id: str | None = None
 
@@ -229,6 +238,7 @@ def llm_to_dict(llm: RetellLLM) -> dict[str, Any]:
         "start_speaker": llm.start_speaker,
         "default_dynamic_variables": llm.default_dynamic_variables,
         "knowledge_base_ids": llm.knowledge_base_ids,
+        "mcps": llm.mcps,
         "is_published": True,
         "last_modification_timestamp": llm.last_modification_timestamp,
     }
@@ -272,6 +282,14 @@ def agent_to_dict(agent: Agent) -> dict[str, Any]:
         "stt_mode": agent.stt_mode,
         "denoising_mode": agent.denoising_mode,
         "opt_out_sensitive_data_storage": agent.opt_out_sensitive_data_storage,
+        "pii_config": agent.pii_config,
+        "fallback_voice_ids": agent.fallback_voice_ids,
+        "allow_user_dtmf": agent.allow_user_dtmf,
+        "allow_dtmf_interruption": agent.allow_dtmf_interruption,
+        "user_dtmf_options": agent.user_dtmf_options,
+        "opt_in_signed_url": agent.opt_in_signed_url,
+        "ivr_option": agent.ivr_option,
+        "call_screening_option": agent.call_screening_option,
         "last_modification_timestamp": agent.last_modification_timestamp,
         # Arhiteq extra (dashboard folders); additive, not in Retell's shape.
         "folder_id": agent.folder_id,

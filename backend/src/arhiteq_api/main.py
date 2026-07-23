@@ -57,6 +57,35 @@ def _apply_column_backfills(sync_conn) -> None:
         sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}webhook_timeout_ms BIGINT"))
     if "webhook_events" not in agent_cols:
         sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}webhook_events JSON"))
+    if "pii_config" not in agent_cols:
+        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}pii_config JSON"))
+    if "fallback_voice_ids" not in agent_cols:
+        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}fallback_voice_ids JSON"))
+    if "allow_user_dtmf" not in agent_cols:
+        sync_conn.execute(
+            text(f"ALTER TABLE agents ADD COLUMN {guard}allow_user_dtmf BOOLEAN DEFAULT TRUE")
+        )
+    if "allow_dtmf_interruption" not in agent_cols:
+        sync_conn.execute(
+            text(
+                f"ALTER TABLE agents ADD COLUMN {guard}allow_dtmf_interruption BOOLEAN "
+                "DEFAULT FALSE"
+            )
+        )
+    if "user_dtmf_options" not in agent_cols:
+        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}user_dtmf_options JSON"))
+    if "opt_in_signed_url" not in agent_cols:
+        sync_conn.execute(
+            text(f"ALTER TABLE agents ADD COLUMN {guard}opt_in_signed_url BOOLEAN DEFAULT FALSE")
+        )
+    if "ivr_option" not in agent_cols:
+        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}ivr_option JSON"))
+    if "call_screening_option" not in agent_cols:
+        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}call_screening_option JSON"))
+
+    llm_cols = {c["name"] for c in inspect(sync_conn).get_columns("retell_llms")}
+    if "mcps" not in llm_cols:
+        sync_conn.execute(text(f"ALTER TABLE retell_llms ADD COLUMN {guard}mcps JSON"))
 
     call_cols = {c["name"] for c in inspect(sync_conn).get_columns("calls")}
     if "collected_dynamic_variables" not in call_cols:

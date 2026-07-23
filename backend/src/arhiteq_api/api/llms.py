@@ -21,6 +21,7 @@ _MUTABLE_FIELDS = {
     "start_speaker",
     "default_dynamic_variables",
     "knowledge_base_ids",
+    "mcps",
 }
 
 

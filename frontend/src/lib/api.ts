@@ -158,6 +158,23 @@ export interface ResponseEngine {
   version?: number;
 }
 
+export interface PronunciationEntry {
+  word: string;
+  alphabet: "ipa" | "cmu";
+  phoneme: string;
+}
+
+export interface PiiConfig {
+  mode: "post_call";
+  categories: string[];
+}
+
+export interface UserDtmfOptions {
+  digit_limit?: number | null;
+  termination_key?: string | null;
+  timeout_ms?: number | null;
+}
+
 export interface RawAgent {
   agent_id: string;
   agent_name: string | null;
@@ -175,9 +192,28 @@ export interface RawAgent {
   reminder_max_count: number;
   boosted_keywords: string[] | null;
   enable_voicemail_detection: boolean;
+  ambient_sound?: string | null;
+  ambient_sound_volume?: number;
+  pronunciation_dictionary?: PronunciationEntry[] | null;
+  pii_config?: PiiConfig | null;
+  fallback_voice_ids?: string[] | null;
+  allow_user_dtmf?: boolean;
+  allow_dtmf_interruption?: boolean;
+  user_dtmf_options?: UserDtmfOptions | null;
+  opt_in_signed_url?: boolean;
+  ivr_option?: { action: { type: string; text?: string } } | null;
+  call_screening_option?: { action: { type: string; text?: string } } | null;
   last_modification_timestamp: number;
   folder_id?: string | null;
   [key: string]: unknown;
+}
+
+export interface McpServer {
+  name: string;
+  url: string;
+  headers?: Record<string, string>;
+  query_params?: Record<string, string>;
+  timeout_ms?: number;
 }
 
 export interface ChatMessage {
@@ -267,6 +303,7 @@ export interface RawLlm {
     | null;
   knowledge_base_ids: string[] | null;
   default_dynamic_variables: Record<string, string> | null;
+  mcps?: McpServer[] | null;
   last_modification_timestamp: number;
   [key: string]: unknown;
 }
@@ -617,9 +654,20 @@ export const api = {
       post(body),
     ),
 
+  getAgentVersions: (agentId: string) =>
+    request<RawAgent[]>(`/get-agent-versions/${encodeURIComponent(agentId)}`),
+
   // ------------------------------------------------------ Test LLM (text chat)
-  createChat: (agentId: string) =>
-    request<RawChat>("/create-chat", post({ agent_id: agentId })),
+  createChat: (agentId: string, dynamicVariables?: Record<string, string>) =>
+    request<RawChat>(
+      "/create-chat",
+      post({
+        agent_id: agentId,
+        ...(dynamicVariables && Object.keys(dynamicVariables).length
+          ? { retell_llm_dynamic_variables: dynamicVariables }
+          : {}),
+      }),
+    ),
 
   createChatCompletion: (chatId: string, content: string) =>
     request<{ messages: ChatMessage[]; is_fallback?: boolean }>(
@@ -641,8 +689,16 @@ export const api = {
   getChat: (chatId: string) => request<RawChat>(`/get-chat/${encodeURIComponent(chatId)}`),
 
   // --------------------------------------------------- Test Audio (web call)
-  createWebCall: (agentId: string) =>
-    request<RawWebCall>("/v2/create-web-call", post({ agent_id: agentId })),
+  createWebCall: (agentId: string, dynamicVariables?: Record<string, string>) =>
+    request<RawWebCall>(
+      "/v2/create-web-call",
+      post({
+        agent_id: agentId,
+        ...(dynamicVariables && Object.keys(dynamicVariables).length
+          ? { retell_llm_dynamic_variables: dynamicVariables }
+          : {}),
+      }),
+    ),
 
   updateLlm: (llmId: string, body: Partial<RawLlm>) =>
     request<RawLlm>(`/update-retell-llm/${encodeURIComponent(llmId)}`, patch(body)),
