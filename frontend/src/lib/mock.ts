@@ -410,8 +410,12 @@ export const mockCohorts: QaCohort[] = [
     agents: ["CL - Check-in v0.2 Companion", "CL-Inbound v0.1"],
     sampling_pct: 100,
     weekly_max: 100,
+    scoring_metric: "transfer",
+    sample_size: 42,
+    success_rate: 76,
     transfer_success_rate: 70,
     transfer_wait_time_s: 4.0,
+    score: 70,
   },
 ];
 

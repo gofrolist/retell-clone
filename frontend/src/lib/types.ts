@@ -196,8 +196,15 @@ export interface QaCohort {
   agents: string[];
   sampling_pct: number;
   weekly_max: number;
+  min_duration_s?: number | null;
+  success_criteria?: string | null;
+  scoring_metric: "call_successful" | "transfer";
+  /** Computed over the sampled calls of the last 30 days. */
+  sample_size: number;
+  success_rate: number;
   transfer_success_rate: number;
   transfer_wait_time_s: number;
+  score: number;
 }
 
 export interface Alert {

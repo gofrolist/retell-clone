@@ -477,6 +477,14 @@ class QaCohort(Base):
     agents: Mapped[list[Any]] = mapped_column(JSON, default=list)
     sampling_pct: Mapped[float] = mapped_column(Float, default=10.0)
     weekly_max: Mapped[int] = mapped_column(Integer, default=100)
+    # Wizard step 1 filter: only score calls longer than this (None = all).
+    min_duration_s: Mapped[int | None] = mapped_column(Integer)
+    # Wizard step 2: free-text criteria (shown in the UI, fed to future LLM
+    # rubric scoring) + which metric the cohort's score tracks.
+    success_criteria: Mapped[str | None] = mapped_column(Text)
+    scoring_metric: Mapped[str] = mapped_column(
+        String(32), default="call_successful"
+    )  # call_successful | transfer
     created_at_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
 
 

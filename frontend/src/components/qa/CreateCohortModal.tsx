@@ -47,6 +47,12 @@ export default function CreateCohortModal({
   const [selectedAgents, setSelectedAgents] = useState<string[]>([]);
   const [sampling, setSampling] = useState("100");
   const [weeklyMax, setWeeklyMax] = useState("100");
+  const [minDurationOn, setMinDurationOn] = useState(false);
+  const [minDuration, setMinDuration] = useState("30");
+  const [criteria, setCriteria] = useState("");
+  const [scoringMetric, setScoringMetric] = useState<"call_successful" | "transfer">(
+    "call_successful",
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -56,6 +62,10 @@ export default function CreateCohortModal({
     setSelectedAgents([]);
     setSampling("100");
     setWeeklyMax("100");
+    setMinDurationOn(false);
+    setMinDuration("30");
+    setCriteria("");
+    setScoringMetric("call_successful");
     setError(null);
     onClose();
   };
@@ -69,6 +79,9 @@ export default function CreateCohortModal({
         agents: selectedAgents,
         sampling_pct: Number(sampling) || 0,
         weekly_max: Number(weeklyMax) || 0,
+        min_duration_s: minDurationOn ? Number(minDuration) || 0 : null,
+        success_criteria: criteria.trim() || null,
+        scoring_metric: scoringMetric,
       });
       onCreated();
       close();
@@ -139,8 +152,13 @@ export default function CreateCohortModal({
             </div>
           </Field>
 
-          <Field label="Filters" hint="Date-range and call filters are not available yet.">
-            <div className="flex items-center gap-2 rounded-lg border border-line bg-app/50 p-2 opacity-50">
+          <Field label="Filters" hint="Only score calls matching this filter.">
+            <div className="flex items-center gap-2 rounded-lg border border-line bg-app/50 p-2">
+              <CheckboxRow
+                checked={minDurationOn}
+                onChange={setMinDurationOn}
+                label=""
+              />
               <Select
                 value="duration"
                 className="pointer-events-none"
@@ -151,7 +169,13 @@ export default function CreateCohortModal({
                 className="pointer-events-none"
                 options={[{ value: "gt", label: ">" }]}
               />
-              <TextInput defaultValue={30} disabled className="w-20 text-center" />
+              <TextInput
+                value={minDuration}
+                onChange={(e) => setMinDuration(e.target.value)}
+                disabled={!minDurationOn}
+                inputMode="numeric"
+                className="w-20 text-center"
+              />
               <span className="text-[13px] text-sub">s</span>
             </div>
           </Field>
@@ -177,28 +201,26 @@ export default function CreateCohortModal({
         <div className="space-y-4">
           <Field
             label="Success Criteria"
-            hint="The scoring pipeline is not available yet — criteria are not stored."
+            hint="Describes what a successful call looks like for this cohort."
           >
             <textarea
               rows={5}
-              disabled
-              title="Not available yet"
+              value={criteria}
+              onChange={(e) => setCriteria(e.target.value)}
               placeholder="e.g. The agent completed the wellness check, logged the outcome, and the user did not express frustration…"
-              className="w-full resize-none rounded-lg border border-line bg-white px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full resize-none rounded-lg border border-line bg-white px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
             />
           </Field>
           <Field label="Scoring Metric">
-            <div title="Not available yet" className="opacity-50">
-              <Select
-                value="transfer"
-                className="w-full pointer-events-none"
-                options={[
-                  { value: "transfer", label: "Transfer Success Rate" },
-                  { value: "wait", label: "Transfer Wait Time" },
-                  { value: "custom", label: "Custom rubric" },
-                ]}
-              />
-            </div>
+            <Select
+              value={scoringMetric}
+              onChange={(v) => setScoringMetric(v as "call_successful" | "transfer")}
+              className="w-full"
+              options={[
+                { value: "call_successful", label: "Call Success Rate" },
+                { value: "transfer", label: "Transfer Success Rate" },
+              ]}
+            />
           </Field>
           {error && <p className="text-[12.5px] text-bad">{error}</p>}
         </div>

@@ -78,6 +78,19 @@ def _apply_column_backfills(sync_conn) -> None:
             text(f"ALTER TABLE alerts ADD COLUMN {guard}compare_to VARCHAR(16) DEFAULT 'value'")
         )
 
+    cohort_cols = {c["name"] for c in inspect(sync_conn).get_columns("qa_cohorts")}
+    if "min_duration_s" not in cohort_cols:
+        sync_conn.execute(text(f"ALTER TABLE qa_cohorts ADD COLUMN {guard}min_duration_s INTEGER"))
+    if "success_criteria" not in cohort_cols:
+        sync_conn.execute(text(f"ALTER TABLE qa_cohorts ADD COLUMN {guard}success_criteria TEXT"))
+    if "scoring_metric" not in cohort_cols:
+        sync_conn.execute(
+            text(
+                f"ALTER TABLE qa_cohorts ADD COLUMN {guard}scoring_metric VARCHAR(32) "
+                "DEFAULT 'call_successful'"
+            )
+        )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

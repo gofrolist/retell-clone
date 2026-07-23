@@ -822,6 +822,9 @@ export const api = {
     agents?: string[];
     sampling_pct?: number;
     weekly_max?: number;
+    min_duration_s?: number | null;
+    success_criteria?: string | null;
+    scoring_metric?: "call_successful" | "transfer";
   }) => request<QaCohort>("/create-qa-cohort", post(body)),
   deleteCohort: (id: string) =>
     request<void>(`/delete-qa-cohort/${encodeURIComponent(id)}`, del),

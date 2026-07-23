@@ -8,6 +8,7 @@ changes the public Retell-compatible surface.
 
 import re
 from collections import Counter
+from hashlib import sha256
 from datetime import datetime, timezone
 from typing import Any, NamedTuple
 
@@ -610,16 +611,73 @@ async def delete_alert(
 # ----------------------------------------------------------------- QA cohorts
 
 
-def _cohort_to_dict(c: QaCohort) -> dict[str, Any]:
+QA_WINDOW_DAYS = 30
+
+
+def _sample_bucket(call_id: str) -> int:
+    """Deterministic 0-99 bucket for sampling_pct comparisons."""
+    return int(sha256(call_id.encode()).hexdigest()[:8], 16) % 100
+
+
+def _cohort_metrics(cohort: QaCohort, calls: list[Call]) -> dict[str, Any]:
+    """Score a cohort over its sampled calls (last QA_WINDOW_DAYS).
+
+    Sampling is deterministic per call (hash of call_id vs sampling_pct) so
+    repeated page loads score the same sample, capped at ~a month of the
+    cohort's weekly_max.
+    """
+    agent_set = set(cohort.agents or [])
+    matching = [
+        c
+        for c in calls
+        if (not agent_set or c.agent_id in agent_set)
+        and (not cohort.min_duration_s or (c.duration_ms or 0) >= cohort.min_duration_s * 1000)
+    ]
+    pct = max(0.0, min(cohort.sampling_pct or 0.0, 100.0))
+    # Stable digest, not hash(): PYTHONHASHSEED would resample per process.
+    sampled = [c for c in matching if _sample_bucket(c.call_id) < pct]
+    cap = max(1, (cohort.weekly_max or 100) * 4)
+    sampled = sampled[:cap]
+
+    analyzed = [c for c in sampled if (c.call_analysis or {}).get("call_successful") is not None]
+    successful = sum(1 for c in analyzed if (c.call_analysis or {}).get("call_successful"))
+    transferred = [c for c in sampled if "transfer" in (c.disconnection_reason or "").lower()]
+    transfer_rate = round(100 * len(transferred) / len(sampled)) if sampled else 0
+    success_rate = round(100 * successful / len(analyzed)) if analyzed else 0
+    # Approximation: a transferred call ends at the transfer, so its duration
+    # is the time the caller waited to reach a human.
+    wait_times = [c.duration_ms for c in transferred if c.duration_ms]
+    return {
+        "sample_size": len(sampled),
+        "success_rate": success_rate,
+        "transfer_success_rate": transfer_rate,
+        "transfer_wait_time_s": round(sum(wait_times) / len(wait_times) / 1000, 1)
+        if wait_times
+        else 0,
+        "score": transfer_rate if cohort.scoring_metric == "transfer" else success_rate,
+    }
+
+
+def _cohort_to_dict(c: QaCohort, metrics: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "cohort_id": c.cohort_id,
         "name": c.name,
         "agents": c.agents or [],
         "sampling_pct": c.sampling_pct,
         "weekly_max": c.weekly_max,
-        # Scoring pipeline not built yet; the dashboard renders these as-is.
-        "transfer_success_rate": 0,
-        "transfer_wait_time_s": 0,
+        "min_duration_s": c.min_duration_s,
+        "success_criteria": c.success_criteria,
+        "scoring_metric": c.scoring_metric or "call_successful",
+        **(
+            metrics
+            or {
+                "sample_size": 0,
+                "success_rate": 0,
+                "transfer_success_rate": 0,
+                "transfer_wait_time_s": 0,
+                "score": 0,
+            }
+        ),
     }
 
 
@@ -628,6 +686,9 @@ class CreateCohortRequest(CompatModel):
     agents: list[str] = []
     sampling_pct: float = 10.0
     weekly_max: int = 100
+    min_duration_s: int | None = Field(default=None, ge=0, le=86_400)
+    success_criteria: str | None = None
+    scoring_metric: str = Field(default="call_successful", pattern="^(call_successful|transfer)$")
 
 
 @router.get("/list-qa-cohorts")
@@ -638,7 +699,19 @@ async def list_qa_cohorts(
     rows = (
         await session.scalars(select(QaCohort).where(QaCohort.workspace_id == api_key.workspace_id))
     ).all()
-    return [_cohort_to_dict(c) for c in rows]
+    if not rows:
+        return []
+    # One shared window of ended calls; per-cohort filters run in memory.
+    calls = (
+        await session.scalars(
+            select(Call).where(
+                Call.workspace_id == api_key.workspace_id,
+                Call.created_at_ms >= now_ms() - QA_WINDOW_DAYS * DAY_MS,
+                Call.call_status.in_(("ended", "error", "not_connected")),
+            )
+        )
+    ).all()
+    return [_cohort_to_dict(c, _cohort_metrics(c, list(calls))) for c in rows]
 
 
 @router.post("/create-qa-cohort", status_code=201)
