@@ -1,6 +1,6 @@
 "use client";
 
-import AudioPlayer from "./AudioPlayer";
+import AudioPlayer, { type AudioMarker } from "./AudioPlayer";
 import Transcript from "./Transcript";
 import CopyId from "@/components/ui/CopyId";
 import StatusDot from "@/components/ui/StatusDot";
@@ -139,6 +139,30 @@ export default function CallDrawer({
 
   const c = full ?? call;
 
+  // Timeline annotations: one dot per tool invocation (popup includes its
+  // paired result) and per KB retrieval. Items without time_ms (calls
+  // recorded before the worker stamped timestamps) get no marker.
+  const items = c.transcript ?? [];
+  const markers: AudioMarker[] = items.flatMap((t, i): AudioMarker[] => {
+    if (typeof t.time_ms !== "number") return [];
+    if (t.role === "tool_invocation") {
+      const result = items.find(
+        (r, j) =>
+          j > i &&
+          r.role === "tool_result" &&
+          (t.tool_call_id ? r.tool_call_id === t.tool_call_id : r.name === t.name),
+      );
+      const body = [`args: ${t.content}`, result ? `result: ${result.content}` : null]
+        .filter(Boolean)
+        .join("\n");
+      return [{ time_ms: t.time_ms, kind: "tool" as const, title: t.name ?? "tool call", body }];
+    }
+    if (t.role === "kb_retrieval") {
+      return [{ time_ms: t.time_ms, kind: "kb" as const, title: "Knowledge Base Retrieval" }];
+    }
+    return [];
+  });
+
   async function rerun() {
     if (rerunning) return;
     setRerunning(true);
@@ -232,7 +256,11 @@ export default function CallDrawer({
 
             {c.recording_url && /^https?:/i.test(c.recording_url) && (
               <div className="mt-4">
-                <AudioPlayer src={c.recording_url} durationMs={c.duration_ms || 0} />
+                <AudioPlayer
+                  src={c.recording_url}
+                  durationMs={c.duration_ms || 0}
+                  markers={markers}
+                />
               </div>
             )}
 
