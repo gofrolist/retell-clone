@@ -42,8 +42,10 @@ field): `pii_config`, `fallback_voice_ids`, `allow_user_dtmf`,
 `allow_dtmf_interruption`, `user_dtmf_options`, `opt_in_signed_url`,
 `ivr_option`, `call_screening_option`; on Retell LLMs: `mcps` (persist-only —
 worker MCP execution pending, same status as the `mcp` tool type). Batch calls
-store `reserved_concurrency` + `call_time_window` verbatim (dial scheduler
-TODO, as with `trigger_timestamp`).
+dial within the workspace's outbound concurrency budget minus the batch's
+`reserved_concurrency` (overflow tasks are paced by a background drainer as
+slots free up); `call_time_window` is stored verbatim (scheduler TODO, as
+with `trigger_timestamp`).
 
 Known intentional deviations (all additive or dashboard-only):
 - `call_analysis` carries **both** `summary` and `call_summary` (consumer compat).

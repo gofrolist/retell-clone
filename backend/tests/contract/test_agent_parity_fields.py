@@ -144,3 +144,19 @@ async def test_contact_field_definition_validation(client):
             json={"settings": {"contact_field_definitions": bad}},
         )
         assert resp.status_code == 422, bad
+
+
+async def test_patch_null_on_non_nullable_bool_resets_to_default(client):
+    resp = await client.patch(
+        f"/update-agent/{AGENT_ID}", headers=AUTH_HEADERS, json={"allow_user_dtmf": False}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["allow_user_dtmf"] is False
+
+    # Retell semantics: null clears the field back to its default — it must
+    # neither 500 on the NOT NULL column nor serve a null boolean.
+    resp = await client.patch(
+        f"/update-agent/{AGENT_ID}", headers=AUTH_HEADERS, json={"allow_user_dtmf": None}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["allow_user_dtmf"] is True

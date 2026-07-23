@@ -79,46 +79,18 @@ export default function EditorHeader({
     setBusy(true);
     setMenuError(null);
     try {
+      // Spread the full objects rather than hand-picking fields: the backend
+      // create endpoints keep only mutable fields, so every copyable setting
+      // (including ones added later) transfers without this list drifting.
       let llmId: string | undefined;
       if (llm) {
-        const copy = await api.createLlm({
-          model: llm.model,
-          model_temperature: llm.model_temperature,
-          general_prompt: llm.general_prompt,
-          begin_message: llm.begin_message,
-          start_speaker: llm.start_speaker,
-          general_tools: llm.general_tools,
-          knowledge_base_ids: llm.knowledge_base_ids,
-          default_dynamic_variables: llm.default_dynamic_variables,
-          mcps: llm.mcps,
-        });
+        const copy = await api.createLlm({ ...llm });
         llmId = copy.llm_id;
       }
       const created = await api.createAgent({
+        ...agent,
         agent_name: `Copy of ${agent.agent_name ?? "Untitled agent"}`,
         response_engine: llmId ? { type: "retell-llm", llm_id: llmId } : agent.response_engine,
-        voice_id: agent.voice_id,
-        language: agent.language,
-        responsiveness: agent.responsiveness,
-        interruption_sensitivity: agent.interruption_sensitivity,
-        reminder_trigger_ms: agent.reminder_trigger_ms,
-        reminder_max_count: agent.reminder_max_count,
-        boosted_keywords: agent.boosted_keywords,
-        enable_voicemail_detection: agent.enable_voicemail_detection,
-        webhook_url: agent.webhook_url,
-        webhook_timeout_ms: agent.webhook_timeout_ms,
-        webhook_events: agent.webhook_events,
-        ambient_sound: agent.ambient_sound,
-        ambient_sound_volume: agent.ambient_sound_volume,
-        pronunciation_dictionary: agent.pronunciation_dictionary,
-        pii_config: agent.pii_config,
-        fallback_voice_ids: agent.fallback_voice_ids,
-        allow_user_dtmf: agent.allow_user_dtmf,
-        user_dtmf_options: agent.user_dtmf_options,
-        opt_in_signed_url: agent.opt_in_signed_url,
-        ivr_option: agent.ivr_option,
-        call_screening_option: agent.call_screening_option,
-        folder_id: agent.folder_id,
       });
       router.push(`/agents/${created.agent_id}`);
     } catch (e) {

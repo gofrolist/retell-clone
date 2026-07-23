@@ -322,7 +322,9 @@ export default function WorkspacePage() {
             </Button>
             <Button
               variant="danger"
-              disabled={deleting || deleteConfirm !== workspaceName}
+              // The name-fetch can fail (workspaceName ""): never let an empty
+              // confirmation satisfy the check for an irreversible delete.
+              disabled={deleting || !workspaceName || deleteConfirm !== workspaceName}
               onClick={deleteWorkspace}
             >
               {deleting ? "Deleting…" : "Delete permanently"}

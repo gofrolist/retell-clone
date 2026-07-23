@@ -1,7 +1,7 @@
 from typing import Any
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import require_api_key
@@ -88,15 +88,24 @@ async def expire_stale_web_calls(session: AsyncSession, workspace_id: str) -> No
     await session.commit()
 
 
-async def count_live_calls(session: AsyncSession, workspace_id: str) -> int:
-    return (
-        await session.scalar(
-            select(func.count())
-            .select_from(Call)
-            .where(Call.workspace_id == workspace_id, Call.call_status.in_(LIVE_STATUSES))
-        )
-        or 0
+async def count_live_calls(
+    session: AsyncSession, workspace_id: str, *, outbound_only: bool = False
+) -> int:
+    """Live calls in the workspace; with `outbound_only`, just the ones that
+    consume the non-reserved (outbound) budget.
+
+    Web calls are stored with direction="inbound" (the column is non-null and
+    the field isn't exposed for them) but are gated like outbound calls, so
+    the budget filter keys on call_type as well.
+    """
+    query = (
+        select(func.count())
+        .select_from(Call)
+        .where(Call.workspace_id == workspace_id, Call.call_status.in_(LIVE_STATUSES))
     )
+    if outbound_only:
+        query = query.where(or_(Call.direction != "inbound", Call.call_type == "web_call"))
+    return await session.scalar(query) or 0
 
 
 @router.get("/get-concurrency")

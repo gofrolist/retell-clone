@@ -378,7 +378,10 @@ export default function ContactsPage() {
       .then((ws) => {
         const defs = ws.settings.contact_field_definitions ?? [];
         setFieldDefs(defs);
-        setColumns((cur) => reconcileColumns(cur, defs));
+        // Re-derive from the RAW stored config: the defs-less initial load
+        // already stripped custom:* entries, so reconciling the current state
+        // would lose their saved order/visibility on every mount.
+        setColumns(loadColumnConfig(defs));
       })
       .catch(() => {}); // backend banner covers unreachable
   }, []);

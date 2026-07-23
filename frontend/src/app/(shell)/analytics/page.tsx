@@ -97,17 +97,24 @@ export default function AnalyticsPage() {
     }
   }, []);
 
+  // An inverted pair would silently fall back to the backend's default window
+  // while the toolbar still shows the custom range — normalize instead.
+  const [rangeFrom, rangeTo] =
+    customFrom && customTo && customFrom > customTo
+      ? [customTo, customFrom]
+      : [customFrom, customTo];
+
   const params = useMemo((): AnalyticsParams => {
     const p: AnalyticsParams = {};
-    if (customFrom && customTo) {
-      p.start_ms = new Date(`${customFrom}T00:00:00`).getTime();
-      p.end_ms = new Date(`${customTo}T00:00:00`).getTime();
+    if (rangeFrom && rangeTo) {
+      p.start_ms = new Date(`${rangeFrom}T00:00:00`).getTime();
+      p.end_ms = new Date(`${rangeTo}T00:00:00`).getTime();
     } else {
       p.days = days;
     }
     if (agentIds.length) p.agent_ids = agentIds;
     return p;
-  }, [days, customFrom, customTo, agentIds]);
+  }, [days, rangeFrom, rangeTo, agentIds]);
 
   useEffect(() => {
     let cancelled = false;
@@ -146,8 +153,8 @@ export default function AnalyticsPage() {
   }, []);
 
   const dateLabel =
-    customFrom && customTo
-      ? `${formatDate(new Date(`${customFrom}T00:00:00`).getTime())} - ${formatDate(new Date(`${customTo}T00:00:00`).getTime())}`
+    rangeFrom && rangeTo
+      ? `${formatDate(new Date(`${rangeFrom}T00:00:00`).getTime())} - ${formatDate(new Date(`${rangeTo}T00:00:00`).getTime())}`
       : (RANGE_PRESETS.find((p) => p.days === days)?.label ?? `Last ${days} days`);
 
   const exportCsv = () => {
@@ -231,6 +238,7 @@ export default function AnalyticsPage() {
                 <input
                   type="date"
                   value={customFrom}
+                  max={customTo || undefined}
                   onChange={(e) => setCustomFrom(e.target.value)}
                   className="h-8 w-full rounded-lg border border-line bg-white px-2 text-[12.5px] outline-none focus:border-accent"
                 />
@@ -238,6 +246,7 @@ export default function AnalyticsPage() {
                 <input
                   type="date"
                   value={customTo}
+                  min={customFrom || undefined}
                   onChange={(e) => setCustomTo(e.target.value)}
                   className="h-8 w-full rounded-lg border border-line bg-white px-2 text-[12.5px] outline-none focus:border-accent"
                 />

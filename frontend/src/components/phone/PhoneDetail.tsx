@@ -57,13 +57,15 @@ export default function PhoneDetail({
     setFallbackSaved(false);
   }, [phone.phone_number, phone.nickname, phone.fallback_number]);
 
-  async function update(body: Record<string, unknown>) {
+  async function update(body: Record<string, unknown>): Promise<boolean> {
     setError(null);
     try {
       await api.updatePhoneNumber(phone.phone_number, body);
       onChanged();
+      return true;
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to update phone number");
+      return false;
     }
   }
 
@@ -82,9 +84,10 @@ export default function PhoneDetail({
       return;
     }
     setFallbackError(null);
-    await update({ fallback_number: next || null });
-    setFallbackSaved(true);
-    setTimeout(() => setFallbackSaved(false), 2000);
+    if (await update({ fallback_number: next || null })) {
+      setFallbackSaved(true);
+      setTimeout(() => setFallbackSaved(false), 2000);
+    }
   }
 
   async function remove() {

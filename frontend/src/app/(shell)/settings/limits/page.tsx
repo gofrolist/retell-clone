@@ -138,7 +138,9 @@ export default function LimitsPage() {
                       "Concurrency slots held back for inbound calls. Outbound and web calls can't use reserved slots.",
                     value: s.reserved_inbound_concurrency,
                     min: 0,
-                    max: concurrencyLimit ?? 20,
+                    // At least one slot must stay outbound (the backend
+                    // rejects reserving the full limit).
+                    max: Math.max(0, (concurrencyLimit ?? 20) - 1),
                     save: (v) => ({ reserved_inbound_concurrency: v }),
                   })
                 }

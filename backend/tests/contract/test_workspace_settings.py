@@ -4,7 +4,7 @@
 import respx
 from httpx import Response
 
-from tests.conftest import AGENT_ID, AUTH_HEADERS
+from tests.conftest import AGENT_ID, AUTH_HEADERS, FROM_NUMBER, WORKSPACE_ID
 
 WEBHOOK_URL = "https://consumer.example/webhooks/arhiteq"
 
@@ -155,3 +155,55 @@ async def test_delete_workspace_removes_everything(client):
     # The API key died with the workspace, so the next call is unauthorized.
     resp = await client.get("/workspace", headers=AUTH_HEADERS)
     assert resp.status_code == 401
+
+
+async def test_reserving_the_full_limit_is_rejected(client):
+    # Allowing reserved == limit would silently zero the outbound budget.
+    resp = await client.patch(
+        "/workspace",
+        headers=AUTH_HEADERS,
+        json={"settings": {"reserved_inbound_concurrency": 20}},
+    )
+    assert resp.status_code == 422
+
+
+async def test_live_inbound_calls_do_not_starve_outbound(client, monkeypatch):
+    from arhiteq_api.api import concurrency
+    import arhiteq_api.db as db_module
+    from arhiteq_api.models import Call
+
+    monkeypatch.setattr(concurrency, "BASE_CONCURRENCY", 2)
+    await client.patch(
+        "/workspace",
+        headers=AUTH_HEADERS,
+        json={"settings": {"reserved_inbound_concurrency": 1}},
+    )
+    # Two live inbound calls: over their 1-slot reservation.
+    async with db_module.session_factory()() as session:
+        for i in range(2):
+            session.add(
+                Call(
+                    call_id=f"call_inbound_live_{i:016d}",
+                    workspace_id=WORKSPACE_ID,
+                    agent_id=AGENT_ID,
+                    direction="inbound",
+                    call_status="ongoing",
+                )
+            )
+        await session.commit()
+
+    # Outbound budget is limit(2) - reserved(1) = 1 and no outbound call is
+    # live, so dialing must succeed even though total live (2) exceeds it.
+    resp = await client.post(
+        "/v2/create-phone-call",
+        headers=AUTH_HEADERS,
+        json={"from_number": FROM_NUMBER, "to_number": "+12137774445"},
+    )
+    assert resp.status_code == 201
+    # The single outbound slot is now taken: the next outbound call 429s.
+    resp = await client.post(
+        "/v2/create-phone-call",
+        headers=AUTH_HEADERS,
+        json={"from_number": FROM_NUMBER, "to_number": "+12137774446"},
+    )
+    assert resp.status_code == 429

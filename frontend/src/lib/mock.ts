@@ -626,7 +626,24 @@ export function demoResponse<T>(path: string, init?: RequestInit): T {
   if (route === "/list-api-keys") return mockApiKeys as T;
   if (route === "/list-webhook-deliveries") return mockDeliveries as T;
   if (route === "/workspace")
-    return { workspace_id: "ws_demo", name: "Demo Workspace", webhook_url: null } as T;
+    return {
+      workspace_id: "ws_demo",
+      name: "Demo Workspace",
+      webhook_url: null,
+      // Pages hard-deref ws.settings.* — keep this in step with WorkspaceSettings.
+      settings: {
+        billing_email: null,
+        purchased_concurrency: 0,
+        reserved_inbound_concurrency: 0,
+        concurrency_burst_enabled: false,
+        llm_token_limit: 4096,
+        cps_limits: { telnyx: 1, twilio: 1, custom_telephony: 1 },
+        llm_failover_enabled: false,
+        auto_call_retry_enabled: false,
+        conductor_messages_enabled: false,
+        contact_field_definitions: [],
+      },
+    } as T;
 
   throw new Error(`Demo mode: no canned data for ${path}`);
 }

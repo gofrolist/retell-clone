@@ -43,10 +43,23 @@ def apply_patch(
     bump_version: bool = False,
     touch: bool = False,
 ) -> None:
-    """Copy allowlisted `fields` from `payload` onto `obj` (in place)."""
+    """Copy allowlisted `fields` from `payload` onto `obj` (in place).
+
+    An explicit null aimed at a non-nullable column resets it to the column
+    default (Retell semantics: null clears the field) instead of writing a
+    NULL that would either IntegrityError or corrupt the wire contract.
+    """
     for field, value in payload.items():
-        if field in fields:
-            setattr(obj, field, value)
+        if field not in fields:
+            continue
+        if value is None:
+            column = obj.__table__.columns.get(field)
+            if column is not None and not column.nullable:
+                default = column.default
+                if default is None or not default.is_scalar:
+                    continue  # no scalar default to reset to: leave unchanged
+                value = default.arg
+        setattr(obj, field, value)
     if bump_version:
         obj.version += 1
     if touch:

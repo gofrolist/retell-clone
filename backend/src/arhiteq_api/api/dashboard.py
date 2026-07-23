@@ -86,7 +86,10 @@ def _window(days: int, start_ms: int | None, end_ms: int | None) -> tuple[int, i
     """Resolve (start_ms, end_ms, days). Explicit range wins over `days`;
     the window is whole calendar days including the end day's bucket."""
     if start_ms is not None and end_ms is not None and end_ms >= start_ms:
-        span_days = min(int((end_ms - start_ms) // DAY_MS) + 1, 365)
+        # Buckets are UTC days but explicit ranges arrive as local midnights,
+        # and the query tolerates timestamps up to end_ms + DAY_MS — so span
+        # every UTC day a returned call can land in, not just the raw delta.
+        span_days = min(int((end_ms + DAY_MS) // DAY_MS - start_ms // DAY_MS) + 1, 365)
         return start_ms, end_ms, span_days
     days = max(1, min(days, 365))
     # Window is the last `days` calendar days *including today*, so the series
@@ -543,6 +546,21 @@ class CreateAlertRequest(CompatModel):
     enabled: bool = True
 
 
+class UpdateAlertRequest(CompatModel):
+    """PATCH body: same constraints as create, everything optional."""
+
+    name: str | None = None
+    metric: str | None = None
+    condition: str | None = None
+    threshold: float | None = None
+    compare_to: str | None = Field(default=None, pattern="^(value|last_cycle)$")
+    check_every_min: int | None = None
+    lookback_min: int | None = None
+    notify_emails: list[str] | None = None
+    webhook_url: str | None = None
+    enabled: bool | None = None
+
+
 _ALERT_FIELDS = (
     "name",
     "metric",
@@ -583,17 +601,21 @@ async def create_alert(
 @router.patch("/update-alert/{alert_id}")
 async def update_alert(
     alert_id: str,
-    request: Request,
+    body: UpdateAlertRequest,
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
     alert = await session.get(Alert, alert_id)
     if alert is None or alert.workspace_id != api_key.workspace_id:
         raise HTTPException(404, detail="Alert not found")
-    payload = await request.json()
+    payload = body.model_dump(exclude_unset=True)
     for field in _ALERT_FIELDS:
-        if field in payload:
-            setattr(alert, field, payload[field])
+        if field not in payload:
+            continue
+        # Only webhook_url is nullable; null on the others means "no change".
+        if payload[field] is None and field != "webhook_url":
+            continue
+        setattr(alert, field, payload[field])
     await session.commit()
     return _alert_to_dict(alert)
 
@@ -639,7 +661,9 @@ def _cohort_metrics(cohort: QaCohort, calls: list[Call]) -> dict[str, Any]:
     pct = max(0.0, min(cohort.sampling_pct or 0.0, 100.0))
     # Stable digest, not hash(): PYTHONHASHSEED would resample per process.
     sampled = [c for c in matching if _sample_bucket(c.call_id) < pct]
-    cap = max(1, (cohort.weekly_max or 100) * 4)
+    # weekly_max is non-null (default 100); 0 legitimately means "score
+    # nothing", so no falsy-or fallback here.
+    cap = cohort.weekly_max * 4
     sampled = sampled[:cap]
 
     analyzed = [c for c in sampled if (c.call_analysis or {}).get("call_successful") is not None]
@@ -688,7 +712,7 @@ class CreateCohortRequest(CompatModel):
     name: str
     agents: list[str] = []
     sampling_pct: float = 10.0
-    weekly_max: int = 100
+    weekly_max: int = Field(default=100, ge=0)
     min_duration_s: int | None = Field(default=None, ge=0, le=86_400)
     success_criteria: str | None = None
     scoring_metric: str = Field(default="call_successful", pattern="^(call_successful|transfer)$")
@@ -707,11 +731,15 @@ async def list_qa_cohorts(
     # One shared window of ended calls; per-cohort filters run in memory.
     calls = (
         await session.scalars(
-            select(Call).where(
+            select(Call)
+            .where(
                 Call.workspace_id == api_key.workspace_id,
                 Call.created_at_ms >= now_ms() - QA_WINDOW_DAYS * DAY_MS,
                 Call.call_status.in_(("ended", "error", "not_connected")),
             )
+            # Deterministic order so the weekly_max cap truncates the same
+            # (most recent) sample on every page load.
+            .order_by(Call.created_at_ms.desc(), Call.call_id)
         )
     ).all()
     return [_cohort_to_dict(c, _cohort_metrics(c, list(calls))) for c in rows]
@@ -1012,14 +1040,22 @@ def _merged_settings_patch(stored: dict[str, Any], patch: dict[str, Any]) -> dic
             case _:
                 raise HTTPException(422, detail=f"Unknown setting {key!r}")
 
-    # Reserving more capacity than the workspace has would deadlock outbound.
+    # Reserving the workspace's entire capacity would silently deadlock every
+    # outbound and web call (effective outbound limit 0), so at least one
+    # non-reserved slot must remain.
     limit = BASE_CONCURRENCY + int(
         out.get("purchased_concurrency", stored.get("purchased_concurrency", 0)) or 0
     )
-    if int(out.get("reserved_inbound_concurrency") or 0) > limit:
+    reserved = int(
+        out.get("reserved_inbound_concurrency", stored.get("reserved_inbound_concurrency", 0)) or 0
+    )
+    if reserved >= limit:
         raise HTTPException(
             422,
-            detail=f"reserved_inbound_concurrency can't exceed the concurrency limit ({limit})",
+            detail=(
+                f"reserved_inbound_concurrency must stay below the concurrency limit ({limit}) "
+                "so outbound calls keep at least one slot"
+            ),
         )
     return out
 
