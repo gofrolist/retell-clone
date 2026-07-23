@@ -176,6 +176,18 @@ export interface AnalyticsData {
   disconnection_reason: { name: string; value: number }[];
   user_sentiment: { name: string; value: number }[];
   phone_direction: { name: string; value: number }[];
+  /** Present when the request asked for a breakdown (group_by). */
+  call_counts_groups?: { name: string; series: StatPoint[] }[];
+}
+
+export interface ChatAnalyticsData {
+  chat_counts: number;
+  avg_messages: number;
+  avg_duration_s: number;
+  chat_counts_series: StatPoint[];
+  messages_series: StatPoint[];
+  chat_status: { name: string; value: number }[];
+  chat_agent: { name: string; value: number }[];
 }
 
 export interface QaCohort {
@@ -196,6 +208,8 @@ export interface Alert {
   metric: string;
   condition: string;
   threshold: number;
+  /** "value" = absolute threshold; "last_cycle" = % change vs previous window */
+  compare_to: "value" | "last_cycle";
   notify_emails: string[];
   webhook_url?: string;
   enabled: boolean;

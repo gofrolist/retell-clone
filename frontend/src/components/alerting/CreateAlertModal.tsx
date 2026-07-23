@@ -49,6 +49,10 @@ export default function CreateAlertModal({
   const [metric, setMetric] = useState("calls");
   const [condition, setCondition] = useState("above");
   const [threshold, setThreshold] = useState("2");
+  const [compareTo, setCompareTo] = useState<"value" | "last_cycle">("value");
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+  const [testOk, setTestOk] = useState(false);
   const [emails, setEmails] = useState<string[]>([]);
   const [emailDraft, setEmailDraft] = useState("");
   const [webhookUrl, setWebhookUrl] = useState("");
@@ -64,10 +68,12 @@ export default function CreateAlertModal({
     setMetric(editing?.metric ?? "calls");
     setCondition(editing?.condition ?? "above");
     setThreshold(String(editing?.threshold ?? 2));
+    setCompareTo(editing?.compare_to ?? "value");
     setEmails(editing?.notify_emails ?? []);
     setEmailDraft("");
     setWebhookUrl(editing?.webhook_url ?? "");
     setError(null);
+    setTestResult(null);
   }, [open, editing]);
 
   const addEmail = () => {
@@ -85,6 +91,7 @@ export default function CreateAlertModal({
       metric,
       condition,
       threshold: Number(threshold) || 0,
+      compare_to: compareTo,
       check_every_min: Number(checkEvery) || 5,
       lookback_min: Number(lookback) || 30,
       notify_emails: emails,
@@ -149,12 +156,16 @@ export default function CreateAlertModal({
         </div>
 
         <div>
-          <RadioRow checked onSelect={() => {}} label="Compare to certain value" />
-          <div title="Not available yet" className="opacity-50">
-            <div className="pointer-events-none">
-              <RadioRow checked={false} onSelect={() => {}} label="Compare to last cycle" />
-            </div>
-          </div>
+          <RadioRow
+            checked={compareTo === "value"}
+            onSelect={() => setCompareTo("value")}
+            label="Compare to certain value"
+          />
+          <RadioRow
+            checked={compareTo === "last_cycle"}
+            onSelect={() => setCompareTo("last_cycle")}
+            label="Compare to last cycle"
+          />
         </div>
 
         <Field label="Metric">
@@ -185,6 +196,7 @@ export default function CreateAlertModal({
             className="w-20 text-center"
             inputMode="decimal"
           />
+          {compareTo === "last_cycle" && <span className="text-sub">% vs previous cycle</span>}
         </div>
 
         <div className="rounded-lg border border-line bg-app/50 p-3">
@@ -227,10 +239,39 @@ export default function CreateAlertModal({
                 value={webhookUrl}
                 onChange={(e) => setWebhookUrl(e.target.value)}
               />
-              <Button size="sm" disabled title="Not available yet">
-                Test
+              <Button
+                size="sm"
+                disabled={testing || !webhookUrl.trim()}
+                title={webhookUrl.trim() ? undefined : "Enter a webhook URL first"}
+                onClick={async () => {
+                  setTesting(true);
+                  setTestResult(null);
+                  try {
+                    const res = await api.testWorkspaceWebhook({
+                      webhook_url: webhookUrl.trim(),
+                    });
+                    setTestOk(res.ok);
+                    setTestResult(
+                      res.ok
+                        ? `Delivered (HTTP ${res.status_code})`
+                        : (res.error ?? "Delivery failed"),
+                    );
+                  } catch (e) {
+                    setTestOk(false);
+                    setTestResult(e instanceof Error ? e.message : "Test failed");
+                  } finally {
+                    setTesting(false);
+                  }
+                }}
+              >
+                {testing ? "Testing…" : "Test"}
               </Button>
             </div>
+            {testResult && (
+              <p className={`mt-1.5 text-[12.5px] ${testOk ? "text-sub" : "text-bad"}`}>
+                {testResult}
+              </p>
+            )}
           </Field>
         </div>
 

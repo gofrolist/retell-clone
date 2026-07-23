@@ -14,6 +14,7 @@ import type {
   AnalyticsData,
   ApiKey,
   Call,
+  ChatAnalyticsData,
   Contact,
   KnowledgeBase,
   KnowledgeDocument,
@@ -546,6 +547,25 @@ export interface AgentDetail {
   llm: RawLlm | null;
 }
 
+export interface AnalyticsParams {
+  days?: number;
+  start_ms?: number;
+  end_ms?: number;
+  agent_ids?: string[];
+  group_by?: "agent" | "direction";
+}
+
+function analyticsQuery(params: AnalyticsParams): string {
+  const q = new URLSearchParams();
+  if (params.days) q.set("days", String(params.days));
+  if (params.start_ms !== undefined) q.set("start_ms", String(params.start_ms));
+  if (params.end_ms !== undefined) q.set("end_ms", String(params.end_ms));
+  if (params.group_by) q.set("group_by", params.group_by);
+  for (const id of params.agent_ids ?? []) q.append("agent_id", id);
+  const s = q.toString();
+  return s ? `?${s}` : "";
+}
+
 export const api = {
   // ------------------------------------------------------------ agents
   listAgents: async (): Promise<Agent[]> => {
@@ -769,7 +789,11 @@ export const api = {
     request<void>(`/delete-contact/${encodeURIComponent(id)}`, del),
 
   // --------------------------------------------------------- analytics
-  getAnalytics: (days = 30) => request<AnalyticsData>(`/analytics/calls?days=${days}`),
+  getAnalytics: (params: AnalyticsParams = {}) =>
+    request<AnalyticsData>(`/analytics/calls${analyticsQuery(params)}`),
+
+  getChatAnalytics: (params: AnalyticsParams = {}) =>
+    request<ChatAnalyticsData>(`/analytics/chats${analyticsQuery(params)}`),
 
   // ------------------------------------------------------- concurrency
   getConcurrency: () =>

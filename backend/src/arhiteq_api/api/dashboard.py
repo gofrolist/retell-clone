@@ -81,24 +81,38 @@ def _breakdown(counter: Counter) -> list[dict[str, Any]]:
     return [{"name": name, "value": value} for name, value in counter.most_common()]
 
 
-@router.get("/analytics/calls")
-async def call_analytics(
-    days: int = 30,
-    api_key: ApiKey = Depends(require_api_key),
-    session: AsyncSession = Depends(get_session),
-):
+def _window(days: int, start_ms: int | None, end_ms: int | None) -> tuple[int, int, int]:
+    """Resolve (start_ms, end_ms, days). Explicit range wins over `days`;
+    the window is whole calendar days including the end day's bucket."""
+    if start_ms is not None and end_ms is not None and end_ms >= start_ms:
+        span_days = min(int((end_ms - start_ms) // DAY_MS) + 1, 365)
+        return start_ms, end_ms, span_days
     days = max(1, min(days, 365))
     # Window is the last `days` calendar days *including today*, so the series
     # ends on today's bucket.
-    start_ms = now_ms() - (days - 1) * DAY_MS
-    rows = (
-        await session.scalars(
-            select(Call).where(
-                Call.workspace_id == api_key.workspace_id,
-                Call.created_at_ms >= start_ms,
-            )
-        )
-    ).all()
+    return now_ms() - (days - 1) * DAY_MS, now_ms(), days
+
+
+@router.get("/analytics/calls")
+async def call_analytics(
+    request: Request,
+    days: int = 30,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+    group_by: str | None = None,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    start_ms, end_ms, days = _window(days, start_ms, end_ms)
+    agent_ids = request.query_params.getlist("agent_id")
+    query = select(Call).where(
+        Call.workspace_id == api_key.workspace_id,
+        Call.created_at_ms >= start_ms,
+        Call.created_at_ms <= end_ms + DAY_MS,  # tolerate end-of-day timestamps
+    )
+    if agent_ids:
+        query = query.where(Call.agent_id.in_(agent_ids))
+    rows = (await session.scalars(query)).all()
 
     durations = [c.duration_ms for c in rows if c.duration_ms]
     latencies: list[float] = []
@@ -125,7 +139,7 @@ async def call_analytics(
         if isinstance(e2e, dict) and e2e.get("p50"):
             latencies.append(e2e["p50"])
 
-    return {
+    out: dict[str, Any] = {
         "call_counts": len(rows),
         "avg_duration_s": round(sum(durations) / len(durations) / 1000, 1) if durations else 0,
         "avg_latency_ms": round(sum(latencies) / len(latencies)) if latencies else 0,
@@ -137,6 +151,77 @@ async def call_analytics(
         "disconnection_reason": _breakdown(reasons),
         "user_sentiment": _breakdown(sentiments),
         "phone_direction": _breakdown(directions),
+    }
+
+    # Breakdown: per-group daily call-count series (small-multiples chart).
+    if group_by in ("agent", "direction"):
+        group_counts: dict[str, Counter] = {}
+        for c in rows:
+            name = (
+                (c.agent_name or c.agent_id) if group_by == "agent" else (c.direction or "unknown")
+            )
+            group_counts.setdefault(name, Counter())[
+                _day(c.start_timestamp or c.created_at_ms)
+            ] += 1
+        out["call_counts_groups"] = [
+            {"name": name, "series": _series(dict(counts), start_ms, days)}
+            for name, counts in sorted(group_counts.items(), key=lambda kv: -sum(kv[1].values()))[
+                :12
+            ]
+        ]
+    return out
+
+
+@router.get("/analytics/chats")
+async def chat_analytics(
+    request: Request,
+    days: int = 30,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    start_ms, end_ms, days = _window(days, start_ms, end_ms)
+    agent_ids = request.query_params.getlist("agent_id")
+    query = select(Chat).where(
+        Chat.workspace_id == api_key.workspace_id,
+        Chat.created_at_ms >= start_ms,
+        Chat.created_at_ms <= end_ms + DAY_MS,
+    )
+    if agent_ids:
+        query = query.where(Chat.agent_id.in_(agent_ids))
+    rows = (await session.scalars(query)).all()
+
+    day_counts: Counter = Counter()
+    day_messages: Counter = Counter()
+    statuses: Counter = Counter()
+    agents: Counter = Counter()
+    message_totals: list[int] = []
+    durations_ms: list[int] = []
+
+    for c in rows:
+        day = _day(c.start_timestamp or c.created_at_ms)
+        day_counts[day] += 1
+        n_messages = len(c.messages or [])
+        day_messages[day] += n_messages
+        message_totals.append(n_messages)
+        statuses[c.chat_status] += 1
+        agents[c.agent_id] += 1
+        if c.end_timestamp and c.start_timestamp:
+            durations_ms.append(c.end_timestamp - c.start_timestamp)
+
+    return {
+        "chat_counts": len(rows),
+        "avg_messages": round(sum(message_totals) / len(message_totals), 1)
+        if message_totals
+        else 0,
+        "avg_duration_s": round(sum(durations_ms) / len(durations_ms) / 1000, 1)
+        if durations_ms
+        else 0,
+        "chat_counts_series": _series(dict(day_counts), start_ms, days),
+        "messages_series": _series(dict(day_messages), start_ms, days),
+        "chat_status": _breakdown(statuses),
+        "chat_agent": _breakdown(agents),
     }
 
 
@@ -357,6 +442,7 @@ def _alert_to_dict(a: Alert) -> dict[str, Any]:
         "metric": a.metric,
         "condition": a.condition,
         "threshold": a.threshold,
+        "compare_to": a.compare_to,
         "notify_emails": a.notify_emails or [],
         "webhook_url": a.webhook_url,
         "enabled": a.enabled,
@@ -368,6 +454,7 @@ class CreateAlertRequest(CompatModel):
     metric: str
     condition: str = "above"
     threshold: float = 0.0
+    compare_to: str = Field(default="value", pattern="^(value|last_cycle)$")
     check_every_min: int = 5
     lookback_min: int = 60
     notify_emails: list[str] = []
@@ -380,6 +467,7 @@ _ALERT_FIELDS = (
     "metric",
     "condition",
     "threshold",
+    "compare_to",
     "check_every_min",
     "lookback_min",
     "notify_emails",

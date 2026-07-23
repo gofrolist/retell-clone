@@ -457,6 +457,9 @@ class Alert(Base):
     metric: Mapped[str] = mapped_column(String(64))
     condition: Mapped[str] = mapped_column(String(32), default="above")
     threshold: Mapped[float] = mapped_column(Float, default=0.0)
+    # "value": threshold is an absolute number; "last_cycle": threshold is the
+    # % change vs the previous lookback window.
+    compare_to: Mapped[str] = mapped_column(String(16), default="value")
     notify_emails: Mapped[list[Any]] = mapped_column(JSON, default=list)
     webhook_url: Mapped[str | None] = mapped_column(Text)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)

@@ -72,6 +72,12 @@ def _apply_column_backfills(sync_conn) -> None:
     if "settings" not in workspace_cols:
         sync_conn.execute(text(f"ALTER TABLE workspaces ADD COLUMN {guard}settings JSON"))
 
+    alert_cols = {c["name"] for c in inspect(sync_conn).get_columns("alerts")}
+    if "compare_to" not in alert_cols:
+        sync_conn.execute(
+            text(f"ALTER TABLE alerts ADD COLUMN {guard}compare_to VARCHAR(16) DEFAULT 'value'")
+        )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
