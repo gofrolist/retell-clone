@@ -547,6 +547,23 @@ export interface AgentDetail {
   llm: RawLlm | null;
 }
 
+export interface CallTimeWindow {
+  start: string; // "HH:MM"
+  end: string; // "HH:MM"
+  days: string[]; // ["mon", ...]
+}
+
+export interface BatchCallDraft {
+  batch_call_id: string;
+  name: string | null;
+  from_number: string | null;
+  tasks: { to_number: string; retell_llm_dynamic_variables?: Record<string, string> }[];
+  trigger_timestamp: number | null;
+  reserved_concurrency: number | null;
+  call_time_window: CallTimeWindow | null;
+  created_at_ms: number;
+}
+
 export interface AnalyticsParams {
   days?: number;
   start_ms?: number;
@@ -691,7 +708,17 @@ export const api = {
     name?: string;
     tasks: { to_number: string; retell_llm_dynamic_variables?: Record<string, string> }[];
     trigger_timestamp?: number;
+    reserved_concurrency?: number;
+    call_time_window?: CallTimeWindow;
   }) => request<{ batch_call_id: string }>("/create-batch-call", post(body)),
+
+  saveBatchCallDraft: (body: Partial<BatchCallDraft>) =>
+    request<BatchCallDraft>("/save-batch-call-draft", post(body)),
+
+  listBatchCallDrafts: () => request<BatchCallDraft[]>("/list-batch-call-drafts"),
+
+  deleteBatchCallDraft: (id: string) =>
+    request<void>(`/delete-batch-call-draft/${encodeURIComponent(id)}`, del),
 
   // ----------------------------------------------------- phone numbers
   listPhoneNumbers: async (): Promise<PhoneNumber[]> =>

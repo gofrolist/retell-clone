@@ -739,6 +739,82 @@ async def delete_qa_cohort(
     await session.commit()
 
 
+# --------------------------------------------------------- batch call drafts
+
+
+def _draft_to_dict(b: BatchCall) -> dict[str, Any]:
+    return {
+        "batch_call_id": b.batch_call_id,
+        "name": b.name,
+        "from_number": b.from_number,
+        "tasks": b.tasks or [],
+        "trigger_timestamp": b.trigger_timestamp,
+        "reserved_concurrency": b.reserved_concurrency,
+        "call_time_window": b.call_time_window,
+        "created_at_ms": b.created_at_ms,
+    }
+
+
+class SaveBatchCallDraftRequest(CompatModel):
+    from_number: str | None = None
+    name: str | None = None
+    tasks: list[dict[str, Any]] = Field(default_factory=list, max_length=1000)
+    trigger_timestamp: int | None = None
+    reserved_concurrency: int | None = Field(default=None, ge=0, le=500)
+    call_time_window: dict[str, Any] | None = None
+
+
+@router.post("/save-batch-call-draft", status_code=201)
+async def save_batch_call_draft(
+    body: SaveBatchCallDraftRequest,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    """Dashboard "Save as draft": a BatchCall row that never dials. Unlike
+    create-batch-call, an incomplete form (no recipients yet) is fine."""
+    draft = BatchCall(
+        workspace_id=api_key.workspace_id,
+        from_number=body.from_number or "",
+        name=body.name,
+        tasks=body.tasks,
+        trigger_timestamp=body.trigger_timestamp,
+        reserved_concurrency=body.reserved_concurrency,
+        call_time_window=body.call_time_window,
+        status="draft",
+    )
+    session.add(draft)
+    await session.commit()
+    return _draft_to_dict(draft)
+
+
+@router.get("/list-batch-call-drafts")
+async def list_batch_call_drafts(
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    rows = (
+        await session.scalars(
+            select(BatchCall)
+            .where(BatchCall.workspace_id == api_key.workspace_id, BatchCall.status == "draft")
+            .order_by(BatchCall.created_at_ms.desc())
+        )
+    ).all()
+    return [_draft_to_dict(b) for b in rows]
+
+
+@router.delete("/delete-batch-call-draft/{batch_call_id}", status_code=204)
+async def delete_batch_call_draft(
+    batch_call_id: str,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    draft = await session.get(BatchCall, batch_call_id)
+    if draft is None or draft.workspace_id != api_key.workspace_id or draft.status != "draft":
+        raise HTTPException(404, detail="Draft not found")
+    await session.delete(draft)
+    await session.commit()
+
+
 # ------------------------------------------------------------------- API keys
 
 

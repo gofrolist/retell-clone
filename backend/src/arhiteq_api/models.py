@@ -368,7 +368,12 @@ class BatchCall(Base):
     # Verbatim task list: [{"to_number": ..., "retell_llm_dynamic_variables": ...}, ...]
     tasks: Mapped[list[Any]] = mapped_column(JSON)
     trigger_timestamp: Mapped[int | None] = mapped_column(BigInteger)
-    status: Mapped[str] = mapped_column(String(24), default="sent")  # sent | scheduled
+    # Retell create-batch-call extras, stored verbatim: concurrency slots held
+    # back for non-batch traffic, and the allowed dialing window
+    # {"start": "HH:MM", "end": "HH:MM", "days": ["mon", ...]}.
+    reserved_concurrency: Mapped[int | None] = mapped_column(Integer)
+    call_time_window: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(24), default="sent")  # sent | scheduled | draft
     created_at_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
 
 

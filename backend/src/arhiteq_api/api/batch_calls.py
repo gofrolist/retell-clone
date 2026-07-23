@@ -40,6 +40,8 @@ async def create_batch_call(
         name=body.name,
         tasks=[t.model_dump(exclude_none=True) for t in body.tasks],
         trigger_timestamp=body.trigger_timestamp,
+        reserved_concurrency=body.reserved_concurrency,
+        call_time_window=body.call_time_window,
         status="scheduled" if scheduled else "sent",
     )
     session.add(batch)
@@ -65,10 +67,22 @@ async def create_batch_call(
         calls.append(call)
     await session.commit()
 
+    def batch_response() -> dict:
+        # Retell BatchCallResponse shape (additive extras allowed).
+        return {
+            "batch_call_id": batch.batch_call_id,
+            "name": batch.name,
+            "from_number": batch.from_number,
+            "scheduled_timestamp": batch.trigger_timestamp,
+            "total_task_count": len(batch.tasks or []),
+            "call_time_window": batch.call_time_window,
+            "reserved_concurrency": batch.reserved_concurrency,
+        }
+
     if scheduled:
         # TODO: a real scheduler should dial these at trigger_timestamp; for now
         # scheduled batches are stored only and never dialed automatically.
-        return {"batch_call_id": batch.batch_call_id}
+        return batch_response()
 
     for call in calls:
         try:
@@ -78,4 +92,4 @@ async def create_batch_call(
             call.call_status = "error"
             call.disconnection_reason = "error_telephony"
     await session.commit()
-    return {"batch_call_id": batch.batch_call_id}
+    return batch_response()

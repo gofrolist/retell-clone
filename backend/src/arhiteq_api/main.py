@@ -78,6 +78,14 @@ def _apply_column_backfills(sync_conn) -> None:
             text(f"ALTER TABLE alerts ADD COLUMN {guard}compare_to VARCHAR(16) DEFAULT 'value'")
         )
 
+    batch_cols = {c["name"] for c in inspect(sync_conn).get_columns("batch_calls")}
+    if "reserved_concurrency" not in batch_cols:
+        sync_conn.execute(
+            text(f"ALTER TABLE batch_calls ADD COLUMN {guard}reserved_concurrency INTEGER")
+        )
+    if "call_time_window" not in batch_cols:
+        sync_conn.execute(text(f"ALTER TABLE batch_calls ADD COLUMN {guard}call_time_window JSON"))
+
     cohort_cols = {c["name"] for c in inspect(sync_conn).get_columns("qa_cohorts")}
     if "min_duration_s" not in cohort_cols:
         sync_conn.execute(text(f"ALTER TABLE qa_cohorts ADD COLUMN {guard}min_duration_s INTEGER"))
