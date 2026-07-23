@@ -3,6 +3,7 @@
 import { VoiceAvatar } from "@/components/agents/AgentsTable";
 import LlmModelSelect from "@/components/editor/LlmModelSelect";
 import ModelSettingsPopover from "@/components/editor/ModelSettingsPopover";
+import VersionHistory from "@/components/editor/VersionHistory";
 import Select from "@/components/ui/Select";
 import SelectVoiceModal from "@/components/voices/SelectVoiceModal";
 import { voiceNameFromId } from "@/lib/api";
@@ -21,6 +22,7 @@ const LANGUAGES: { value: string; label: string; flag: string }[] = [
 ];
 
 export default function SelectorRow({
+  agentId,
   model,
   onModel,
   temperature,
@@ -31,6 +33,7 @@ export default function SelectorRow({
   onLanguage,
   voices,
 }: {
+  agentId: string;
   model: string;
   onModel?: (v: string) => void;
   temperature?: number;
@@ -100,14 +103,19 @@ export default function SelectorRow({
           <BookOpen className="size-4 text-sub" />
           Agent Handbook
         </button>
-        <button
-          disabled
-          title="Version history not available yet"
-          className="flex size-9 items-center justify-center rounded-lg border border-line bg-white text-sub opacity-40 cursor-not-allowed"
-          aria-label="Version history"
-        >
-          <Clock4 className="size-4" />
-        </button>
+        <VersionHistory
+          agentId={agentId}
+          trigger={(open) => (
+            <button
+              onClick={open}
+              title="Version history"
+              className="flex size-9 items-center justify-center rounded-lg border border-line bg-white text-sub transition-colors hover:bg-app cursor-pointer"
+              aria-label="Version history"
+            >
+              <Clock4 className="size-4" />
+            </button>
+          )}
+        />
       </div>
     </div>
   );

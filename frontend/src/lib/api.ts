@@ -16,6 +16,7 @@ import type {
   Call,
   ChatAnalyticsData,
   Contact,
+  ContactFieldDefinition,
   KnowledgeBase,
   KnowledgeDocument,
   ListCallsResponse,
@@ -347,6 +348,7 @@ export interface RawPhoneNumber {
   inbound_agent_id: string | null;
   outbound_agent_id: string | null;
   inbound_webhook_url: string | null;
+  fallback_number?: string | null;
   area_code?: number | null;
   last_modification_timestamp: number;
   [key: string]: unknown;
@@ -380,6 +382,7 @@ export interface WorkspaceSettings {
   llm_failover_enabled: boolean;
   auto_call_retry_enabled: boolean;
   conductor_messages_enabled: boolean;
+  contact_field_definitions: ContactFieldDefinition[];
 }
 
 export interface Workspace {
@@ -515,6 +518,7 @@ export function uiPhoneFromRaw(p: RawPhoneNumber): PhoneNumber {
     outbound_agent_id: p.outbound_agent_id,
     inbound_webhook_enabled: Boolean(p.inbound_webhook_url),
     inbound_webhook_url: p.inbound_webhook_url ?? undefined,
+    fallback_number: p.fallback_number ?? null,
     allowed_inbound_countries: ["US"],
     allowed_outbound_countries: ["US"],
   };

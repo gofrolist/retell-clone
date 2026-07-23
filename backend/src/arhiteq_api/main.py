@@ -96,6 +96,14 @@ def _apply_column_backfills(sync_conn) -> None:
     contact_cols = {c["name"] for c in inspect(sync_conn).get_columns("contacts")}
     if "timezone" not in contact_cols:
         sync_conn.execute(text(f"ALTER TABLE contacts ADD COLUMN {guard}timezone VARCHAR(64)"))
+    if "custom_fields" not in contact_cols:
+        sync_conn.execute(text(f"ALTER TABLE contacts ADD COLUMN {guard}custom_fields JSON"))
+
+    phone_cols = {c["name"] for c in inspect(sync_conn).get_columns("phone_numbers")}
+    if "fallback_number" not in phone_cols:
+        sync_conn.execute(
+            text(f"ALTER TABLE phone_numbers ADD COLUMN {guard}fallback_number VARCHAR(20)")
+        )
 
     workspace_cols = {c["name"] for c in inspect(sync_conn).get_columns("workspaces")}
     if "settings" not in workspace_cols:

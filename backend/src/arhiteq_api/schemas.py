@@ -305,6 +305,7 @@ def phone_number_to_dict(pn: PhoneNumber) -> dict[str, Any]:
         "inbound_agent_id": pn.inbound_agent_id,
         "outbound_agent_id": pn.outbound_agent_id,
         "inbound_webhook_url": pn.inbound_webhook_url,
+        "fallback_number": pn.fallback_number,
         "area_code": pn.area_code,
         "last_modification_timestamp": pn.last_modification_timestamp,
     }

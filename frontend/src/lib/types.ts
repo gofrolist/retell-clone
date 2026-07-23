@@ -149,6 +149,12 @@ export interface PhoneNumber {
   fallback_number?: string | null;
 }
 
+export interface ContactFieldDefinition {
+  key: string; // snake_case
+  label: string;
+  type: "string" | "number" | "boolean" | "date";
+}
+
 export interface Contact {
   contact_id: string;
   phone_number: string;
@@ -159,6 +165,8 @@ export interface Contact {
   latest_conversation: number | null; // ms epoch; null = no conversations yet
   do_not_call: boolean;
   external_id?: string | null;
+  /** Values for the workspace's custom contact fields, keyed by field key. */
+  custom_fields?: Record<string, string | number | boolean | null>;
 }
 
 export interface StatPoint {

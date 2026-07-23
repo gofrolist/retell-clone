@@ -1,6 +1,10 @@
 "use client";
 
 import CallDrawer from "@/components/calls/CallDrawer";
+import CustomFieldInputs, {
+  formatCustomValue,
+  type CustomFieldValues,
+} from "@/components/contacts/CustomFieldInputs";
 import Button from "@/components/ui/Button";
 import CopyId from "@/components/ui/CopyId";
 import { Field, TextInput } from "@/components/ui/Field";
@@ -8,7 +12,7 @@ import Select from "@/components/ui/Select";
 import StatusDot from "@/components/ui/StatusDot";
 import Toggle from "@/components/ui/Toggle";
 import { api } from "@/lib/api";
-import type { Call, Contact } from "@/lib/types";
+import type { Call, Contact, ContactFieldDefinition } from "@/lib/types";
 import { cn, formatDateTimeZone, formatDurationLong, pressableProps } from "@/lib/utils";
 import {
   ChevronDown,
@@ -113,11 +117,13 @@ function ConversationCard({ call, onOpen }: { call: Call; onOpen: () => void }) 
 
 export default function ContactDrawer({
   contact,
+  fieldDefs = [],
   onClose,
   onNavigate,
   onUpdated,
 }: {
   contact: Contact;
+  fieldDefs?: ContactFieldDefinition[];
   onClose: () => void;
   onNavigate: (dir: 1 | -1) => void;
   onUpdated: (contact: Contact) => void;
@@ -133,6 +139,7 @@ export default function ContactDrawer({
   const [timezone, setTimezone] = useState(contact.timezone ?? "");
   const [doNotCall, setDoNotCall] = useState(contact.do_not_call);
   const [externalId, setExternalId] = useState(contact.external_id ?? "");
+  const [customValues, setCustomValues] = useState<CustomFieldValues>(contact.custom_fields ?? {});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -143,6 +150,7 @@ export default function ContactDrawer({
     setTimezone(c.timezone ?? "");
     setDoNotCall(c.do_not_call);
     setExternalId(c.external_id ?? "");
+    setCustomValues(c.custom_fields ?? {});
     setSaveError(null);
   };
 
@@ -230,6 +238,15 @@ export default function ContactDrawer({
     if (doNotCall !== contact.do_not_call) delta.do_not_call = doNotCall;
     if ((externalId.trim() || null) !== (contact.external_id ?? null))
       delta.external_id = externalId.trim() || null;
+    const prevCustom = contact.custom_fields ?? {};
+    const customChanged = fieldDefs.some(
+      (d) => (customValues[d.key] ?? null) !== (prevCustom[d.key] ?? null),
+    );
+    if (customChanged) {
+      // The API stores the whole dict; merge over the stored values so keys
+      // from since-deleted definitions survive.
+      delta.custom_fields = { ...prevCustom, ...customValues };
+    }
     if (Object.keys(delta).length === 0) {
       setEditing(false);
       return;
@@ -345,6 +362,11 @@ export default function ContactDrawer({
                 <Field label="External ID">
                   <TextInput value={externalId} onChange={(e) => setExternalId(e.target.value)} />
                 </Field>
+                <CustomFieldInputs
+                  defs={fieldDefs}
+                  values={customValues}
+                  onChange={setCustomValues}
+                />
                 <div className="flex items-center justify-between">
                   <span className="text-[13px] font-medium">Do Not Call</span>
                   <Toggle checked={doNotCall} onChange={setDoNotCall} />
@@ -382,6 +404,11 @@ export default function ContactDrawer({
                   </span>
                 </InfoRow>
                 <InfoRow label="External ID">{contact.external_id || "—"}</InfoRow>
+                {fieldDefs.map((d) => (
+                  <InfoRow key={d.key} label={d.label}>
+                    {formatCustomValue(d, contact.custom_fields?.[d.key])}
+                  </InfoRow>
+                ))}
               </div>
             )}
           </div>

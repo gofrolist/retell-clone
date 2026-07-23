@@ -20,6 +20,7 @@ _MUTABLE_FIELDS = {
     "outbound_agent_id",
     "inbound_webhook_url",
     "inbound_webhook_secret_in_query",
+    "fallback_number",
 }
 
 

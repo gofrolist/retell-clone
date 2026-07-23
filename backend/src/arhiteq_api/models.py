@@ -90,6 +90,8 @@ DEFAULT_WORKSPACE_SETTINGS: dict[str, Any] = {
     "llm_failover_enabled": False,
     "auto_call_retry_enabled": False,
     "conductor_messages_enabled": False,
+    # Custom contact fields: [{"key": "plan", "label": "Plan", "type": "string"}].
+    "contact_field_definitions": [],
 }
 
 
@@ -309,6 +311,8 @@ class PhoneNumber(Base):
     # ?caller_secret=<secret> (reserved Retell-compat mechanism, off by default).
     inbound_webhook_url: Mapped[str | None] = mapped_column(Text)
     inbound_webhook_secret_in_query: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Where inbound calls go when no agent can take them (dashboard field).
+    fallback_number: Mapped[str | None] = mapped_column(String(20))
     area_code: Mapped[int | None] = mapped_column(Integer)
     last_modification_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
 
@@ -461,6 +465,9 @@ class Contact(Base):
     timezone: Mapped[str | None] = mapped_column(String(64))
     do_not_call: Mapped[bool] = mapped_column(Boolean, default=False)
     external_id: Mapped[str | None] = mapped_column(String(255))
+    # Values for the workspace's custom contact fields (definitions live in
+    # Workspace.settings["contact_field_definitions"]): {field_key: value}.
+    custom_fields: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     created_at_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
 
 

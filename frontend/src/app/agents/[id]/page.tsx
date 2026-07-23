@@ -148,8 +148,8 @@ export default function AgentEditorPage({
       <EditorHeader
         name={view.agent_name ?? ""}
         onName={(v) => setAgentField("agent_name", v)}
-        version={agent.version}
-        isPublished={agent.is_published}
+        agent={agent}
+        llm={llm}
         dirty={dirty}
         saving={saving}
         onSave={handleSave}
@@ -163,6 +163,7 @@ export default function AgentEditorPage({
           <MetaRow agentId={agent.agent_id} llm={llmView} />
           <div className="mt-3">
             <SelectorRow
+              agentId={agent.agent_id}
               model={llmView?.model ?? ""}
               onModel={llm ? (v) => setLlmField("model", v) : undefined}
               temperature={num(llmView?.model_temperature, 0)}
@@ -224,6 +225,8 @@ export default function AgentEditorPage({
             <SpeechSettingsSection
               ambientSound={str(view.ambient_sound, "none")}
               onAmbientSound={(v) => setAgentField("ambient_sound", v)}
+              ambientSoundVolume={num(view.ambient_sound_volume, 1)}
+              onAmbientSoundVolume={(v) => setAgentField("ambient_sound_volume", v)}
               responsiveness={view.responsiveness}
               onResponsiveness={(v) => setAgentField("responsiveness", v)}
               interruptionSensitivity={view.interruption_sensitivity}
@@ -232,6 +235,8 @@ export default function AgentEditorPage({
               onReminderTriggerMs={(v) => setAgentField("reminder_trigger_ms", v)}
               reminderMaxCount={view.reminder_max_count}
               onReminderMaxCount={(v) => setAgentField("reminder_max_count", v)}
+              pronunciation={view.pronunciation_dictionary ?? []}
+              onPronunciation={(v) => setAgentField("pronunciation_dictionary", v)}
             />
           </Accordion>
           <Accordion icon={Captions} title="Realtime Transcription Settings">
@@ -252,6 +257,18 @@ export default function AgentEditorPage({
               onEndCallAfterSilenceMs={(v) => setAgentField("end_call_after_silence_ms", v)}
               maxCallDurationMs={num(view.max_call_duration_ms, 3600000)}
               onMaxCallDurationMs={(v) => setAgentField("max_call_duration_ms", v)}
+              callScreening={Boolean(view.call_screening_option)}
+              onCallScreening={(v) =>
+                setAgentField("call_screening_option", v ? { action: { type: "hangup" } } : null)
+              }
+              ivrHangup={Boolean(view.ivr_option)}
+              onIvrHangup={(v) =>
+                setAgentField("ivr_option", v ? { action: { type: "hangup" } } : null)
+              }
+              allowUserDtmf={view.allow_user_dtmf ?? true}
+              onAllowUserDtmf={(v) => setAgentField("allow_user_dtmf", v)}
+              userDtmfOptions={view.user_dtmf_options ?? null}
+              onUserDtmfOptions={(v) => setAgentField("user_dtmf_options", v)}
             />
           </Accordion>
           <Accordion icon={LineChart} title="Post-Call Data Extraction">
@@ -264,6 +281,13 @@ export default function AgentEditorPage({
             <SecuritySection
               optOut={Boolean(view.opt_out_sensitive_data_storage)}
               onOptOut={(v) => setAgentField("opt_out_sensitive_data_storage", v)}
+              piiConfig={view.pii_config ?? null}
+              onPiiConfig={(v) => setAgentField("pii_config", v)}
+              fallbackVoiceIds={view.fallback_voice_ids ?? null}
+              onFallbackVoiceIds={(v) => setAgentField("fallback_voice_ids", v)}
+              optInSignedUrl={Boolean(view.opt_in_signed_url)}
+              onOptInSignedUrl={(v) => setAgentField("opt_in_signed_url", v)}
+              voices={voices}
               dynamicVariables={llmView?.default_dynamic_variables}
               onDynamicVariables={
                 llm ? (v) => setLlmField("default_dynamic_variables", v) : undefined
@@ -282,7 +306,14 @@ export default function AgentEditorPage({
             />
           </Accordion>
           <Accordion icon={Plug} title="MCPs">
-            <McpSection />
+            {llmView ? (
+              <McpSection
+                mcps={llmView.mcps ?? []}
+                onChange={(v) => setLlmField("mcps", v)}
+              />
+            ) : (
+              <p className="text-[13px] text-sub">Not available for conversation-flow agents.</p>
+            )}
           </Accordion>
         </div>
 

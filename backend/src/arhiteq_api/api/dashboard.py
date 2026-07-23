@@ -415,6 +415,7 @@ def _contact_to_dict(c: Contact, related: int = 0, latest: int | None = None) ->
         "timezone": c.timezone,
         "do_not_call": c.do_not_call,
         "external_id": c.external_id,
+        "custom_fields": c.custom_fields or {},
         "related_conversations": related,
         "latest_conversation": latest,
     }
@@ -427,6 +428,7 @@ class CreateContactRequest(CompatModel):
     timezone: str | None = None
     do_not_call: bool = False
     external_id: str | None = None
+    custom_fields: dict[str, Any] | None = None
 
 
 @router.get("/list-contacts")
@@ -488,6 +490,7 @@ async def update_contact(
         "timezone",
         "do_not_call",
         "external_id",
+        "custom_fields",
     ):
         if field in payload:
             setattr(contact, field, payload[field])
@@ -969,6 +972,34 @@ def _merged_settings_patch(stored: dict[str, Any], patch: dict[str, Any]) -> dic
                 if not isinstance(value, bool):
                     raise HTTPException(422, detail=f"{key} must be a boolean")
                 out[key] = value
+            case "contact_field_definitions":
+                if not isinstance(value, list) or len(value) > 50:
+                    raise HTTPException(
+                        422, detail="contact_field_definitions must be a list (max 50)"
+                    )
+                seen_keys: set[str] = set()
+                for item in value:
+                    if (
+                        not isinstance(item, dict)
+                        or not isinstance(item.get("key"), str)
+                        or not re.match(r"^[a-z][a-z0-9_]{0,63}$", item["key"])
+                        or item.get("type") not in ("string", "number", "boolean", "date")
+                        or not isinstance(item.get("label"), str)
+                        or not item["label"].strip()
+                    ):
+                        raise HTTPException(
+                            422,
+                            detail=(
+                                "each contact field needs a snake_case key, a label, and a "
+                                "type of string|number|boolean|date"
+                            ),
+                        )
+                    if item["key"] in seen_keys:
+                        raise HTTPException(422, detail=f"duplicate field key {item['key']!r}")
+                    seen_keys.add(item["key"])
+                out[key] = [
+                    {"key": i["key"], "label": i["label"].strip(), "type": i["type"]} for i in value
+                ]
             case "cps_limits":
                 if not isinstance(value, dict):
                     raise HTTPException(422, detail="cps_limits must be an object")

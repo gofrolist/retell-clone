@@ -21,11 +21,29 @@ names; extra fields may be present (allowed by the compatibility policy).
 | **Webhooks (outbound)** | `call_started`, `call_ended`, `call_analyzed` + inbound `call_inbound` routing webhook | Full incl. `x-retell-signature` |
 
 Dashboard-only endpoints (Arhiteq additions, `backend/src/arhiteq_api/api/dashboard.py`;
-Retell serves these from its private dashboard API): `GET /analytics/calls`,
+Retell serves these from its private dashboard API): `GET /analytics/calls`
+(range/agent filters + `group_by` breakdowns), `GET /analytics/chats`,
+`POST /analytics/call-insights` (Gemini insights over recent calls),
 contacts CRUD (`/list-contacts`, `/create-contact`, `/update-contact/{id}`,
-`/delete-contact/{id}`), alerts CRUD, QA-cohort CRUD, API-key management
+`/delete-contact/{id}`; incl. `custom_fields` — definitions live in workspace
+settings `contact_field_definitions`), alerts CRUD (incl. `compare_to`),
+QA-cohort CRUD (list computes success/transfer scores over a deterministic
+30-day call sample), batch-call drafts (`/save-batch-call-draft`,
+`/list-batch-call-drafts`, `/delete-batch-call-draft/{id}`), API-key management
 (`/list-api-keys`, `/create-api-key`, `/revoke-api-key/{id}`),
-`GET /list-webhook-deliveries`, `GET|PATCH /workspace`.
+`GET /list-webhook-deliveries`, `POST /test-workspace-webhook`,
+`GET /system-status` (live component checks), `GET|PATCH /workspace`
+(incl. `settings`: concurrency purchases/reservations/burst, CPS, token limit,
+reliability toggles, billing email — get-concurrency and the call-creation 429
+gates enforce these), `DELETE /workspace` (owner-gated full cascade).
+
+Retell parity fields stored + served on agents (worker execution tracked per
+field): `pii_config`, `fallback_voice_ids`, `allow_user_dtmf`,
+`allow_dtmf_interruption`, `user_dtmf_options`, `opt_in_signed_url`,
+`ivr_option`, `call_screening_option`; on Retell LLMs: `mcps` (persist-only —
+worker MCP execution pending, same status as the `mcp` tool type). Batch calls
+store `reserved_concurrency` + `call_time_window` verbatim (dial scheduler
+TODO, as with `trigger_timestamp`).
 
 Known intentional deviations (all additive or dashboard-only):
 - `call_analysis` carries **both** `summary` and `call_summary` (consumer compat).
