@@ -189,10 +189,21 @@ export interface ChatMessage {
 export interface RawChat {
   chat_id: string;
   agent_id: string;
+  agent_version?: number;
   chat_status: string;
   message_with_tool_calls: ChatMessage[];
   transcript: string;
+  start_timestamp?: number;
+  end_timestamp?: number;
+  metadata?: Record<string, unknown>;
+  retell_llm_dynamic_variables?: Record<string, string>;
   [key: string]: unknown;
+}
+
+export interface ListChatsResponse {
+  items: RawChat[];
+  has_more: boolean;
+  next_pagination_key: string | null;
 }
 
 export interface RawWebCall {
@@ -562,6 +573,16 @@ export const api = {
   endChat: (chatId: string) =>
     request<void>(`/end-chat/${encodeURIComponent(chatId)}`, { method: "PATCH" }),
 
+  // ------------------------------------------------------------ chat history
+  listChats: (params: {
+    filter_criteria?: { agent_id?: string[]; chat_status?: string[] };
+    sort_order?: "ascending" | "descending";
+    limit?: number;
+    pagination_key?: string;
+  } = {}) => request<ListChatsResponse>("/v3/list-chats", post(params)),
+
+  getChat: (chatId: string) => request<RawChat>(`/get-chat/${encodeURIComponent(chatId)}`),
+
   // --------------------------------------------------- Test Audio (web call)
   createWebCall: (agentId: string) =>
     request<RawWebCall>("/v2/create-web-call", post({ agent_id: agentId })),
@@ -729,6 +750,17 @@ export const api = {
 
   // --------------------------------------------------------- analytics
   getAnalytics: (days = 30) => request<AnalyticsData>(`/analytics/calls?days=${days}`),
+
+  // ------------------------------------------------------- concurrency
+  getConcurrency: () =>
+    request<{
+      current_concurrency: number;
+      concurrency_limit: number;
+      base_concurrency: number;
+      purchased_concurrency: number;
+      concurrency_purchase_limit: number;
+      remaining_purchase_limit: number;
+    }>("/get-concurrency"),
 
   // ---------------------------------------------------------------- QA
   listCohorts: () => request<QaCohort[]>("/list-qa-cohorts"),
