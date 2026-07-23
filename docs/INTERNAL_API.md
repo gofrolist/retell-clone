@@ -73,6 +73,8 @@ Terminal update; idempotent (second call is a no-op).
   "call_status": "ended" | "not_connected" | "error",
   "transcript": "Agent: …\nUser: …",
   "transcript_object": [...], "transcript_with_tool_calls": [...],
+      // items additionally carry "time_ms" (offset from answer, ms) and — on
+      // tool_call_invocation/tool_call_result — "tool_call_id" pairing them
   "recording_url": "https://…" | null,
   "in_voicemail": true | false | null,   // worker-side AMD verdict, if any
   "latency": { "e2e": {"p50": …, "p95": …} } | null,
