@@ -6,7 +6,7 @@
 // explicitly run with NEXT_PUBLIC_DEMO_MODE=true, which is labelled in the UI.
 
 import { getValidSession } from "./auth";
-import { kbFromBytes } from "./utils";
+import { formatDuration, kbFromBytes } from "./utils";
 import type {
   Agent,
   AgentFolder,
@@ -22,6 +22,7 @@ import type {
   ListCallsResponse,
   PhoneNumber,
   QaCohort,
+  TranscriptItem,
   Voice,
   WebhookDelivery,
 } from "./types";
@@ -309,6 +310,19 @@ export interface RawLlm {
   [key: string]: unknown;
 }
 
+/** Item of transcript_object / transcript_with_tool_calls as served by the
+ *  API (worker-recorded). time_ms / tool_call_id exist only on calls recorded
+ *  after the worker started stamping them. */
+export interface RawTranscriptItem {
+  role: string;
+  content?: string;
+  name?: string;
+  arguments?: string;
+  tool_call_id?: string;
+  time_ms?: number;
+  words?: unknown[];
+}
+
 export interface RawCall {
   call_id: string;
   agent_id: string;
@@ -324,7 +338,8 @@ export interface RawCall {
   disconnection_reason?: string;
   call_status: string;
   transcript?: string;
-  transcript_object?: { role: string; content: string; words?: unknown[] }[];
+  transcript_object?: RawTranscriptItem[];
+  transcript_with_tool_calls?: RawTranscriptItem[];
   recording_url?: string;
   call_analysis?: {
     call_summary?: string;
@@ -465,6 +480,40 @@ export function uiAgentFromRaw(a: RawAgent, phones: RawPhoneNumber[] = []): Agen
 
 const SENTIMENTS = new Set(["Positive", "Negative", "Neutral", "Unknown"]);
 
+function transcriptFromRaw(c: RawCall): TranscriptItem[] {
+  // Prefer the tool-bearing stream; old calls only have transcript_object.
+  const source = c.transcript_with_tool_calls?.length
+    ? c.transcript_with_tool_calls
+    : (c.transcript_object ?? []);
+  return source.map((t) => {
+    const time_ms = typeof t.time_ms === "number" ? t.time_ms : undefined;
+    const base = { time_ms, time: time_ms !== undefined ? formatDuration(time_ms) : "" };
+    if (t.role === "tool_call_invocation") {
+      return {
+        role: "tool_invocation" as const,
+        name: t.name,
+        tool_call_id: t.tool_call_id,
+        content: t.arguments ?? "",
+        ...base,
+      };
+    }
+    if (t.role === "tool_call_result") {
+      return {
+        role: "tool_result" as const,
+        name: t.name,
+        tool_call_id: t.tool_call_id,
+        content: t.content ?? "",
+        ...base,
+      };
+    }
+    return {
+      role: t.role === "agent" ? ("agent" as const) : t.role === "kb_retrieval" ? ("kb_retrieval" as const) : ("user" as const),
+      content: t.content ?? "",
+      ...base,
+    };
+  });
+}
+
 export function uiCallFromRaw(c: RawCall): Call {
   const analysis = c.call_analysis ?? {};
   const sentiment = analysis.user_sentiment ?? "Unknown";
@@ -499,11 +548,7 @@ export function uiCallFromRaw(c: RawCall): Call {
     end_to_end_latency_ms: c.latency?.e2e?.p50,
     call_summary: analysis.call_summary,
     recording_url: c.recording_url,
-    transcript: (c.transcript_object ?? []).map((t) => ({
-      role: t.role === "agent" ? "agent" : t.role === "kb_retrieval" ? "kb_retrieval" : "user",
-      content: t.content,
-      time: "",
-    })),
+    transcript: transcriptFromRaw(c),
     dynamic_variables,
     detail_logs: c.detail_logs,
   };

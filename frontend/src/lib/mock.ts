@@ -11,7 +11,7 @@ import type {
   KnowledgeBase,
   PhoneNumber,
   QaCohort,
-  TranscriptTurn,
+  TranscriptItem,
   WebhookDelivery,
 } from "./types";
 
@@ -213,18 +213,20 @@ const SUMMARIES = [
   "The user asked to stop receiving calls. The agent confirmed the request, marked the number as Do Not Call, and ended the call politely.",
 ];
 
-const TRANSCRIPT: TranscriptTurn[] = [
+const TRANSCRIPT: TranscriptItem[] = [
   { role: "agent", content: "Hi, this is Clara with the Check-in Companion service. Am I speaking with Margaret?", time: "0:02" },
   { role: "user", content: "Yes, this is Margaret speaking.", time: "0:08" },
   { role: "agent", content: "Wonderful! I'm calling for your daily check-in. How are you feeling this morning?", time: "0:11" },
   { role: "user", content: "Oh, I'm doing alright. A little tired, but I slept well.", time: "0:18" },
-  { role: "kb_retrieval", content: "Knowledge Base Retrieval", time: "0:20" },
+  { role: "kb_retrieval", content: "Knowledge Base Retrieval", time: "0:20", time_ms: 20_000 },
   { role: "agent", content: "I'm glad you slept well. Did you get a chance to take your morning medication?", time: "0:22" },
   { role: "user", content: "Yes, I took it with breakfast like always.", time: "0:29" },
   { role: "agent", content: "Perfect. And do you have anything nice planned for today?", time: "0:32" },
   { role: "user", content: "My daughter is coming by this afternoon, we might go for a walk.", time: "0:38" },
   { role: "agent", content: "That sounds lovely, Margaret. I'll note that down. I'll check in again tomorrow at the same time. Have a wonderful visit!", time: "0:44" },
   { role: "user", content: "Thank you dear, goodbye.", time: "0:52" },
+  { role: "tool_invocation", name: "log_outcome", tool_call_id: "tool_call_1", content: '{"call_type": "morning_checkin", "outcome": "completed"}', time: "0:41", time_ms: 41_000 },
+  { role: "tool_result", name: "log_outcome", tool_call_id: "tool_call_1", content: '{"success": true}', time: "0:41", time_ms: 41_000 },
 ];
 
 function hex(seed: number, len = 26): string {

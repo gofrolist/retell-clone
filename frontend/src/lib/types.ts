@@ -70,10 +70,17 @@ export type EndReason =
 export type SessionStatus = "ended" | "not_connected" | "ongoing" | "error";
 export type Sentiment = "Neutral" | "Positive" | "Negative" | "Unknown";
 
-export interface TranscriptTurn {
-  role: "agent" | "user" | "kb_retrieval";
+export interface TranscriptItem {
+  role: "agent" | "user" | "kb_retrieval" | "tool_invocation" | "tool_result";
+  /** Utterance text, tool arguments JSON (invocation), or tool result body. */
   content: string;
-  time: string; // "0:03"
+  /** Tool name — tool_invocation / tool_result only. */
+  name?: string;
+  /** Pairs a tool_result with its tool_invocation. */
+  tool_call_id?: string;
+  /** Offset from call start in ms; drives audio-timeline markers. */
+  time_ms?: number;
+  time: string; // "0:03", "" when unknown
 }
 
 export interface Call {
@@ -97,7 +104,7 @@ export interface Call {
   llm_token_usage?: number;
   call_summary?: string;
   recording_url?: string;
-  transcript?: TranscriptTurn[];
+  transcript?: TranscriptItem[];
   contact_id?: string;
   // Data tab: input vars merged with vars extracted mid-call.
   dynamic_variables?: Record<string, string>;

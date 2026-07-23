@@ -1,9 +1,9 @@
 "use client";
 
-import type { TranscriptTurn } from "@/lib/types";
+import type { TranscriptItem } from "@/lib/types";
 import { Library } from "lucide-react";
 
-export default function Transcript({ turns }: { turns: TranscriptTurn[] }) {
+export default function Transcript({ turns }: { turns: TranscriptItem[] }) {
   if (!turns.length) {
     return <p className="py-8 text-center text-[13px] text-sub">No transcript available.</p>;
   }
