@@ -57,6 +57,35 @@ def _apply_column_backfills(sync_conn) -> None:
         sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}webhook_timeout_ms BIGINT"))
     if "webhook_events" not in agent_cols:
         sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}webhook_events JSON"))
+    if "pii_config" not in agent_cols:
+        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}pii_config JSON"))
+    if "fallback_voice_ids" not in agent_cols:
+        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}fallback_voice_ids JSON"))
+    if "allow_user_dtmf" not in agent_cols:
+        sync_conn.execute(
+            text(f"ALTER TABLE agents ADD COLUMN {guard}allow_user_dtmf BOOLEAN DEFAULT TRUE")
+        )
+    if "allow_dtmf_interruption" not in agent_cols:
+        sync_conn.execute(
+            text(
+                f"ALTER TABLE agents ADD COLUMN {guard}allow_dtmf_interruption BOOLEAN "
+                "DEFAULT FALSE"
+            )
+        )
+    if "user_dtmf_options" not in agent_cols:
+        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}user_dtmf_options JSON"))
+    if "opt_in_signed_url" not in agent_cols:
+        sync_conn.execute(
+            text(f"ALTER TABLE agents ADD COLUMN {guard}opt_in_signed_url BOOLEAN DEFAULT FALSE")
+        )
+    if "ivr_option" not in agent_cols:
+        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}ivr_option JSON"))
+    if "call_screening_option" not in agent_cols:
+        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}call_screening_option JSON"))
+
+    llm_cols = {c["name"] for c in inspect(sync_conn).get_columns("retell_llms")}
+    if "mcps" not in llm_cols:
+        sync_conn.execute(text(f"ALTER TABLE retell_llms ADD COLUMN {guard}mcps JSON"))
 
     call_cols = {c["name"] for c in inspect(sync_conn).get_columns("calls")}
     if "collected_dynamic_variables" not in call_cols:
@@ -67,6 +96,45 @@ def _apply_column_backfills(sync_conn) -> None:
     contact_cols = {c["name"] for c in inspect(sync_conn).get_columns("contacts")}
     if "timezone" not in contact_cols:
         sync_conn.execute(text(f"ALTER TABLE contacts ADD COLUMN {guard}timezone VARCHAR(64)"))
+    if "custom_fields" not in contact_cols:
+        sync_conn.execute(text(f"ALTER TABLE contacts ADD COLUMN {guard}custom_fields JSON"))
+
+    phone_cols = {c["name"] for c in inspect(sync_conn).get_columns("phone_numbers")}
+    if "fallback_number" not in phone_cols:
+        sync_conn.execute(
+            text(f"ALTER TABLE phone_numbers ADD COLUMN {guard}fallback_number VARCHAR(20)")
+        )
+
+    workspace_cols = {c["name"] for c in inspect(sync_conn).get_columns("workspaces")}
+    if "settings" not in workspace_cols:
+        sync_conn.execute(text(f"ALTER TABLE workspaces ADD COLUMN {guard}settings JSON"))
+
+    alert_cols = {c["name"] for c in inspect(sync_conn).get_columns("alerts")}
+    if "compare_to" not in alert_cols:
+        sync_conn.execute(
+            text(f"ALTER TABLE alerts ADD COLUMN {guard}compare_to VARCHAR(16) DEFAULT 'value'")
+        )
+
+    batch_cols = {c["name"] for c in inspect(sync_conn).get_columns("batch_calls")}
+    if "reserved_concurrency" not in batch_cols:
+        sync_conn.execute(
+            text(f"ALTER TABLE batch_calls ADD COLUMN {guard}reserved_concurrency INTEGER")
+        )
+    if "call_time_window" not in batch_cols:
+        sync_conn.execute(text(f"ALTER TABLE batch_calls ADD COLUMN {guard}call_time_window JSON"))
+
+    cohort_cols = {c["name"] for c in inspect(sync_conn).get_columns("qa_cohorts")}
+    if "min_duration_s" not in cohort_cols:
+        sync_conn.execute(text(f"ALTER TABLE qa_cohorts ADD COLUMN {guard}min_duration_s INTEGER"))
+    if "success_criteria" not in cohort_cols:
+        sync_conn.execute(text(f"ALTER TABLE qa_cohorts ADD COLUMN {guard}success_criteria TEXT"))
+    if "scoring_metric" not in cohort_cols:
+        sync_conn.execute(
+            text(
+                f"ALTER TABLE qa_cohorts ADD COLUMN {guard}scoring_metric VARCHAR(32) "
+                "DEFAULT 'call_successful'"
+            )
+        )
 
 
 @asynccontextmanager

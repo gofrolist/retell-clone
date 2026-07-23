@@ -1,10 +1,16 @@
 "use client";
 
 import ContactDrawer, { TIMEZONE_OPTIONS } from "@/components/contacts/ContactDrawer";
+import CustomFieldInputs, {
+  formatCustomValue,
+  type CustomFieldValues,
+} from "@/components/contacts/CustomFieldInputs";
 import ManageTablePanel, {
-  CONTACT_COLUMNS,
   DEFAULT_COLUMNS,
+  columnMeta,
+  customFieldKeyOf,
   loadColumnConfig,
+  reconcileColumns,
   saveColumnConfig,
   type ColumnConfig,
   type ContactColumnKey,
@@ -19,7 +25,7 @@ import SearchInput from "@/components/ui/SearchInput";
 import Toggle from "@/components/ui/Toggle";
 import Tooltip from "@/components/ui/Tooltip";
 import { api } from "@/lib/api";
-import type { Contact } from "@/lib/types";
+import type { Contact, ContactFieldDefinition } from "@/lib/types";
 import { useApiData } from "@/lib/useApiData";
 import { cn, formatDateTimeZone } from "@/lib/utils";
 import {
@@ -194,16 +200,19 @@ function AddContactModal({
   open,
   onClose,
   onCreated,
+  fieldDefs,
 }: {
   open: boolean;
   onClose: () => void;
   onCreated: () => void;
+  fieldDefs: ContactFieldDefinition[];
 }) {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [timezone, setTimezone] = useState("");
   const [externalId, setExternalId] = useState("");
+  const [customValues, setCustomValues] = useState<CustomFieldValues>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -213,6 +222,7 @@ function AddContactModal({
     setLastName("");
     setTimezone("");
     setExternalId("");
+    setCustomValues({});
     setError(null);
     onClose();
   };
@@ -221,12 +231,16 @@ function AddContactModal({
     setSubmitting(true);
     setError(null);
     try {
+      const filled = Object.fromEntries(
+        Object.entries(customValues).filter(([, v]) => v !== null && v !== ""),
+      );
       await api.createContact({
         phone_number: phoneNumber.trim(),
         first_name: firstName.trim(),
         last_name: lastName.trim(),
         ...(timezone ? { timezone } : {}),
         ...(externalId.trim() ? { external_id: externalId.trim() } : {}),
+        ...(Object.keys(filled).length ? { custom_fields: filled } : {}),
       });
       onCreated();
       close();
@@ -276,6 +290,7 @@ function AddContactModal({
         <Field label="External ID" hint="Optional — your CRM or system identifier.">
           <TextInput value={externalId} onChange={(e) => setExternalId(e.target.value)} />
         </Field>
+        <CustomFieldInputs defs={fieldDefs} values={customValues} onChange={setCustomValues} />
         {error && <p className="text-[12.5px] text-bad">{error}</p>}
       </div>
     </Modal>
@@ -286,10 +301,17 @@ function AddContactModal({
 
 function cellContent(
   c: Contact,
-  key: ContactColumnKey,
+  key: string,
   onDoNotCall: (id: string, v: boolean) => void,
+  fieldDefs: ContactFieldDefinition[],
 ): React.ReactNode {
-  switch (key) {
+  const fieldKey = customFieldKeyOf(key);
+  if (fieldKey !== null) {
+    const def = fieldDefs.find((d) => d.key === fieldKey);
+    const text = formatCustomValue(def, c.custom_fields?.[fieldKey]);
+    return text === "—" ? <span className="text-sub">—</span> : text;
+  }
+  switch (key as ContactColumnKey) {
     case "phone_number":
       return <span className="tabular-nums">{c.phone_number}</span>;
     case "first_name":
@@ -345,12 +367,34 @@ export default function ContactsPage() {
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  // Column prefs load after mount so SSR markup matches first client render.
+  // Column prefs load after mount so SSR markup matches first client render;
+  // custom contact-field columns join once workspace settings arrive.
   const [columns, setColumns] = useState<ColumnConfig[]>(DEFAULT_COLUMNS);
+  const [fieldDefs, setFieldDefs] = useState<ContactFieldDefinition[]>([]);
   useEffect(() => {
     setColumns(loadColumnConfig());
+    api
+      .getWorkspace()
+      .then((ws) => {
+        const defs = ws.settings.contact_field_definitions ?? [];
+        setFieldDefs(defs);
+        // Re-derive from the RAW stored config: the defs-less initial load
+        // already stripped custom:* entries, so reconciling the current state
+        // would lose their saved order/visibility on every mount.
+        setColumns(loadColumnConfig(defs));
+      })
+      .catch(() => {}); // backend banner covers unreachable
   }, []);
   const visibleColumns = columns.filter((c) => c.visible);
+
+  const applyFieldDefs = (defs: ContactFieldDefinition[]) => {
+    setFieldDefs(defs);
+    setColumns((cur) => {
+      const next = reconcileColumns(cur, defs);
+      saveColumnConfig(next);
+      return next;
+    });
+  };
 
   // Deep link: open the drawer for ?contact=… once contacts arrive.
   const openedFromUrl = useRef(false);
@@ -520,7 +564,9 @@ export default function ContactsPage() {
               <>
                 <div className="fixed inset-0 z-20" onClick={() => setActionsOpen(false)} />
                 <div className="absolute right-0 top-full z-30 mt-1 w-64 rounded-xl border border-line bg-white p-1.5 shadow-lg">
-                  {actionItem(<Settings className="size-4" />, "Manage contact fields", undefined, true)}
+                  {actionItem(<Settings className="size-4" />, "Manage contact fields", () =>
+                    setManageOpen(true),
+                  )}
                   {actionItem(<Plug2 className="size-4" />, "Manage CRM sync", undefined, true)}
                   {actionItem(<RefreshCw className="size-4" />, "Run full sync", undefined, true)}
                   {actionItem(
@@ -544,7 +590,7 @@ export default function ContactsPage() {
               {visibleColumns.map((col) => (
                 <th key={col.key} className="whitespace-nowrap px-3 py-2.5 font-medium first:pl-4">
                   <span className="inline-flex items-center gap-1">
-                    {CONTACT_COLUMNS[col.key].label}
+                    {columnMeta(col.key, fieldDefs).label}
                     {col.key === "do_not_call" && (
                       <Tooltip label="Contacts marked Do Not Call are skipped by batch calls.">
                         <Info className="size-3.5 text-faint" />
@@ -593,7 +639,7 @@ export default function ContactsPage() {
                 >
                   {visibleColumns.map((col) => (
                     <td key={col.key} className="whitespace-nowrap px-3 py-3 text-[13px] first:pl-4">
-                      {cellContent(c, col.key, setDoNotCall)}
+                      {cellContent(c, col.key, setDoNotCall, fieldDefs)}
                     </td>
                   ))}
                   <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
@@ -605,11 +651,18 @@ export default function ContactsPage() {
         </table>
       </div>
 
-      <AddContactModal open={addOpen} onClose={() => setAddOpen(false)} onCreated={reload} />
+      <AddContactModal
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        onCreated={reload}
+        fieldDefs={fieldDefs}
+      />
 
       {manageOpen && (
         <ManageTablePanel
           columns={columns}
+          fieldDefs={fieldDefs}
+          onFieldDefsChange={applyFieldDefs}
           onClose={() => setManageOpen(false)}
           onApply={(next) => {
             setColumns(next);
@@ -622,6 +675,7 @@ export default function ContactsPage() {
       {selected && (
         <ContactDrawer
           contact={selected}
+          fieldDefs={fieldDefs}
           onClose={() => openContact(null)}
           onNavigate={navigate}
           onUpdated={(updated) =>

@@ -39,6 +39,9 @@ export default function PhoneDetail({
   const [error, setError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [nick, setNick] = useState(phone.nickname ?? "");
+  const [fallback, setFallback] = useState(phone.fallback_number ?? "");
+  const [fallbackError, setFallbackError] = useState<string | null>(null);
+  const [fallbackSaved, setFallbackSaved] = useState(false);
   const [callOpen, setCallOpen] = useState(false);
   const [callTo, setCallTo] = useState("");
   const [calling, setCalling] = useState(false);
@@ -49,15 +52,20 @@ export default function PhoneDetail({
     setNick(phone.nickname ?? "");
     setRenaming(false);
     setError(null);
-  }, [phone.phone_number, phone.nickname]);
+    setFallback(phone.fallback_number ?? "");
+    setFallbackError(null);
+    setFallbackSaved(false);
+  }, [phone.phone_number, phone.nickname, phone.fallback_number]);
 
-  async function update(body: Record<string, unknown>) {
+  async function update(body: Record<string, unknown>): Promise<boolean> {
     setError(null);
     try {
       await api.updatePhoneNumber(phone.phone_number, body);
       onChanged();
+      return true;
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to update phone number");
+      return false;
     }
   }
 
@@ -66,6 +74,20 @@ export default function PhoneDetail({
     const next = nick.trim();
     if (next === (phone.nickname ?? "")) return;
     await update({ nickname: next || null });
+  }
+
+  async function saveFallback() {
+    const next = fallback.trim();
+    if (next === (phone.fallback_number ?? "")) return;
+    if (next && !isE164(next)) {
+      setFallbackError("Enter a valid E.164 number, e.g. +14155550123");
+      return;
+    }
+    setFallbackError(null);
+    if (await update({ fallback_number: next || null })) {
+      setFallbackSaved(true);
+      setTimeout(() => setFallbackSaved(false), 2000);
+    }
   }
 
   async function remove() {
@@ -180,14 +202,22 @@ export default function PhoneDetail({
           </Field>
           <Field
             label="Fallback Number"
-            hint="When inbound call concurrency is reached and cannot free up after extended ringing, will fallback to this number. (Learn more)"
+            hint="When inbound call concurrency is reached and cannot free up after extended ringing, will fallback to this number."
           >
             <TextInput
               placeholder="+11234567890"
-              defaultValue={phone.fallback_number ?? ""}
-              disabled
-              title="Not available yet"
+              value={fallback}
+              onChange={(e) => {
+                setFallback(e.target.value);
+                setFallbackError(null);
+              }}
+              onBlur={saveFallback}
+              onKeyDown={(e) => e.key === "Enter" && saveFallback()}
             />
+            {fallbackError && <p className="mt-1.5 text-[12.5px] text-bad">{fallbackError}</p>}
+            {fallbackSaved && !fallbackError && (
+              <p className="mt-1.5 text-[12.5px] text-sub">Saved</p>
+            )}
           </Field>
         </AgentCard>
 

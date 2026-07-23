@@ -2,23 +2,41 @@
 
 import Button from "@/components/ui/Button";
 import { Field, TextInput } from "@/components/ui/Field";
+import Modal from "@/components/ui/Modal";
+import { CheckboxRow } from "@/components/ui/RadioRow";
 import Select from "@/components/ui/Select";
-import { api } from "@/lib/api";
+import { api, type BatchCallDraft, type CallTimeWindow } from "@/lib/api";
 import type { PhoneNumber } from "@/lib/types";
 import { cn, isE164, triggerBlobDownload } from "@/lib/utils";
 import {
   CalendarClock,
   CheckCircle2,
   Download,
+  FileText,
   Info,
   Minus,
   Plus,
   Send,
+  Trash2,
   UploadCloud,
   Users,
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+
+const ALL_DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+const DAY_LABEL: Record<string, string> = {
+  mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun",
+};
+const DEFAULT_WINDOW: CallTimeWindow = { start: "00:00", end: "23:59", days: ALL_DAYS };
+
+function windowLabel(w: CallTimeWindow): string {
+  const days =
+    w.days.length === 7
+      ? "Mon - Sun"
+      : w.days.map((d) => DAY_LABEL[d] ?? d).join(", ");
+  return `${w.start} - ${w.end}, ${days || "no days"}`;
+}
 
 const TEMPLATE_CSV =
   "to_number,first_name,appointment_time\n" +
@@ -111,7 +129,14 @@ export default function BatchCallPage() {
   const [from, setFrom] = useState("");
   const [timing, setTiming] = useState<"now" | "schedule">("now");
   const [scheduleAt, setScheduleAt] = useState("");
-  const concurrency = 5; // no backend field yet — stepper disabled
+  const [concurrency, setConcurrency] = useState(5);
+  const [window_, setWindow] = useState<CallTimeWindow>(DEFAULT_WINDOW);
+  const [windowOpen, setWindowOpen] = useState(false);
+  const [windowDraft, setWindowDraft] = useState<CallTimeWindow>(DEFAULT_WINDOW);
+  const [allocated, setAllocated] = useState<number | null>(null);
+  const [drafts, setDrafts] = useState<BatchCallDraft[]>([]);
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [draftSaved, setDraftSaved] = useState(false);
   const [recipients, setRecipients] = useState<Recipient[]>([]);
   const [fileName, setFileName] = useState<string | null>(null);
   const [csvError, setCsvError] = useState<string | null>(null);
@@ -128,7 +153,73 @@ export default function BatchCallPage() {
         setFrom((f) => f || (list[0]?.phone_number ?? ""));
       })
       .catch(() => setNumbers([]));
+    // Real number for the "concurrency allocated to batch calling" banner:
+    // the workspace limit minus slots reserved for inbound.
+    api
+      .getConcurrency()
+      .then((c) => setAllocated(Math.max(0, c.concurrency_limit - c.reserved_inbound_concurrency)))
+      .catch(() => setAllocated(null));
+    api.listBatchCallDrafts().then(setDrafts).catch(() => setDrafts([]));
   }, []);
+
+  const loadDraft = (d: BatchCallDraft) => {
+    setName(d.name ?? "");
+    if (d.from_number) setFrom(d.from_number);
+    setConcurrency(d.reserved_concurrency ?? 5);
+    setWindow(d.call_time_window ?? DEFAULT_WINDOW);
+    if (d.trigger_timestamp) {
+      setTiming("schedule");
+      const dt = new Date(d.trigger_timestamp);
+      const p = (n: number) => String(n).padStart(2, "0");
+      setScheduleAt(
+        `${dt.getFullYear()}-${p(dt.getMonth() + 1)}-${p(dt.getDate())}T${p(dt.getHours())}:${p(dt.getMinutes())}`,
+      );
+    } else {
+      setTiming("now");
+      setScheduleAt("");
+    }
+    setRecipients(
+      (d.tasks ?? []).map((t, i) => ({
+        row: i + 1,
+        to_number: t.to_number,
+        dynamic_variables: t.retell_llm_dynamic_variables ?? {},
+        error: isE164(t.to_number) ? undefined : `"${t.to_number}" is not a valid E.164 number`,
+      })),
+    );
+    setFileName(d.name ? `Draft: ${d.name}` : "Draft");
+    setBatchId(null);
+    setSubmitError(null);
+  };
+
+  const saveDraft = async () => {
+    setSavingDraft(true);
+    setSubmitError(null);
+    try {
+      const draft = await api.saveBatchCallDraft({
+        name: name.trim() || null,
+        from_number: from || null,
+        tasks: recipients
+          .filter((r) => !r.error)
+          .map((r) => ({
+            to_number: r.to_number,
+            ...(Object.keys(r.dynamic_variables).length
+              ? { retell_llm_dynamic_variables: r.dynamic_variables }
+              : {}),
+          })),
+        trigger_timestamp:
+          timing === "schedule" && scheduleAt ? new Date(scheduleAt).getTime() : null,
+        reserved_concurrency: concurrency,
+        call_time_window: window_,
+      });
+      setDrafts((cur) => [draft, ...cur]);
+      setDraftSaved(true);
+      setTimeout(() => setDraftSaved(false), 2000);
+    } catch (e) {
+      setSubmitError(e instanceof Error ? e.message : "Failed to save draft");
+    } finally {
+      setSavingDraft(false);
+    }
+  };
 
   async function onFile(file: File) {
     setBatchId(null);
@@ -165,6 +256,8 @@ export default function BatchCallPage() {
         ...(timing === "schedule" && scheduleAt
           ? { trigger_timestamp: new Date(scheduleAt).getTime() }
           : {}),
+        reserved_concurrency: concurrency,
+        call_time_window: window_,
       });
       setBatchId(res.batch_call_id);
     } catch (e: unknown) {
@@ -297,31 +390,38 @@ export default function BatchCallPage() {
           <div className="flex items-center justify-between rounded-lg border border-line bg-white px-4 py-3">
             <div>
               <div className="text-[13px] font-medium">When Calls Can Run</div>
-              <div className="text-xs text-sub">00:00 - 23:59, Mon - Sun</div>
+              <div className="text-xs text-sub">{windowLabel(window_)}</div>
             </div>
-            <Button size="sm" disabled title="Not available yet">
+            <Button
+              size="sm"
+              onClick={() => {
+                setWindowDraft(window_);
+                setWindowOpen(true);
+              }}
+            >
               Edit
             </Button>
           </div>
 
           <Field
             label="Reserved Concurrency"
-            hint="How many concurrent calls this batch may use."
+            hint="Concurrency slots held back for non-batch calls while this batch runs."
           >
-            <div className="inline-flex items-center rounded-lg border border-line bg-white" title="Not available yet">
+            <div className="inline-flex items-center rounded-lg border border-line bg-white">
               <button
-                disabled
-                className="flex size-9 items-center justify-center text-faint cursor-not-allowed"
+                onClick={() => setConcurrency((c) => Math.max(0, c - 1))}
+                disabled={concurrency <= 0}
+                className="flex size-9 items-center justify-center text-sub hover:text-ink cursor-pointer disabled:text-faint disabled:cursor-not-allowed"
                 aria-label="Decrease"
               >
                 <Minus className="size-3.5" />
               </button>
-              <span className="w-12 text-center text-[13.5px] font-medium tabular-nums text-sub">
+              <span className="w-12 text-center text-[13.5px] font-medium tabular-nums">
                 {concurrency}
               </span>
               <button
-                disabled
-                className="flex size-9 items-center justify-center text-faint cursor-not-allowed"
+                onClick={() => setConcurrency((c) => Math.min(allocated ?? 500, c + 1))}
+                className="flex size-9 items-center justify-center text-sub hover:text-ink cursor-pointer"
                 aria-label="Increase"
               >
                 <Plus className="size-3.5" />
@@ -331,7 +431,7 @@ export default function BatchCallPage() {
 
           <div className="flex items-center gap-2 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-[13px] text-accent-deep">
             <Info className="size-4 shrink-0" />
-            Concurrency allocated to batch calling: 15
+            Concurrency allocated to batch calling: {allocated ?? "—"}
           </div>
 
           <p className="text-xs text-sub">
@@ -349,16 +449,125 @@ export default function BatchCallPage() {
             </div>
           )}
 
-          <div className="flex items-center gap-2 pb-6">
-            <Button disabled title="Drafts not available yet">
-              Save as draft
+          <div className="flex items-center gap-2 pb-2">
+            <Button onClick={saveDraft} disabled={savingDraft || (!name.trim() && !from)}>
+              {savingDraft ? "Saving…" : draftSaved ? "Draft saved" : "Save as draft"}
             </Button>
             <Button variant="primary" disabled={!canSend} onClick={send}>
               {submitting ? "Sending…" : "Send"}
             </Button>
           </div>
+
+          {drafts.length > 0 && (
+            <div className="pb-6">
+              <h2 className="mb-2 text-[13.5px] font-semibold">Drafts</h2>
+              <div className="divide-y divide-line rounded-lg border border-line bg-white">
+                {drafts.map((d) => (
+                  <div key={d.batch_call_id} className="flex items-center gap-2.5 px-3 py-2.5">
+                    <FileText className="size-4 shrink-0 text-sub" />
+                    <div className="min-w-0 grow">
+                      <div className="truncate text-[13px] font-medium">
+                        {d.name || "Untitled draft"}
+                      </div>
+                      <div className="truncate text-xs text-sub">
+                        {d.from_number || "no from number"} · {d.tasks.length} recipient
+                        {d.tasks.length === 1 ? "" : "s"} ·{" "}
+                        {new Date(d.created_at_ms).toLocaleString()}
+                      </div>
+                    </div>
+                    <Button size="sm" variant="ghost" onClick={() => loadDraft(d)}>
+                      Load
+                    </Button>
+                    <button
+                      onClick={async () => {
+                        try {
+                          await api.deleteBatchCallDraft(d.batch_call_id);
+                          setDrafts((cur) =>
+                            cur.filter((x) => x.batch_call_id !== d.batch_call_id),
+                          );
+                        } catch {
+                          // keep the row on failure
+                        }
+                      }}
+                      className="rounded-md p-1.5 text-sub hover:bg-app hover:text-bad cursor-pointer"
+                      aria-label="Delete draft"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
+
+      <Modal
+        open={windowOpen}
+        onClose={() => setWindowOpen(false)}
+        title="When Calls Can Run"
+        width="max-w-md"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setWindowOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              disabled={windowDraft.days.length === 0}
+              onClick={() => {
+                setWindow(windowDraft);
+                setWindowOpen(false);
+              }}
+            >
+              Save
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <Field label="From" className="grow">
+              <input
+                type="time"
+                value={windowDraft.start}
+                onChange={(e) => setWindowDraft((w) => ({ ...w, start: e.target.value }))}
+                className="h-9 w-full rounded-lg border border-line bg-white px-3 text-[13px] outline-none focus:border-accent"
+              />
+            </Field>
+            <Field label="To" className="grow">
+              <input
+                type="time"
+                value={windowDraft.end}
+                onChange={(e) => setWindowDraft((w) => ({ ...w, end: e.target.value }))}
+                className="h-9 w-full rounded-lg border border-line bg-white px-3 text-[13px] outline-none focus:border-accent"
+              />
+            </Field>
+          </div>
+          <Field label="Days">
+            <div className="grid grid-cols-2 gap-x-4">
+              {ALL_DAYS.map((d) => (
+                <CheckboxRow
+                  key={d}
+                  checked={windowDraft.days.includes(d)}
+                  onChange={(v) =>
+                    setWindowDraft((w) => ({
+                      ...w,
+                      days: v
+                        ? ALL_DAYS.filter((x) => w.days.includes(x) || x === d)
+                        : w.days.filter((x) => x !== d),
+                    }))
+                  }
+                  label={DAY_LABEL[d]}
+                />
+              ))}
+            </div>
+          </Field>
+          <p className="text-[12px] text-faint">
+            Calls outside this window stay queued until the window opens.
+          </p>
+        </div>
+      </Modal>
 
       {/* recipients panel */}
       <aside className="hidden w-80 shrink-0 flex-col border-l border-line bg-app xl:flex">

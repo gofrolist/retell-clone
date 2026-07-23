@@ -5,10 +5,12 @@ import SettingsCard, { SettingsPageHeader } from "@/components/settings/Settings
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { Field, TextInput } from "@/components/ui/Field";
+import Modal from "@/components/ui/Modal";
 import { api, inviteLink, type WorkspaceInvite, type WorkspaceMember } from "@/lib/api";
 import {
   getServerSessionSnapshot,
   getSessionSnapshot,
+  logout,
   subscribeSession,
 } from "@/lib/auth";
 import { useCopied } from "@/lib/useCopied";
@@ -51,6 +53,17 @@ export default function WorkspacePage() {
   const [inviteOpen, setInviteOpen] = useState(false);
   const { copiedKey, copy } = useCopied();
 
+  const [billingEmail, setBillingEmail] = useState("");
+  const [billingSaving, setBillingSaving] = useState(false);
+  const [billingState, setBillingState] = useState<"idle" | "saved" | "error">("idle");
+  const [billingError, setBillingError] = useState<string | null>(null);
+
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [workspaceName, setWorkspaceName] = useState("");
+
   const session = useSyncExternalStore(
     subscribeSession,
     getSessionSnapshot,
@@ -68,11 +81,48 @@ export default function WorkspacePage() {
   useEffect(() => {
     api
       .getWorkspace()
-      .then((ws) => setName(ws.name))
+      .then((ws) => {
+        setName(ws.name);
+        setWorkspaceName(ws.name);
+        setBillingEmail(ws.settings.billing_email ?? "");
+      })
       .catch(() => {}); // backend banner covers unreachable
     refreshMembers();
     refreshInvites();
   }, [refreshMembers, refreshInvites]);
+
+  const saveBillingEmail = async () => {
+    setBillingSaving(true);
+    setBillingState("idle");
+    setBillingError(null);
+    try {
+      const ws = await api.updateWorkspace({
+        settings: { billing_email: billingEmail.trim() || null },
+      });
+      setBillingEmail(ws.settings.billing_email ?? "");
+      setBillingState("saved");
+      setTimeout(() => setBillingState("idle"), 2000);
+    } catch (e) {
+      setBillingState("error");
+      setBillingError(e instanceof Error ? e.message : "Failed to save billing email");
+    } finally {
+      setBillingSaving(false);
+    }
+  };
+
+  const deleteWorkspace = async () => {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await api.deleteWorkspace();
+      // The workspace (and this session's membership) is gone — sign out.
+      logout();
+      window.location.href = "/login";
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : "Failed to delete workspace");
+      setDeleting(false);
+    }
+  };
 
   const save = async () => {
     setSaving(true);
@@ -217,11 +267,18 @@ export default function WorkspacePage() {
           >
             <Field label="Billing Email">
               <div className="flex items-center gap-2">
-                <TextInput value={session?.email ?? ""} readOnly disabled />
-                <Button disabled title="Not available yet">
-                  Update
+                <TextInput
+                  placeholder={session?.email ?? "billing@example.com"}
+                  value={billingEmail}
+                  onChange={(e) => setBillingEmail(e.target.value)}
+                />
+                <Button onClick={saveBillingEmail} disabled={billingSaving}>
+                  {billingSaving ? "Saving…" : billingState === "saved" ? "Saved" : "Update"}
                 </Button>
               </div>
+              {billingState === "error" && billingError && (
+                <p className="mt-2 text-[12.5px] text-bad">{billingError}</p>
+              )}
             </Field>
           </SettingsCard>
 
@@ -229,7 +286,7 @@ export default function WorkspacePage() {
             title="Danger Zone"
             description="Deleting a workspace removes all agents, calls and data permanently."
             right={
-              <Button size="sm" variant="danger" disabled title="Not available yet">
+              <Button size="sm" variant="danger" onClick={() => setDeleteOpen(true)}>
                 Delete Workspace
               </Button>
             }
@@ -242,6 +299,54 @@ export default function WorkspacePage() {
         onClose={() => setInviteOpen(false)}
         onInvited={refreshInvites}
       />
+
+      <Modal
+        open={deleteOpen}
+        onClose={() => {
+          setDeleteOpen(false);
+          setDeleteConfirm("");
+          setDeleteError(null);
+        }}
+        title="Delete Workspace"
+        width="max-w-md"
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setDeleteOpen(false);
+                setDeleteConfirm("");
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              // The name-fetch can fail (workspaceName ""): never let an empty
+              // confirmation satisfy the check for an irreversible delete.
+              disabled={deleting || !workspaceName || deleteConfirm !== workspaceName}
+              onClick={deleteWorkspace}
+            >
+              {deleting ? "Deleting…" : "Delete permanently"}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <p className="text-[13px] text-sub">
+            This permanently deletes every agent, call, chat, phone number, knowledge base and
+            API key in this workspace, and signs you out. This cannot be undone.
+          </p>
+          <Field label={`Type the workspace name (${workspaceName}) to confirm`}>
+            <TextInput
+              value={deleteConfirm}
+              onChange={(e) => setDeleteConfirm(e.target.value)}
+              placeholder={workspaceName}
+            />
+          </Field>
+          {deleteError && <p className="text-[13px] text-bad">{deleteError}</p>}
+        </div>
+      </Modal>
     </div>
   );
 }

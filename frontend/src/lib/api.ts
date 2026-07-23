@@ -14,7 +14,9 @@ import type {
   AnalyticsData,
   ApiKey,
   Call,
+  ChatAnalyticsData,
   Contact,
+  ContactFieldDefinition,
   KnowledgeBase,
   KnowledgeDocument,
   ListCallsResponse,
@@ -157,6 +159,23 @@ export interface ResponseEngine {
   version?: number;
 }
 
+export interface PronunciationEntry {
+  word: string;
+  alphabet: "ipa" | "cmu";
+  phoneme: string;
+}
+
+export interface PiiConfig {
+  mode: "post_call";
+  categories: string[];
+}
+
+export interface UserDtmfOptions {
+  digit_limit?: number | null;
+  termination_key?: string | null;
+  timeout_ms?: number | null;
+}
+
 export interface RawAgent {
   agent_id: string;
   agent_name: string | null;
@@ -174,9 +193,28 @@ export interface RawAgent {
   reminder_max_count: number;
   boosted_keywords: string[] | null;
   enable_voicemail_detection: boolean;
+  ambient_sound?: string | null;
+  ambient_sound_volume?: number;
+  pronunciation_dictionary?: PronunciationEntry[] | null;
+  pii_config?: PiiConfig | null;
+  fallback_voice_ids?: string[] | null;
+  allow_user_dtmf?: boolean;
+  allow_dtmf_interruption?: boolean;
+  user_dtmf_options?: UserDtmfOptions | null;
+  opt_in_signed_url?: boolean;
+  ivr_option?: { action: { type: string; text?: string } } | null;
+  call_screening_option?: { action: { type: string; text?: string } } | null;
   last_modification_timestamp: number;
   folder_id?: string | null;
   [key: string]: unknown;
+}
+
+export interface McpServer {
+  name: string;
+  url: string;
+  headers?: Record<string, string>;
+  query_params?: Record<string, string>;
+  timeout_ms?: number;
 }
 
 export interface ChatMessage {
@@ -189,10 +227,21 @@ export interface ChatMessage {
 export interface RawChat {
   chat_id: string;
   agent_id: string;
+  agent_version?: number;
   chat_status: string;
   message_with_tool_calls: ChatMessage[];
   transcript: string;
+  start_timestamp?: number;
+  end_timestamp?: number;
+  metadata?: Record<string, unknown>;
+  retell_llm_dynamic_variables?: Record<string, string>;
   [key: string]: unknown;
+}
+
+export interface ListChatsResponse {
+  items: RawChat[];
+  has_more: boolean;
+  next_pagination_key: string | null;
 }
 
 export interface RawWebCall {
@@ -255,6 +304,7 @@ export interface RawLlm {
     | null;
   knowledge_base_ids: string[] | null;
   default_dynamic_variables: Record<string, string> | null;
+  mcps?: McpServer[] | null;
   last_modification_timestamp: number;
   [key: string]: unknown;
 }
@@ -298,6 +348,7 @@ export interface RawPhoneNumber {
   inbound_agent_id: string | null;
   outbound_agent_id: string | null;
   inbound_webhook_url: string | null;
+  fallback_number?: string | null;
   area_code?: number | null;
   last_modification_timestamp: number;
   [key: string]: unknown;
@@ -321,10 +372,31 @@ export interface RawKnowledgeBase {
   [key: string]: unknown;
 }
 
+export interface WorkspaceSettings {
+  billing_email: string | null;
+  purchased_concurrency: number;
+  reserved_inbound_concurrency: number;
+  concurrency_burst_enabled: boolean;
+  llm_token_limit: number;
+  cps_limits: { telnyx: number; twilio: number; custom_telephony: number };
+  llm_failover_enabled: boolean;
+  auto_call_retry_enabled: boolean;
+  conductor_messages_enabled: boolean;
+  contact_field_definitions: ContactFieldDefinition[];
+}
+
 export interface Workspace {
   workspace_id: string;
   name: string;
   webhook_url: string | null;
+  settings: WorkspaceSettings;
+}
+
+export interface SystemComponent {
+  key: string;
+  name: string;
+  status: "operational" | "degraded" | "down" | "not_configured";
+  detail: string;
 }
 
 export interface WorkspaceMember {
@@ -446,6 +518,7 @@ export function uiPhoneFromRaw(p: RawPhoneNumber): PhoneNumber {
     outbound_agent_id: p.outbound_agent_id,
     inbound_webhook_enabled: Boolean(p.inbound_webhook_url),
     inbound_webhook_url: p.inbound_webhook_url ?? undefined,
+    fallback_number: p.fallback_number ?? null,
     allowed_inbound_countries: ["US"],
     allowed_outbound_countries: ["US"],
   };
@@ -515,6 +588,42 @@ export interface AgentDetail {
   llm: RawLlm | null;
 }
 
+export interface CallTimeWindow {
+  start: string; // "HH:MM"
+  end: string; // "HH:MM"
+  days: string[]; // ["mon", ...]
+}
+
+export interface BatchCallDraft {
+  batch_call_id: string;
+  name: string | null;
+  from_number: string | null;
+  tasks: { to_number: string; retell_llm_dynamic_variables?: Record<string, string> }[];
+  trigger_timestamp: number | null;
+  reserved_concurrency: number | null;
+  call_time_window: CallTimeWindow | null;
+  created_at_ms: number;
+}
+
+export interface AnalyticsParams {
+  days?: number;
+  start_ms?: number;
+  end_ms?: number;
+  agent_ids?: string[];
+  group_by?: "agent" | "direction";
+}
+
+function analyticsQuery(params: AnalyticsParams): string {
+  const q = new URLSearchParams();
+  if (params.days) q.set("days", String(params.days));
+  if (params.start_ms !== undefined) q.set("start_ms", String(params.start_ms));
+  if (params.end_ms !== undefined) q.set("end_ms", String(params.end_ms));
+  if (params.group_by) q.set("group_by", params.group_by);
+  for (const id of params.agent_ids ?? []) q.append("agent_id", id);
+  const s = q.toString();
+  return s ? `?${s}` : "";
+}
+
 export const api = {
   // ------------------------------------------------------------ agents
   listAgents: async (): Promise<Agent[]> => {
@@ -549,9 +658,20 @@ export const api = {
       post(body),
     ),
 
+  getAgentVersions: (agentId: string) =>
+    request<RawAgent[]>(`/get-agent-versions/${encodeURIComponent(agentId)}`),
+
   // ------------------------------------------------------ Test LLM (text chat)
-  createChat: (agentId: string) =>
-    request<RawChat>("/create-chat", post({ agent_id: agentId })),
+  createChat: (agentId: string, dynamicVariables?: Record<string, string>) =>
+    request<RawChat>(
+      "/create-chat",
+      post({
+        agent_id: agentId,
+        ...(dynamicVariables && Object.keys(dynamicVariables).length
+          ? { retell_llm_dynamic_variables: dynamicVariables }
+          : {}),
+      }),
+    ),
 
   createChatCompletion: (chatId: string, content: string) =>
     request<{ messages: ChatMessage[]; is_fallback?: boolean }>(
@@ -562,9 +682,27 @@ export const api = {
   endChat: (chatId: string) =>
     request<void>(`/end-chat/${encodeURIComponent(chatId)}`, { method: "PATCH" }),
 
+  // ------------------------------------------------------------ chat history
+  listChats: (params: {
+    filter_criteria?: { agent_id?: string[]; chat_status?: string[] };
+    sort_order?: "ascending" | "descending";
+    limit?: number;
+    pagination_key?: string;
+  } = {}) => request<ListChatsResponse>("/v3/list-chats", post(params)),
+
+  getChat: (chatId: string) => request<RawChat>(`/get-chat/${encodeURIComponent(chatId)}`),
+
   // --------------------------------------------------- Test Audio (web call)
-  createWebCall: (agentId: string) =>
-    request<RawWebCall>("/v2/create-web-call", post({ agent_id: agentId })),
+  createWebCall: (agentId: string, dynamicVariables?: Record<string, string>) =>
+    request<RawWebCall>(
+      "/v2/create-web-call",
+      post({
+        agent_id: agentId,
+        ...(dynamicVariables && Object.keys(dynamicVariables).length
+          ? { retell_llm_dynamic_variables: dynamicVariables }
+          : {}),
+      }),
+    ),
 
   updateLlm: (llmId: string, body: Partial<RawLlm>) =>
     request<RawLlm>(`/update-retell-llm/${encodeURIComponent(llmId)}`, patch(body)),
@@ -630,7 +768,17 @@ export const api = {
     name?: string;
     tasks: { to_number: string; retell_llm_dynamic_variables?: Record<string, string> }[];
     trigger_timestamp?: number;
+    reserved_concurrency?: number;
+    call_time_window?: CallTimeWindow;
   }) => request<{ batch_call_id: string }>("/create-batch-call", post(body)),
+
+  saveBatchCallDraft: (body: Partial<BatchCallDraft>) =>
+    request<BatchCallDraft>("/save-batch-call-draft", post(body)),
+
+  listBatchCallDrafts: () => request<BatchCallDraft[]>("/list-batch-call-drafts"),
+
+  deleteBatchCallDraft: (id: string) =>
+    request<void>(`/delete-batch-call-draft/${encodeURIComponent(id)}`, del),
 
   // ----------------------------------------------------- phone numbers
   listPhoneNumbers: async (): Promise<PhoneNumber[]> =>
@@ -728,7 +876,31 @@ export const api = {
     request<void>(`/delete-contact/${encodeURIComponent(id)}`, del),
 
   // --------------------------------------------------------- analytics
-  getAnalytics: (days = 30) => request<AnalyticsData>(`/analytics/calls?days=${days}`),
+  getAnalytics: (params: AnalyticsParams = {}) =>
+    request<AnalyticsData>(`/analytics/calls${analyticsQuery(params)}`),
+
+  getChatAnalytics: (params: AnalyticsParams = {}) =>
+    request<ChatAnalyticsData>(`/analytics/chats${analyticsQuery(params)}`),
+
+  getCallInsights: (body: { days?: number; agent_id?: string[]; limit?: number }) =>
+    request<{ insights: string; calls_analyzed: number; window_days: number }>(
+      "/analytics/call-insights",
+      post(body),
+    ),
+
+  // ------------------------------------------------------- concurrency
+  getConcurrency: () =>
+    request<{
+      current_concurrency: number;
+      concurrency_limit: number;
+      base_concurrency: number;
+      purchased_concurrency: number;
+      concurrency_purchase_limit: number;
+      remaining_purchase_limit: number;
+      reserved_inbound_concurrency: number;
+      concurrency_burst_enabled: boolean;
+      concurrency_burst_limit: number;
+    }>("/get-concurrency"),
 
   // ---------------------------------------------------------------- QA
   listCohorts: () => request<QaCohort[]>("/list-qa-cohorts"),
@@ -737,6 +909,9 @@ export const api = {
     agents?: string[];
     sampling_pct?: number;
     weekly_max?: number;
+    min_duration_s?: number | null;
+    success_criteria?: string | null;
+    scoring_metric?: "call_successful" | "transfer";
   }) => request<QaCohort>("/create-qa-cohort", post(body)),
   deleteCohort: (id: string) =>
     request<void>(`/delete-qa-cohort/${encodeURIComponent(id)}`, del),
@@ -759,8 +934,22 @@ export const api = {
   listWebhookDeliveries: () => request<WebhookDelivery[]>("/list-webhook-deliveries"),
 
   getWorkspace: () => request<Workspace>("/workspace"),
-  updateWorkspace: (body: { name?: string; webhook_url?: string | null }) =>
-    request<Workspace>("/workspace", patch(body)),
+  updateWorkspace: (body: {
+    name?: string;
+    webhook_url?: string | null;
+    settings?: Partial<WorkspaceSettings>;
+  }) => request<Workspace>("/workspace", patch(body)),
+
+  getSystemStatus: () =>
+    request<{ checked_at_ms: number; components: SystemComponent[] }>("/system-status"),
+
+  testWorkspaceWebhook: (body: { webhook_url?: string; event?: string }) =>
+    request<{ ok: boolean; status_code: number | null; error: string | null }>(
+      "/test-workspace-webhook",
+      post(body),
+    ),
+
+  deleteWorkspace: () => request<void>("/workspace", del),
 
   listMembers: () => request<WorkspaceMember[]>("/list-members"),
   listInvites: () => request<WorkspaceInvite[]>("/list-invites"),

@@ -72,6 +72,39 @@ class Base(DeclarativeBase):
     type_annotation_map = {dict[str, Any]: JSON, list[Any]: JSON}
 
 
+# Operator-adjustable workspace knobs (Settings → Limits / Reliability /
+# Workspace pages). Stored sparse in Workspace.settings; readers merge over
+# these defaults so old rows and new knobs never need a data migration.
+DEFAULT_WORKSPACE_SETTINGS: dict[str, Any] = {
+    "billing_email": None,
+    # Concurrency (enforced by api/concurrency.py + call creation):
+    "purchased_concurrency": 0,
+    "reserved_inbound_concurrency": 0,
+    "concurrency_burst_enabled": False,
+    # LLM token cap advertised to the dashboard (per-request context budget).
+    "llm_token_limit": 32768,
+    # Calls-per-second dial rates by provider.
+    "cps_limits": {"telnyx": 1, "twilio": 1, "custom_telephony": 1},
+    # Reliability toggles (persisted config; read by the worker via get-agent
+    # config paths as those pipelines land).
+    "llm_failover_enabled": False,
+    "auto_call_retry_enabled": False,
+    "conductor_messages_enabled": False,
+    # Custom contact fields: [{"key": "plan", "label": "Plan", "type": "string"}].
+    "contact_field_definitions": [],
+}
+
+
+def workspace_settings(ws: "Workspace") -> dict[str, Any]:
+    """Workspace settings merged over defaults (sparse storage)."""
+    merged = {**DEFAULT_WORKSPACE_SETTINGS, **(ws.settings or {})}
+    merged["cps_limits"] = {
+        **DEFAULT_WORKSPACE_SETTINGS["cps_limits"],
+        **((ws.settings or {}).get("cps_limits") or {}),
+    }
+    return merged
+
+
 class Workspace(Base):
     __tablename__ = "workspaces"
 
@@ -79,6 +112,8 @@ class Workspace(Base):
     name: Mapped[str] = mapped_column(String(255), default="Default workspace")
     # Workspace-level webhook for call events (agent-level URL takes precedence).
     webhook_url: Mapped[str | None] = mapped_column(Text)
+    # Sparse operator knobs; see DEFAULT_WORKSPACE_SETTINGS for the catalog.
+    settings: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     created_at_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
 
     api_keys: Mapped[list["ApiKey"]] = relationship(back_populates="workspace")
@@ -177,6 +212,9 @@ class RetellLLM(Base):
     starting_state: Mapped[str | None] = mapped_column(String(255))
     default_dynamic_variables: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     knowledge_base_ids: Mapped[list[Any] | None] = mapped_column(JSON)
+    # Retell `mcps`: [{"name", "url", "headers"?, "query_params"?, "timeout_ms"?}]
+    # — stored and served; worker-side MCP tool execution is persist-only for now.
+    mcps: Mapped[list[Any] | None] = mapped_column(JSON)
     last_modification_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
 
 
@@ -237,6 +275,18 @@ class Agent(Base):
     stt_mode: Mapped[str] = mapped_column(String(32), default="fast")
     denoising_mode: Mapped[str] = mapped_column(String(32), default="noise-cancellation")
     opt_out_sensitive_data_storage: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Retell parity fields (stored + served; worker execution tracked in
+    # API_COVERAGE): {"mode": "post_call", "categories": [...]}.
+    pii_config: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    fallback_voice_ids: Mapped[list[Any] | None] = mapped_column(JSON)
+    allow_user_dtmf: Mapped[bool] = mapped_column(Boolean, default=True)
+    allow_dtmf_interruption: Mapped[bool] = mapped_column(Boolean, default=False)
+    # {"digit_limit": 1-50, "termination_key": "#", "timeout_ms": 1000-15000}
+    user_dtmf_options: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    opt_in_signed_url: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Same {"action": {...}} shape as voicemail_option (Retell parity).
+    ivr_option: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    call_screening_option: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     last_modification_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
     # Publishing model: single live version; publish-agent flips this on.
     is_published: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -261,6 +311,8 @@ class PhoneNumber(Base):
     # ?caller_secret=<secret> (reserved Retell-compat mechanism, off by default).
     inbound_webhook_url: Mapped[str | None] = mapped_column(Text)
     inbound_webhook_secret_in_query: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Where inbound calls go when no agent can take them (dashboard field).
+    fallback_number: Mapped[str | None] = mapped_column(String(20))
     area_code: Mapped[int | None] = mapped_column(Integer)
     last_modification_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
 
@@ -335,7 +387,12 @@ class BatchCall(Base):
     # Verbatim task list: [{"to_number": ..., "retell_llm_dynamic_variables": ...}, ...]
     tasks: Mapped[list[Any]] = mapped_column(JSON)
     trigger_timestamp: Mapped[int | None] = mapped_column(BigInteger)
-    status: Mapped[str] = mapped_column(String(24), default="sent")  # sent | scheduled
+    # Retell create-batch-call extras, stored verbatim: concurrency slots held
+    # back for non-batch traffic, and the allowed dialing window
+    # {"start": "HH:MM", "end": "HH:MM", "days": ["mon", ...]}.
+    reserved_concurrency: Mapped[int | None] = mapped_column(Integer)
+    call_time_window: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(24), default="sent")  # sent | scheduled | draft
     created_at_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
 
 
@@ -408,6 +465,9 @@ class Contact(Base):
     timezone: Mapped[str | None] = mapped_column(String(64))
     do_not_call: Mapped[bool] = mapped_column(Boolean, default=False)
     external_id: Mapped[str | None] = mapped_column(String(255))
+    # Values for the workspace's custom contact fields (definitions live in
+    # Workspace.settings["contact_field_definitions"]): {field_key: value}.
+    custom_fields: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     created_at_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
 
 
@@ -424,6 +484,9 @@ class Alert(Base):
     metric: Mapped[str] = mapped_column(String(64))
     condition: Mapped[str] = mapped_column(String(32), default="above")
     threshold: Mapped[float] = mapped_column(Float, default=0.0)
+    # "value": threshold is an absolute number; "last_cycle": threshold is the
+    # % change vs the previous lookback window.
+    compare_to: Mapped[str] = mapped_column(String(16), default="value")
     notify_emails: Mapped[list[Any]] = mapped_column(JSON, default=list)
     webhook_url: Mapped[str | None] = mapped_column(Text)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -441,6 +504,14 @@ class QaCohort(Base):
     agents: Mapped[list[Any]] = mapped_column(JSON, default=list)
     sampling_pct: Mapped[float] = mapped_column(Float, default=10.0)
     weekly_max: Mapped[int] = mapped_column(Integer, default=100)
+    # Wizard step 1 filter: only score calls longer than this (None = all).
+    min_duration_s: Mapped[int | None] = mapped_column(Integer)
+    # Wizard step 2: free-text criteria (shown in the UI, fed to future LLM
+    # rubric scoring) + which metric the cohort's score tracks.
+    success_criteria: Mapped[str | None] = mapped_column(Text)
+    scoring_metric: Mapped[str] = mapped_column(
+        String(32), default="call_successful"
+    )  # call_successful | transfer
     created_at_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
 
 

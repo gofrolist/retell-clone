@@ -51,6 +51,11 @@ class CreateBatchCallRequest(CompatModel):
     tasks: list[BatchCallTask] = Field(max_length=1000)
     name: str | None = None
     trigger_timestamp: int | None = None
+    # Retell extras (stored verbatim; the dialer TODO applies as with
+    # trigger_timestamp): slots held back for non-batch calls + allowed
+    # dialing window {"start": "HH:MM", "end": "HH:MM", "days": [...]}.
+    reserved_concurrency: int | None = Field(default=None, ge=0, le=500)
+    call_time_window: dict[str, Any] | None = None
 
 
 class CreateConversationFlowRequest(CompatModel):

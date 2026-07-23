@@ -47,11 +47,11 @@ export default function QualityAssurancePage() {
 
   const agentName = (id: string) => agents.find((a) => a.agent_id === id)?.agent_name ?? id;
 
-  // The scoring pipeline isn't built yet — the backend reports 0 for these.
-  // Show "—" instead of pretending we measured something.
-  const withData = cohorts.filter((c) => c.transfer_success_rate > 0);
+  // Scores are computed server-side over each cohort's sampled calls from the
+  // last 30 days; cohorts with no sample show "—" instead of a fake 0.
+  const withData = cohorts.filter((c) => c.sample_size > 0);
   const avgSuccess = withData.length
-    ? (withData.reduce((s, c) => s + c.transfer_success_rate, 0) / withData.length).toFixed(0)
+    ? (withData.reduce((s, c) => s + c.success_rate, 0) / withData.length).toFixed(0)
     : null;
   const withWait = cohorts.filter((c) => c.transfer_wait_time_s > 0);
   const avgWait = withWait.length
@@ -73,7 +73,7 @@ export default function QualityAssurancePage() {
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <MetricCard
-          label="Transfer Success Rate"
+          label="Call Success Rate"
           value={avgSuccess ?? "—"}
           suffix={avgSuccess ? "%" : undefined}
         />
@@ -112,7 +112,9 @@ export default function QualityAssurancePage() {
               </div>
             </div>
             <span className="text-[13px] tabular-nums text-sub">
-              {c.transfer_success_rate > 0 ? `${c.transfer_success_rate}% success` : "— success"}
+              {c.sample_size > 0
+                ? `${c.score}% ${c.scoring_metric === "transfer" ? "transfer" : "success"} · ${c.sample_size} calls`
+                : "no sampled calls yet"}
             </span>
             <RowMenu onDelete={() => deleteCohort(c.cohort_id)} />
           </div>

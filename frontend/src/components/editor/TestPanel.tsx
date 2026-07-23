@@ -1,5 +1,7 @@
 "use client";
 
+import { PairRows, toPairs, fromPairs, type Pair } from "@/components/editor/PairRows";
+import Button from "@/components/ui/Button";
 import { PillTabs } from "@/components/ui/Tabs";
 import { api, type ChatMessage } from "@/lib/api";
 import { formatDuration } from "@/lib/utils";
@@ -9,6 +11,13 @@ import { useEffect, useRef, useState } from "react";
 
 export default function TestPanel({ agentId }: { agentId: string }) {
   const [tab, setTab] = useState("llm");
+  // Test dynamic variables ({} button): sent with the next test chat/call so
+  // `{{var}}` placeholders resolve like a real call.
+  const [testVars, setTestVars] = useState<Record<string, string>>({});
+  const [varsOpen, setVarsOpen] = useState(false);
+  const [varPairs, setVarPairs] = useState<Pair[]>([]);
+  const varCount = Object.keys(testVars).length;
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between px-4 pt-3">
@@ -20,23 +29,63 @@ export default function TestPanel({ agentId }: { agentId: string }) {
           active={tab}
           onChange={setTab}
         />
-        <button
-          disabled
-          title="Not available yet"
-          className="flex size-8 items-center justify-center rounded-lg border border-line bg-white text-sub opacity-40 cursor-not-allowed"
-          aria-label="Dynamic variables"
-        >
-          <Braces className="size-4" />
-        </button>
+        <div className="relative">
+          <button
+            onClick={() => {
+              setVarPairs(toPairs(testVars));
+              setVarsOpen((v) => !v);
+            }}
+            title="Test dynamic variables"
+            className="relative flex size-8 items-center justify-center rounded-lg border border-line bg-white text-sub transition-colors hover:bg-app cursor-pointer"
+            aria-label="Dynamic variables"
+          >
+            <Braces className="size-4" />
+            {varCount > 0 && (
+              <span className="absolute -right-1.5 -top-1.5 flex size-4 items-center justify-center rounded-full bg-ink text-[10px] font-semibold text-white">
+                {varCount}
+              </span>
+            )}
+          </button>
+          {varsOpen && (
+            <>
+              <div className="fixed inset-0 z-20" onClick={() => setVarsOpen(false)} />
+              <div className="absolute right-0 top-full z-30 mt-1 w-80 rounded-xl border border-line bg-white p-3 shadow-lg">
+                <p className="mb-2 text-xs text-sub">
+                  Values used for <span className="font-mono">{"{{variables}}"}</span> in the next
+                  test chat or call.
+                </p>
+                <PairRows
+                  addLabel="Add variable"
+                  pairs={varPairs}
+                  onChange={setVarPairs}
+                  keyPlaceholder="Variable name"
+                  valuePlaceholder="Value"
+                />
+                <div className="mt-3 flex justify-end">
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={() => {
+                      setTestVars(fromPairs(varPairs) ?? {});
+                      setVarsOpen(false);
+                    }}
+                  >
+                    Apply
+                  </Button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Both tabs stay mounted (toggled with `hidden`) so the LLM chat keeps
           its conversation when the user peeks at the Audio tab. */}
       <div className={tab === "audio" ? "flex min-h-0 grow flex-col" : "hidden"}>
-        <AudioTab agentId={agentId} />
+        <AudioTab agentId={agentId} dynamicVariables={testVars} />
       </div>
       <div className={tab === "llm" ? "flex min-h-0 grow flex-col" : "hidden"}>
-        <LlmChat agentId={agentId} />
+        <LlmChat agentId={agentId} dynamicVariables={testVars} />
       </div>
     </div>
   );
@@ -65,7 +114,13 @@ interface TranscriptSegment {
 }
 
 /** Live web call against the agent (Retell "Test Audio"). */
-function AudioTab({ agentId }: { agentId: string }) {
+function AudioTab({
+  agentId,
+  dynamicVariables,
+}: {
+  agentId: string;
+  dynamicVariables: Record<string, string>;
+}) {
   const [phase, setPhase] = useState<CallPhase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
@@ -220,7 +275,7 @@ function AudioTab({ agentId }: { agentId: string }) {
           }
         })();
       });
-      const call = await api.createWebCall(agentId);
+      const call = await api.createWebCall(agentId, dynamicVariables);
       if (bailIfCancelled()) return;
       await room.connect(call.livekit_server_url, call.access_token);
       if (bailIfCancelled()) return;
@@ -311,7 +366,13 @@ function AudioTab({ agentId }: { agentId: string }) {
 }
 
 /** Text chat against the agent's saved LLM prompt (Retell "Test LLM"). */
-function LlmChat({ agentId }: { agentId: string }) {
+function LlmChat({
+  agentId,
+  dynamicVariables,
+}: {
+  agentId: string;
+  dynamicVariables: Record<string, string>;
+}) {
   const [chatId, setChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -365,7 +426,7 @@ function LlmChat({ agentId }: { agentId: string }) {
       // server call; reuse the same chat_id for the rest of the session.
       let id = chatId;
       if (!id) {
-        id = (await api.createChat(agentId)).chat_id;
+        id = (await api.createChat(agentId, dynamicVariables)).chat_id;
         setChatId(id);
       }
       const res = await api.createChatCompletion(id, content);

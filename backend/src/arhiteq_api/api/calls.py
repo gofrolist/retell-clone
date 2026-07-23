@@ -89,12 +89,12 @@ async def create_phone_call(
     # Retell signals a full channel pool with 429; consumers match
     # /concurrency limit|429/i and re-queue instead of marking the lead failed.
     await concurrency.expire_stale_web_calls(session, api_key.workspace_id)
-    if await concurrency.count_live_calls(session, api_key.workspace_id) >= (
-        concurrency.CONCURRENCY_LIMIT
-    ):
-        raise HTTPException(
-            429, detail=f"Concurrency limit reached ({concurrency.CONCURRENCY_LIMIT})"
-        )
+    limit = await concurrency.effective_concurrency_limit(session, api_key.workspace_id)
+    # Only calls drawing on the outbound budget count against it: live inbound
+    # traffic above its reservation must not starve outbound dialing.
+    live = await concurrency.count_live_calls(session, api_key.workspace_id, outbound_only=True)
+    if live >= limit:
+        raise HTTPException(429, detail=f"Concurrency limit reached ({limit})")
 
     # Dynamic variables are stored verbatim: arbitrary string keys, values
     # coerced to strings (contract: don't rename, don't drop).
@@ -240,12 +240,10 @@ async def create_web_call(
 
     # Same 429 gate as create-phone-call — consumers match /concurrency limit|429/i.
     await concurrency.expire_stale_web_calls(session, api_key.workspace_id)
-    if await concurrency.count_live_calls(session, api_key.workspace_id) >= (
-        concurrency.CONCURRENCY_LIMIT
-    ):
-        raise HTTPException(
-            429, detail=f"Concurrency limit reached ({concurrency.CONCURRENCY_LIMIT})"
-        )
+    limit = await concurrency.effective_concurrency_limit(session, api_key.workspace_id)
+    live = await concurrency.count_live_calls(session, api_key.workspace_id, outbound_only=True)
+    if live >= limit:
+        raise HTTPException(429, detail=f"Concurrency limit reached ({limit})")
 
     call = Call(
         call_id=new_call_id(),

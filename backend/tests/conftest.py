@@ -34,6 +34,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event
 
 import arhiteq_api.db as db_module
+from arhiteq_api.api import batch_calls
 from arhiteq_api.auth import hash_key
 from arhiteq_api.services import webhooks
 from arhiteq_api.main import app
@@ -125,6 +126,11 @@ async def _fresh_db():
     # leaked task can't run against the next test's freshly reset schema.
     while webhooks.background_tasks:
         await asyncio.gather(*list(webhooks.background_tasks), return_exceptions=True)
+    # Batch drainers poll for minutes; cancel instead of draining.
+    for task in list(batch_calls._drain_tasks):
+        task.cancel()
+    if batch_calls._drain_tasks:
+        await asyncio.gather(*list(batch_calls._drain_tasks), return_exceptions=True)
     await engine.dispose()
 
 

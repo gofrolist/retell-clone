@@ -117,3 +117,63 @@ async def test_batch_call_requires_auth(client):
         json={"from_number": FROM_NUMBER, "tasks": [{"to_number": "+12137774445"}]},
     )
     assert resp.status_code == 401
+
+
+async def test_batch_first_wave_respects_concurrency_budget(client, monkeypatch):
+    import asyncio
+
+    from arhiteq_api.api import batch_calls, concurrency
+
+    monkeypatch.setattr(concurrency, "BASE_CONCURRENCY", 2)
+    dialed: list[str] = []
+
+    async def _record(call):
+        dialed.append(call.to_number)
+
+    monkeypatch.setattr("arhiteq_api.services.telephony.start_outbound_call", _record)
+    resp = await client.post(
+        "/create-batch-call",
+        headers=AUTH_HEADERS,
+        json={
+            "from_number": FROM_NUMBER,
+            "tasks": [{"to_number": f"+1213777{i:04d}"} for i in range(5)],
+        },
+    )
+    assert resp.status_code == 201
+    # Only the outbound budget (2 slots) dials immediately; the rest is handed
+    # to the background drainer instead of blowing past the workspace limit.
+    assert len(dialed) == 2
+    assert len(batch_calls._drain_tasks) == 1
+    # Don't leak the drainer (and its monkeypatched telephony) into other tests.
+    for task in list(batch_calls._drain_tasks):
+        task.cancel()
+    await asyncio.gather(*list(batch_calls._drain_tasks), return_exceptions=True)
+
+
+async def test_batch_reserved_concurrency_holds_back_slots(client, monkeypatch):
+    import asyncio
+
+    from arhiteq_api.api import batch_calls, concurrency
+
+    monkeypatch.setattr(concurrency, "BASE_CONCURRENCY", 3)
+    dialed: list[str] = []
+
+    async def _record(call):
+        dialed.append(call.to_number)
+
+    monkeypatch.setattr("arhiteq_api.services.telephony.start_outbound_call", _record)
+    resp = await client.post(
+        "/create-batch-call",
+        headers=AUTH_HEADERS,
+        json={
+            "from_number": FROM_NUMBER,
+            "reserved_concurrency": 2,
+            "tasks": [{"to_number": f"+1213777{i:04d}"} for i in range(3)],
+        },
+    )
+    assert resp.status_code == 201
+    # limit(3) - reserved for non-batch calls(2) = 1 immediate dial.
+    assert len(dialed) == 1
+    for task in list(batch_calls._drain_tasks):
+        task.cancel()
+    await asyncio.gather(*list(batch_calls._drain_tasks), return_exceptions=True)

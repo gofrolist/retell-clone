@@ -6,7 +6,9 @@ webhook delivery log, and workspace settings. All additive — nothing here
 changes the public Retell-compatible surface.
 """
 
+import re
 from collections import Counter
+from hashlib import sha256
 from datetime import datetime, timezone
 from typing import Any, NamedTuple
 
@@ -16,24 +18,41 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import httpx
+from fastapi.concurrency import run_in_threadpool
+
+from .. import security, signature
 from ..auth import hash_key, require_api_key
 from ..config import get_settings
 from ..db import get_session
 from ..ids import new_api_key, new_invite_token
 from ..models import (
+    DEFAULT_WORKSPACE_SETTINGS,
     Agent,
     AgentFolder,
     Alert,
     ApiKey,
+    BatchCall,
     Call,
+    Chat,
     Contact,
+    ConversationFlow,
+    KnowledgeBase,
+    KnowledgeBaseFile,
+    PhoneNumber,
     QaCohort,
+    RetellLLM,
     WebhookDelivery,
     Workspace,
     WorkspaceInvite,
     WorkspaceMember,
     now_ms,
+    workspace_settings,
 )
+from ..schemas import TestWebhookRequest
+from ..services import webhooks
+from ..services.gemini import build_genai_client, genai_credentials_available
+from .concurrency import BASE_CONCURRENCY, CONCURRENCY_PURCHASE_LIMIT
 from ..schemas import CompatModel
 from ..sessions import email_from_authorization
 from ._deps import get_owned
@@ -63,24 +82,41 @@ def _breakdown(counter: Counter) -> list[dict[str, Any]]:
     return [{"name": name, "value": value} for name, value in counter.most_common()]
 
 
-@router.get("/analytics/calls")
-async def call_analytics(
-    days: int = 30,
-    api_key: ApiKey = Depends(require_api_key),
-    session: AsyncSession = Depends(get_session),
-):
+def _window(days: int, start_ms: int | None, end_ms: int | None) -> tuple[int, int, int]:
+    """Resolve (start_ms, end_ms, days). Explicit range wins over `days`;
+    the window is whole calendar days including the end day's bucket."""
+    if start_ms is not None and end_ms is not None and end_ms >= start_ms:
+        # Buckets are UTC days but explicit ranges arrive as local midnights,
+        # and the query tolerates timestamps up to end_ms + DAY_MS — so span
+        # every UTC day a returned call can land in, not just the raw delta.
+        span_days = min(int((end_ms + DAY_MS) // DAY_MS - start_ms // DAY_MS) + 1, 365)
+        return start_ms, end_ms, span_days
     days = max(1, min(days, 365))
     # Window is the last `days` calendar days *including today*, so the series
     # ends on today's bucket.
-    start_ms = now_ms() - (days - 1) * DAY_MS
-    rows = (
-        await session.scalars(
-            select(Call).where(
-                Call.workspace_id == api_key.workspace_id,
-                Call.created_at_ms >= start_ms,
-            )
-        )
-    ).all()
+    return now_ms() - (days - 1) * DAY_MS, now_ms(), days
+
+
+@router.get("/analytics/calls")
+async def call_analytics(
+    request: Request,
+    days: int = 30,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+    group_by: str | None = None,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    start_ms, end_ms, days = _window(days, start_ms, end_ms)
+    agent_ids = request.query_params.getlist("agent_id")
+    query = select(Call).where(
+        Call.workspace_id == api_key.workspace_id,
+        Call.created_at_ms >= start_ms,
+        Call.created_at_ms <= end_ms + DAY_MS,  # tolerate end-of-day timestamps
+    )
+    if agent_ids:
+        query = query.where(Call.agent_id.in_(agent_ids))
+    rows = (await session.scalars(query)).all()
 
     durations = [c.duration_ms for c in rows if c.duration_ms]
     latencies: list[float] = []
@@ -107,7 +143,7 @@ async def call_analytics(
         if isinstance(e2e, dict) and e2e.get("p50"):
             latencies.append(e2e["p50"])
 
-    return {
+    out: dict[str, Any] = {
         "call_counts": len(rows),
         "avg_duration_s": round(sum(durations) / len(durations) / 1000, 1) if durations else 0,
         "avg_latency_ms": round(sum(latencies) / len(latencies)) if latencies else 0,
@@ -120,6 +156,154 @@ async def call_analytics(
         "user_sentiment": _breakdown(sentiments),
         "phone_direction": _breakdown(directions),
     }
+
+    # Breakdown: per-group daily call-count series (small-multiples chart).
+    if group_by in ("agent", "direction"):
+        group_counts: dict[str, Counter] = {}
+        for c in rows:
+            name = (
+                (c.agent_name or c.agent_id) if group_by == "agent" else (c.direction or "unknown")
+            )
+            group_counts.setdefault(name, Counter())[
+                _day(c.start_timestamp or c.created_at_ms)
+            ] += 1
+        out["call_counts_groups"] = [
+            {"name": name, "series": _series(dict(counts), start_ms, days)}
+            for name, counts in sorted(group_counts.items(), key=lambda kv: -sum(kv[1].values()))[
+                :12
+            ]
+        ]
+    return out
+
+
+@router.get("/analytics/chats")
+async def chat_analytics(
+    request: Request,
+    days: int = 30,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    start_ms, end_ms, days = _window(days, start_ms, end_ms)
+    agent_ids = request.query_params.getlist("agent_id")
+    query = select(Chat).where(
+        Chat.workspace_id == api_key.workspace_id,
+        Chat.created_at_ms >= start_ms,
+        Chat.created_at_ms <= end_ms + DAY_MS,
+    )
+    if agent_ids:
+        query = query.where(Chat.agent_id.in_(agent_ids))
+    rows = (await session.scalars(query)).all()
+
+    day_counts: Counter = Counter()
+    day_messages: Counter = Counter()
+    statuses: Counter = Counter()
+    agents: Counter = Counter()
+    message_totals: list[int] = []
+    durations_ms: list[int] = []
+
+    for c in rows:
+        day = _day(c.start_timestamp or c.created_at_ms)
+        day_counts[day] += 1
+        n_messages = len(c.messages or [])
+        day_messages[day] += n_messages
+        message_totals.append(n_messages)
+        statuses[c.chat_status] += 1
+        agents[c.agent_id] += 1
+        if c.end_timestamp and c.start_timestamp:
+            durations_ms.append(c.end_timestamp - c.start_timestamp)
+
+    return {
+        "chat_counts": len(rows),
+        "avg_messages": round(sum(message_totals) / len(message_totals), 1)
+        if message_totals
+        else 0,
+        "avg_duration_s": round(sum(durations_ms) / len(durations_ms) / 1000, 1)
+        if durations_ms
+        else 0,
+        "chat_counts_series": _series(dict(day_counts), start_ms, days),
+        "messages_series": _series(dict(day_messages), start_ms, days),
+        "chat_status": _breakdown(statuses),
+        "chat_agent": _breakdown(agents),
+    }
+
+
+class CallInsightsRequest(CompatModel):
+    days: int = 7
+    agent_id: list[str] = []
+    limit: int = Field(default=200, ge=1, le=500)
+
+
+_INSIGHTS_PROMPT = """\
+You are an analyst for a voice-AI call platform. Below is a sample of recent
+calls (one per line: start time, agent, direction, duration, status,
+disconnection reason, user sentiment, successful flag, then the call summary).
+
+Write a concise insights report in markdown with three short sections:
+**Trends**, **Problems**, and **Recommendations**. Ground every claim in the
+data; quote counts/percentages you can actually derive. No preamble.
+
+Calls:
+{lines}"""
+
+
+@router.post("/analytics/call-insights")
+async def call_insights(
+    body: CallInsightsRequest,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    """AI summary of recent calls (Call History's ✨ button). Real Gemini run
+    over real call rows — 422s when no GenAI credentials are configured."""
+    settings = get_settings()
+    if not genai_credentials_available(settings):
+        raise HTTPException(422, detail="AI insights need Google GenAI credentials configured")
+
+    days = max(1, min(body.days, 90))
+    query = (
+        select(Call)
+        .where(
+            Call.workspace_id == api_key.workspace_id,
+            Call.created_at_ms >= now_ms() - days * DAY_MS,
+        )
+        .order_by(Call.created_at_ms.desc())
+        .limit(body.limit)
+    )
+    if body.agent_id:
+        query = query.where(Call.agent_id.in_(body.agent_id))
+    rows = (await session.scalars(query)).all()
+    if not rows:
+        raise HTTPException(422, detail="No calls in the selected window to analyze")
+
+    def line(c: Call) -> str:
+        analysis = c.call_analysis or {}
+        started = datetime.fromtimestamp(
+            (c.start_timestamp or c.created_at_ms) / 1000, tz=timezone.utc
+        ).strftime("%Y-%m-%d %H:%M")
+        summary = (analysis.get("call_summary") or analysis.get("summary") or "").replace(
+            "\n", " "
+        )[:200]
+        duration_s = round((c.duration_ms or 0) / 1000)
+        return (
+            f"{started} | {c.agent_name or c.agent_id} | {c.direction or '-'} | {duration_s}s"
+            f" | {c.call_status} | {c.disconnection_reason or '-'}"
+            f" | {analysis.get('user_sentiment') or '-'} | {analysis.get('call_successful')}"
+            f" | {summary}"
+        )
+
+    prompt = _INSIGHTS_PROMPT.format(lines="\n".join(line(c) for c in rows))
+    try:
+        client = build_genai_client(settings)
+        resp = await client.aio.models.generate_content(
+            model=settings.analysis_model, contents=prompt, config={"temperature": 0.2}
+        )
+        text = (resp.text or "").strip()
+    except Exception as exc:  # noqa: BLE001 — surface the provider failure
+        raise HTTPException(502, detail=f"Insights generation failed: {exc}") from None
+    if not text:
+        raise HTTPException(502, detail="Insights generation returned an empty response")
+    return {"insights": text, "calls_analyzed": len(rows), "window_days": days}
 
 
 # -------------------------------------------------------------- agent folders
@@ -234,6 +418,7 @@ def _contact_to_dict(c: Contact, related: int = 0, latest: int | None = None) ->
         "timezone": c.timezone,
         "do_not_call": c.do_not_call,
         "external_id": c.external_id,
+        "custom_fields": c.custom_fields or {},
         "related_conversations": related,
         "latest_conversation": latest,
     }
@@ -246,6 +431,7 @@ class CreateContactRequest(CompatModel):
     timezone: str | None = None
     do_not_call: bool = False
     external_id: str | None = None
+    custom_fields: dict[str, Any] | None = None
 
 
 @router.get("/list-contacts")
@@ -307,6 +493,7 @@ async def update_contact(
         "timezone",
         "do_not_call",
         "external_id",
+        "custom_fields",
     ):
         if field in payload:
             setattr(contact, field, payload[field])
@@ -339,6 +526,7 @@ def _alert_to_dict(a: Alert) -> dict[str, Any]:
         "metric": a.metric,
         "condition": a.condition,
         "threshold": a.threshold,
+        "compare_to": a.compare_to,
         "notify_emails": a.notify_emails or [],
         "webhook_url": a.webhook_url,
         "enabled": a.enabled,
@@ -350,6 +538,7 @@ class CreateAlertRequest(CompatModel):
     metric: str
     condition: str = "above"
     threshold: float = 0.0
+    compare_to: str = Field(default="value", pattern="^(value|last_cycle)$")
     check_every_min: int = 5
     lookback_min: int = 60
     notify_emails: list[str] = []
@@ -357,11 +546,27 @@ class CreateAlertRequest(CompatModel):
     enabled: bool = True
 
 
+class UpdateAlertRequest(CompatModel):
+    """PATCH body: same constraints as create, everything optional."""
+
+    name: str | None = None
+    metric: str | None = None
+    condition: str | None = None
+    threshold: float | None = None
+    compare_to: str | None = Field(default=None, pattern="^(value|last_cycle)$")
+    check_every_min: int | None = None
+    lookback_min: int | None = None
+    notify_emails: list[str] | None = None
+    webhook_url: str | None = None
+    enabled: bool | None = None
+
+
 _ALERT_FIELDS = (
     "name",
     "metric",
     "condition",
     "threshold",
+    "compare_to",
     "check_every_min",
     "lookback_min",
     "notify_emails",
@@ -396,17 +601,21 @@ async def create_alert(
 @router.patch("/update-alert/{alert_id}")
 async def update_alert(
     alert_id: str,
-    request: Request,
+    body: UpdateAlertRequest,
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
     alert = await session.get(Alert, alert_id)
     if alert is None or alert.workspace_id != api_key.workspace_id:
         raise HTTPException(404, detail="Alert not found")
-    payload = await request.json()
+    payload = body.model_dump(exclude_unset=True)
     for field in _ALERT_FIELDS:
-        if field in payload:
-            setattr(alert, field, payload[field])
+        if field not in payload:
+            continue
+        # Only webhook_url is nullable; null on the others means "no change".
+        if payload[field] is None and field != "webhook_url":
+            continue
+        setattr(alert, field, payload[field])
     await session.commit()
     return _alert_to_dict(alert)
 
@@ -427,16 +636,75 @@ async def delete_alert(
 # ----------------------------------------------------------------- QA cohorts
 
 
-def _cohort_to_dict(c: QaCohort) -> dict[str, Any]:
+QA_WINDOW_DAYS = 30
+
+
+def _sample_bucket(call_id: str) -> int:
+    """Deterministic 0-99 bucket for sampling_pct comparisons."""
+    return int(sha256(call_id.encode()).hexdigest()[:8], 16) % 100
+
+
+def _cohort_metrics(cohort: QaCohort, calls: list[Call]) -> dict[str, Any]:
+    """Score a cohort over its sampled calls (last QA_WINDOW_DAYS).
+
+    Sampling is deterministic per call (hash of call_id vs sampling_pct) so
+    repeated page loads score the same sample, capped at ~a month of the
+    cohort's weekly_max.
+    """
+    agent_set = set(cohort.agents or [])
+    matching = [
+        c
+        for c in calls
+        if (not agent_set or c.agent_id in agent_set)
+        and (not cohort.min_duration_s or (c.duration_ms or 0) >= cohort.min_duration_s * 1000)
+    ]
+    pct = max(0.0, min(cohort.sampling_pct or 0.0, 100.0))
+    # Stable digest, not hash(): PYTHONHASHSEED would resample per process.
+    sampled = [c for c in matching if _sample_bucket(c.call_id) < pct]
+    # weekly_max is non-null (default 100); 0 legitimately means "score
+    # nothing", so no falsy-or fallback here.
+    cap = cohort.weekly_max * 4
+    sampled = sampled[:cap]
+
+    analyzed = [c for c in sampled if (c.call_analysis or {}).get("call_successful") is not None]
+    successful = sum(1 for c in analyzed if (c.call_analysis or {}).get("call_successful"))
+    transferred = [c for c in sampled if "transfer" in (c.disconnection_reason or "").lower()]
+    transfer_rate = round(100 * len(transferred) / len(sampled)) if sampled else 0
+    success_rate = round(100 * successful / len(analyzed)) if analyzed else 0
+    # Approximation: a transferred call ends at the transfer, so its duration
+    # is the time the caller waited to reach a human.
+    wait_times = [c.duration_ms for c in transferred if c.duration_ms]
+    return {
+        "sample_size": len(sampled),
+        "success_rate": success_rate,
+        "transfer_success_rate": transfer_rate,
+        "transfer_wait_time_s": round(sum(wait_times) / len(wait_times) / 1000, 1)
+        if wait_times
+        else 0,
+        "score": transfer_rate if cohort.scoring_metric == "transfer" else success_rate,
+    }
+
+
+def _cohort_to_dict(c: QaCohort, metrics: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "cohort_id": c.cohort_id,
         "name": c.name,
         "agents": c.agents or [],
         "sampling_pct": c.sampling_pct,
         "weekly_max": c.weekly_max,
-        # Scoring pipeline not built yet; the dashboard renders these as-is.
-        "transfer_success_rate": 0,
-        "transfer_wait_time_s": 0,
+        "min_duration_s": c.min_duration_s,
+        "success_criteria": c.success_criteria,
+        "scoring_metric": c.scoring_metric or "call_successful",
+        **(
+            metrics
+            or {
+                "sample_size": 0,
+                "success_rate": 0,
+                "transfer_success_rate": 0,
+                "transfer_wait_time_s": 0,
+                "score": 0,
+            }
+        ),
     }
 
 
@@ -444,7 +712,10 @@ class CreateCohortRequest(CompatModel):
     name: str
     agents: list[str] = []
     sampling_pct: float = 10.0
-    weekly_max: int = 100
+    weekly_max: int = Field(default=100, ge=0)
+    min_duration_s: int | None = Field(default=None, ge=0, le=86_400)
+    success_criteria: str | None = None
+    scoring_metric: str = Field(default="call_successful", pattern="^(call_successful|transfer)$")
 
 
 @router.get("/list-qa-cohorts")
@@ -455,7 +726,23 @@ async def list_qa_cohorts(
     rows = (
         await session.scalars(select(QaCohort).where(QaCohort.workspace_id == api_key.workspace_id))
     ).all()
-    return [_cohort_to_dict(c) for c in rows]
+    if not rows:
+        return []
+    # One shared window of ended calls; per-cohort filters run in memory.
+    calls = (
+        await session.scalars(
+            select(Call)
+            .where(
+                Call.workspace_id == api_key.workspace_id,
+                Call.created_at_ms >= now_ms() - QA_WINDOW_DAYS * DAY_MS,
+                Call.call_status.in_(("ended", "error", "not_connected")),
+            )
+            # Deterministic order so the weekly_max cap truncates the same
+            # (most recent) sample on every page load.
+            .order_by(Call.created_at_ms.desc(), Call.call_id)
+        )
+    ).all()
+    return [_cohort_to_dict(c, _cohort_metrics(c, list(calls))) for c in rows]
 
 
 @router.post("/create-qa-cohort", status_code=201)
@@ -480,6 +767,82 @@ async def delete_qa_cohort(
     if cohort is None or cohort.workspace_id != api_key.workspace_id:
         raise HTTPException(404, detail="Cohort not found")
     await session.delete(cohort)
+    await session.commit()
+
+
+# --------------------------------------------------------- batch call drafts
+
+
+def _draft_to_dict(b: BatchCall) -> dict[str, Any]:
+    return {
+        "batch_call_id": b.batch_call_id,
+        "name": b.name,
+        "from_number": b.from_number,
+        "tasks": b.tasks or [],
+        "trigger_timestamp": b.trigger_timestamp,
+        "reserved_concurrency": b.reserved_concurrency,
+        "call_time_window": b.call_time_window,
+        "created_at_ms": b.created_at_ms,
+    }
+
+
+class SaveBatchCallDraftRequest(CompatModel):
+    from_number: str | None = None
+    name: str | None = None
+    tasks: list[dict[str, Any]] = Field(default_factory=list, max_length=1000)
+    trigger_timestamp: int | None = None
+    reserved_concurrency: int | None = Field(default=None, ge=0, le=500)
+    call_time_window: dict[str, Any] | None = None
+
+
+@router.post("/save-batch-call-draft", status_code=201)
+async def save_batch_call_draft(
+    body: SaveBatchCallDraftRequest,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    """Dashboard "Save as draft": a BatchCall row that never dials. Unlike
+    create-batch-call, an incomplete form (no recipients yet) is fine."""
+    draft = BatchCall(
+        workspace_id=api_key.workspace_id,
+        from_number=body.from_number or "",
+        name=body.name,
+        tasks=body.tasks,
+        trigger_timestamp=body.trigger_timestamp,
+        reserved_concurrency=body.reserved_concurrency,
+        call_time_window=body.call_time_window,
+        status="draft",
+    )
+    session.add(draft)
+    await session.commit()
+    return _draft_to_dict(draft)
+
+
+@router.get("/list-batch-call-drafts")
+async def list_batch_call_drafts(
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    rows = (
+        await session.scalars(
+            select(BatchCall)
+            .where(BatchCall.workspace_id == api_key.workspace_id, BatchCall.status == "draft")
+            .order_by(BatchCall.created_at_ms.desc())
+        )
+    ).all()
+    return [_draft_to_dict(b) for b in rows]
+
+
+@router.delete("/delete-batch-call-draft/{batch_call_id}", status_code=204)
+async def delete_batch_call_draft(
+    batch_call_id: str,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    draft = await session.get(BatchCall, batch_call_id)
+    if draft is None or draft.workspace_id != api_key.workspace_id or draft.status != "draft":
+        raise HTTPException(404, detail="Draft not found")
+    await session.delete(draft)
     await session.commit()
 
 
@@ -590,6 +953,113 @@ async def list_webhook_deliveries(
 # ------------------------------------------------------------------ workspace
 
 
+def _workspace_json(ws: Workspace) -> dict[str, Any]:
+    return {
+        "workspace_id": ws.id,
+        "name": ws.name,
+        "webhook_url": ws.webhook_url,
+        "settings": workspace_settings(ws),
+    }
+
+
+def _require_int(value: Any, field: str, lo: int, hi: int) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or not (lo <= value <= hi):
+        raise HTTPException(422, detail=f"{field} must be an integer between {lo} and {hi}")
+    return value
+
+
+def _merged_settings_patch(stored: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    """Validate a partial settings update and merge it over the stored dict.
+
+    Unknown keys are rejected (they'd silently do nothing), value ranges are
+    pinned so the Limits page can't write a broken concurrency config.
+    """
+    out = dict(stored)
+    for key, value in patch.items():
+        match key:
+            case "billing_email":
+                if value is not None and (
+                    not isinstance(value, str) or not re.match(_EMAIL_RE, value)
+                ):
+                    raise HTTPException(422, detail="billing_email must be a valid email")
+                out[key] = value.strip().lower() if isinstance(value, str) else None
+            case "purchased_concurrency":
+                out[key] = _require_int(value, key, 0, CONCURRENCY_PURCHASE_LIMIT)
+            case "reserved_inbound_concurrency":
+                out[key] = _require_int(
+                    value, key, 0, BASE_CONCURRENCY + CONCURRENCY_PURCHASE_LIMIT
+                )
+            case "llm_token_limit":
+                out[key] = _require_int(value, key, 1024, 131_072)
+            case (
+                "concurrency_burst_enabled"
+                | "llm_failover_enabled"
+                | "auto_call_retry_enabled"
+                | "conductor_messages_enabled"
+            ):
+                if not isinstance(value, bool):
+                    raise HTTPException(422, detail=f"{key} must be a boolean")
+                out[key] = value
+            case "contact_field_definitions":
+                if not isinstance(value, list) or len(value) > 50:
+                    raise HTTPException(
+                        422, detail="contact_field_definitions must be a list (max 50)"
+                    )
+                seen_keys: set[str] = set()
+                for item in value:
+                    if (
+                        not isinstance(item, dict)
+                        or not isinstance(item.get("key"), str)
+                        or not re.match(r"^[a-z][a-z0-9_]{0,63}$", item["key"])
+                        or item.get("type") not in ("string", "number", "boolean", "date")
+                        or not isinstance(item.get("label"), str)
+                        or not item["label"].strip()
+                    ):
+                        raise HTTPException(
+                            422,
+                            detail=(
+                                "each contact field needs a snake_case key, a label, and a "
+                                "type of string|number|boolean|date"
+                            ),
+                        )
+                    if item["key"] in seen_keys:
+                        raise HTTPException(422, detail=f"duplicate field key {item['key']!r}")
+                    seen_keys.add(item["key"])
+                out[key] = [
+                    {"key": i["key"], "label": i["label"].strip(), "type": i["type"]} for i in value
+                ]
+            case "cps_limits":
+                if not isinstance(value, dict):
+                    raise HTTPException(422, detail="cps_limits must be an object")
+                limits = dict(stored.get("cps_limits") or {})
+                for provider, cps in value.items():
+                    if provider not in DEFAULT_WORKSPACE_SETTINGS["cps_limits"]:
+                        raise HTTPException(422, detail=f"Unknown cps provider {provider!r}")
+                    limits[provider] = _require_int(cps, f"cps_limits.{provider}", 1, 100)
+                out[key] = limits
+            case _:
+                raise HTTPException(422, detail=f"Unknown setting {key!r}")
+
+    # Reserving the workspace's entire capacity would silently deadlock every
+    # outbound and web call (effective outbound limit 0), so at least one
+    # non-reserved slot must remain.
+    limit = BASE_CONCURRENCY + int(
+        out.get("purchased_concurrency", stored.get("purchased_concurrency", 0)) or 0
+    )
+    reserved = int(
+        out.get("reserved_inbound_concurrency", stored.get("reserved_inbound_concurrency", 0)) or 0
+    )
+    if reserved >= limit:
+        raise HTTPException(
+            422,
+            detail=(
+                f"reserved_inbound_concurrency must stay below the concurrency limit ({limit}) "
+                "so outbound calls keep at least one slot"
+            ),
+        )
+    return out
+
+
 @router.get("/workspace")
 async def get_workspace(
     api_key: ApiKey = Depends(require_api_key),
@@ -598,7 +1068,7 @@ async def get_workspace(
     ws = await session.get(Workspace, api_key.workspace_id)
     if ws is None:
         raise HTTPException(404, detail="Workspace not found")
-    return {"workspace_id": ws.id, "name": ws.name, "webhook_url": ws.webhook_url}
+    return _workspace_json(ws)
 
 
 @router.patch("/workspace")
@@ -614,8 +1084,165 @@ async def update_workspace(
     for field in ("name", "webhook_url"):
         if field in payload:
             setattr(ws, field, payload[field])
+    if "settings" in payload:
+        if not isinstance(payload["settings"], dict):
+            raise HTTPException(422, detail="settings must be an object")
+        ws.settings = _merged_settings_patch(ws.settings or {}, payload["settings"])
     await session.commit()
-    return {"workspace_id": ws.id, "name": ws.name, "webhook_url": ws.webhook_url}
+    return _workspace_json(ws)
+
+
+@router.post("/test-workspace-webhook")
+async def test_workspace_webhook(
+    body: TestWebhookRequest,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    """Send one signed sample event to the workspace webhook URL (or the URL in
+    the request — the on-screen, possibly-unsaved value) and report back.
+
+    Same contract as /test-agent-webhook, minus the agent: powers the "Test"
+    buttons on Settings → Webhooks and the alert modal.
+    """
+    url = (body.webhook_url or "").strip()
+    if not url:
+        ws = await session.get(Workspace, api_key.workspace_id)
+        url = (ws.webhook_url or "").strip() if ws else ""
+    if not url:
+        raise HTTPException(422, detail="No webhook URL configured to test")
+    try:
+        # DNS resolution is blocking; keep it off the event loop (and this is
+        # the SSRF gate — the URL is user-supplied).
+        await run_in_threadpool(security.assert_url_safe, url)
+    except security.UnsafeUrlError as exc:
+        raise HTTPException(422, detail=f"Refusing to send to unsafe URL: {exc}") from None
+
+    key = await webhooks.signing_key(session, api_key.workspace_id)
+    if key is None:
+        raise HTTPException(409, detail="No active API key available to sign the webhook")
+
+    ts = now_ms()
+    sample = Call(
+        call_id="call_test_webhook",
+        workspace_id=api_key.workspace_id,
+        agent_id="agent_test_webhook",
+        agent_version=0,
+        agent_name="Test agent",
+        call_type="web_call",
+        call_status="ended",
+        direction="outbound",
+        from_number="+15551234567",
+        to_number="+15557654321",
+        metadata_={"arhiteq_test": True},
+        start_timestamp=ts - 30_000,
+        end_timestamp=ts,
+        duration_ms=30_000,
+    )
+    raw_body = webhooks.build_event_body(body.event, sample)
+    timeout = (body.webhook_timeout_ms or 5000) / 1000
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                url,
+                content=raw_body,
+                headers={
+                    "content-type": "application/json",
+                    signature.SIGNATURE_HEADER: signature.sign(raw_body, key),
+                },
+            )
+    except httpx.HTTPError as exc:
+        return {"ok": False, "status_code": None, "error": str(exc)}
+    ok = 200 <= resp.status_code < 300
+    return {
+        "ok": ok,
+        "status_code": resp.status_code,
+        "error": None if ok else f"HTTP {resp.status_code}",
+    }
+
+
+# -------------------------------------------------------------- system status
+
+
+def _component(key: str, name: str, status: str, detail: str = "") -> dict[str, Any]:
+    return {"key": key, "name": name, "status": status, "detail": detail}
+
+
+@router.get("/system-status")
+async def system_status(
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    """Live component health for Settings → Reliability.
+
+    Real checks, not a hardcoded green wall: DB round-trip, LiveKit HTTP
+    reachability, credential presence for the LLM, telephony config, and the
+    webhook-delivery failure backlog for this workspace.
+    """
+    settings = get_settings()
+    components: list[dict[str, Any]] = [_component("api", "API", "operational")]
+
+    try:
+        await session.execute(select(func.count()).select_from(Workspace).limit(1))
+        components.append(_component("database", "Database", "operational"))
+    except Exception as exc:  # noqa: BLE001 — any DB failure is the finding
+        components.append(_component("database", "Database", "down", str(exc)[:200]))
+
+    lk_url = settings.livekit_url.replace("wss://", "https://").replace("ws://", "http://")
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(lk_url)
+        # LiveKit answers its root with 200 "OK"; any HTTP answer proves the
+        # media server is up — 5xx means reachable-but-unhealthy.
+        status = "operational" if resp.status_code < 500 else "degraded"
+        components.append(_component("livekit", "Voice infrastructure (LiveKit)", status))
+    except Exception:  # noqa: BLE001 — unreachable, not an app error
+        components.append(
+            _component("livekit", "Voice infrastructure (LiveKit)", "down", "Unreachable")
+        )
+
+    components.append(
+        _component(
+            "telephony",
+            "Telephony (SIP)",
+            "operational" if settings.sip_outbound_trunk_id else "not_configured",
+            "" if settings.sip_outbound_trunk_id else "No outbound SIP trunk configured",
+        )
+    )
+    components.append(
+        _component(
+            "llm",
+            "LLM (Gemini)",
+            "operational" if genai_credentials_available(settings) else "not_configured",
+            "" if genai_credentials_available(settings) else "No Google GenAI credentials",
+        )
+    )
+
+    # Webhooks: failures pending retry (or exhausted) in the last 24h.
+    day_ago = now_ms() - DAY_MS
+    failed = (
+        await session.scalar(
+            select(func.count())
+            .select_from(WebhookDelivery)
+            .join(Call, Call.call_id == WebhookDelivery.call_id)
+            .where(
+                Call.workspace_id == api_key.workspace_id,
+                WebhookDelivery.delivered.is_(False),
+                WebhookDelivery.attempts > 0,
+                WebhookDelivery.created_at_ms >= day_ago,
+            )
+        )
+        or 0
+    )
+    components.append(
+        _component(
+            "webhooks",
+            "Webhook delivery",
+            "operational" if failed == 0 else "degraded",
+            "" if failed == 0 else f"{failed} failed deliveries in the last 24h",
+        )
+    )
+
+    return {"checked_at_ms": now_ms(), "components": components}
 
 
 # --------------------------------------------------------- members & invites
@@ -818,4 +1445,52 @@ async def remove_member(
     if member is None:
         raise HTTPException(404, detail="Member not found")
     await session.delete(member)
+    await session.commit()
+
+
+# -------------------------------------------------------- workspace deletion
+
+
+@router.delete("/workspace", status_code=204)
+async def delete_workspace(
+    manager: MemberManager = Depends(require_member_manager),
+    session: AsyncSession = Depends(get_session),
+):
+    """Danger zone: delete the workspace and everything in it.
+
+    Gated to owners/admins (or operator API keys) by require_member_manager.
+    Row deletes are ordered children-first so FK constraints hold without
+    relying on database-level cascades.
+    """
+    workspace_id = manager.api_key.workspace_id
+    ws = await session.get(Workspace, workspace_id)
+    if ws is None:
+        raise HTTPException(404, detail="Workspace not found")
+
+    call_ids = select(Call.call_id).where(Call.workspace_id == workspace_id)
+    await session.execute(
+        WebhookDelivery.__table__.delete().where(WebhookDelivery.call_id.in_(call_ids))
+    )
+    for model in (
+        PhoneNumber,  # references agents — must go before Agent
+        Call,
+        Chat,
+        BatchCall,
+        KnowledgeBaseFile,
+        KnowledgeBase,
+        ConversationFlow,
+        Agent,
+        RetellLLM,
+        AgentFolder,
+        Contact,
+        Alert,
+        QaCohort,
+        WorkspaceInvite,
+        WorkspaceMember,
+        ApiKey,
+    ):
+        await session.execute(
+            model.__table__.delete().where(model.__table__.c.workspace_id == workspace_id)
+        )
+    await session.delete(ws)
     await session.commit()

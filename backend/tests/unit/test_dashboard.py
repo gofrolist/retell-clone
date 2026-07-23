@@ -289,3 +289,81 @@ async def test_dashboard_endpoints_require_auth(client):
         "/workspace",
     ):
         assert (await client.get(path)).status_code == 401
+
+
+async def test_update_alert_validates_fields_like_create(client):
+    created = await client.post(
+        "/create-alert",
+        headers=AUTH_HEADERS,
+        json={"name": "Failures", "metric": "call_success_rate"},
+    )
+    alert_id = created.json()["alert_id"]
+
+    # Junk that CreateAlertRequest would reject must not be persisted by PATCH.
+    resp = await client.patch(
+        f"/update-alert/{alert_id}",
+        headers=AUTH_HEADERS,
+        json={"compare_to": "percentage_change_vs_prev"},
+    )
+    assert resp.status_code == 422
+    resp = await client.patch(
+        f"/update-alert/{alert_id}", headers=AUTH_HEADERS, json={"threshold": "not-a-number"}
+    )
+    assert resp.status_code == 422
+
+    resp = await client.patch(
+        f"/update-alert/{alert_id}", headers=AUTH_HEADERS, json={"compare_to": "last_cycle"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["compare_to"] == "last_cycle"
+
+
+async def test_qa_cohort_weekly_max_zero_scores_nothing(client):
+    from sqlalchemy import update
+
+    import arhiteq_api.db as db_module
+    from arhiteq_api.models import Call
+
+    await _place_call(client)
+    async with db_module.session_factory()() as session:
+        await session.execute(
+            update(Call).values(call_status="ended", call_analysis={"call_successful": True})
+        )
+        await session.commit()
+
+    await client.post(
+        "/create-qa-cohort",
+        headers=AUTH_HEADERS,
+        json={"name": "Muted", "sampling_pct": 100, "weekly_max": 0},
+    )
+    listed = (await client.get("/list-qa-cohorts", headers=AUTH_HEADERS)).json()
+    # weekly_max=0 means "score nothing", not the old falsy-zero fallback to 100/week.
+    assert listed[0]["sample_size"] == 0
+    assert listed[0]["weekly_max"] == 0
+
+
+async def test_explicit_range_series_includes_every_counted_call(client):
+    from datetime import datetime, timezone
+
+    from sqlalchemy import update
+
+    import arhiteq_api.db as db_module
+    from arhiteq_api.models import Call
+
+    await _place_call(client)
+    # A UTC+3 browser sends local midnight = 21:00Z of the previous UTC day.
+    start_ms = int(datetime(2026, 6, 30, 21, tzinfo=timezone.utc).timestamp() * 1000)
+    async with db_module.session_factory()() as session:
+        # Call placed mid-morning local time: lands on the NEXT UTC day.
+        await session.execute(update(Call).values(created_at_ms=start_ms + 12 * 3_600_000))
+        await session.commit()
+
+    resp = await client.get(
+        "/analytics/calls",
+        headers=AUTH_HEADERS,
+        params={"start_ms": start_ms, "end_ms": start_ms},
+    )
+    data = resp.json()
+    assert data["call_counts"] == 1
+    # The chart series must bucket every counted call, not silently drop it.
+    assert sum(p["value"] for p in data["call_counts_series"]) == 1

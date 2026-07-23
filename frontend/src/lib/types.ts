@@ -149,6 +149,12 @@ export interface PhoneNumber {
   fallback_number?: string | null;
 }
 
+export interface ContactFieldDefinition {
+  key: string; // snake_case
+  label: string;
+  type: "string" | "number" | "boolean" | "date";
+}
+
 export interface Contact {
   contact_id: string;
   phone_number: string;
@@ -159,6 +165,8 @@ export interface Contact {
   latest_conversation: number | null; // ms epoch; null = no conversations yet
   do_not_call: boolean;
   external_id?: string | null;
+  /** Values for the workspace's custom contact fields, keyed by field key. */
+  custom_fields?: Record<string, string | number | boolean | null>;
 }
 
 export interface StatPoint {
@@ -176,6 +184,18 @@ export interface AnalyticsData {
   disconnection_reason: { name: string; value: number }[];
   user_sentiment: { name: string; value: number }[];
   phone_direction: { name: string; value: number }[];
+  /** Present when the request asked for a breakdown (group_by). */
+  call_counts_groups?: { name: string; series: StatPoint[] }[];
+}
+
+export interface ChatAnalyticsData {
+  chat_counts: number;
+  avg_messages: number;
+  avg_duration_s: number;
+  chat_counts_series: StatPoint[];
+  messages_series: StatPoint[];
+  chat_status: { name: string; value: number }[];
+  chat_agent: { name: string; value: number }[];
 }
 
 export interface QaCohort {
@@ -184,8 +204,15 @@ export interface QaCohort {
   agents: string[];
   sampling_pct: number;
   weekly_max: number;
+  min_duration_s?: number | null;
+  success_criteria?: string | null;
+  scoring_metric: "call_successful" | "transfer";
+  /** Computed over the sampled calls of the last 30 days. */
+  sample_size: number;
+  success_rate: number;
   transfer_success_rate: number;
   transfer_wait_time_s: number;
+  score: number;
 }
 
 export interface Alert {
@@ -196,6 +223,8 @@ export interface Alert {
   metric: string;
   condition: string;
   threshold: number;
+  /** "value" = absolute threshold; "last_cycle" = % change vs previous window */
+  compare_to: "value" | "last_cycle";
   notify_emails: string[];
   webhook_url?: string;
   enabled: boolean;

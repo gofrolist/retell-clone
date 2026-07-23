@@ -1,23 +1,63 @@
 "use client";
 
 import CallDrawer from "@/components/calls/CallDrawer";
-import CallsTable from "@/components/calls/CallsTable";
+import CallsTable, { CALL_COLUMNS, DEFAULT_CALL_COLUMNS } from "@/components/calls/CallsTable";
 import Button from "@/components/ui/Button";
+import Modal from "@/components/ui/Modal";
 import Pagination from "@/components/ui/Pagination";
 import { CheckboxRow } from "@/components/ui/RadioRow";
 import Select from "@/components/ui/Select";
-import { api, type ListCallsFilter } from "@/lib/api";
+import { api, type ListCallsFilter, type ListCallsParams } from "@/lib/api";
 import type { Agent, Call } from "@/lib/types";
 import { formatDate } from "@/lib/utils";
 import {
   Calendar,
   ChevronDown,
+  Download,
   History,
   ListFilter,
+  RefreshCw,
   Settings2,
   Sparkles,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+
+const COLUMNS_LS_KEY = "arhiteq.callHistory.columns";
+
+function callsToCsv(calls: Call[]): string {
+  const rows = [
+    [
+      "call_id", "start_time", "duration_s", "channel_type", "direction", "agent",
+      "from_number", "to_number", "cost", "disconnection_reason", "call_status",
+      "user_sentiment", "call_successful",
+    ],
+    ...calls.map((c) => [
+      c.call_id,
+      c.start_timestamp ? new Date(c.start_timestamp).toISOString() : "",
+      String(Math.round(c.duration_ms / 1000)),
+      c.channel_type,
+      c.direction,
+      c.agent_name,
+      c.from_number,
+      c.to_number,
+      String(c.cost),
+      c.disconnection_reason,
+      c.call_status,
+      c.user_sentiment,
+      String(c.call_successful ?? ""),
+    ]),
+  ];
+  return rows.map((r) => r.map((v) => JSON.stringify(v ?? "")).join(",")).join("\n");
+}
+
+function downloadCsv(csv: string, filename: string) {
+  const blob = new Blob([csv], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
 
 const CALL_STATUSES = ["registered", "ongoing", "ended", "error", "not_connected"];
 const SENTIMENTS = ["Positive", "Neutral", "Negative", "Unknown"];
@@ -75,6 +115,35 @@ export default function CallHistoryPage() {
   const [filterOpen, setFilterOpen] = useState(false);
   const [dateOpen, setDateOpen] = useState(false);
 
+  // header actions
+  const [columnsOpen, setColumnsOpen] = useState(false);
+  const [visibleColumns, setVisibleColumns] = useState<string[]>(DEFAULT_CALL_COLUMNS);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [insightsOpen, setInsightsOpen] = useState(false);
+  const [insights, setInsights] = useState<string | null>(null);
+  const [insightsMeta, setInsightsMeta] = useState<string | null>(null);
+  const [insightsError, setInsightsError] = useState<string | null>(null);
+  const [insightsLoading, setInsightsLoading] = useState(false);
+
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(COLUMNS_LS_KEY) ?? "null");
+      if (Array.isArray(stored) && stored.length) setVisibleColumns(stored);
+    } catch {
+      // corrupted localStorage: keep defaults
+    }
+  }, []);
+
+  const toggleColumn = (id: string) => {
+    setVisibleColumns((cur) => {
+      const next = cur.includes(id) ? cur.filter((c) => c !== id) : [...cur, id];
+      if (next.length === 0) return cur; // never hide every column
+      localStorage.setItem(COLUMNS_LS_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
+
   // cursor pagination: `stack` holds the pagination_key of each previous page
   // (undefined for page 1) so Back can rewind; `pagKey` is the current page's
   // key and `nextKey` comes from the latest response.
@@ -93,11 +162,7 @@ export default function CallHistoryPage() {
     api.listAgents().then(setAgents).catch(() => setAgents([]));
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-
+  const buildFilter = useCallback((): ListCallsFilter => {
     const fc: ListCallsFilter = {};
     if (agentIds.length) fc.agent_id = agentIds;
     if (statuses.length) fc.call_status = statuses;
@@ -109,6 +174,15 @@ export default function CallHistoryPage() {
         ...(dateTo ? { upper_threshold: new Date(`${dateTo}T23:59:59.999`).getTime() } : {}),
       };
     }
+    return fc;
+  }, [agentIds, statuses, sentiments, directions, dateFrom, dateTo]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+
+    const fc = buildFilter();
 
     api
       .listCalls({
@@ -134,7 +208,50 @@ export default function CallHistoryPage() {
     return () => {
       cancelled = true;
     };
-  }, [agentIds, statuses, sentiments, directions, dateFrom, dateTo, pageSize, pagKey, reloadTick]);
+  }, [buildFilter, pageSize, pagKey, reloadTick]);
+
+  const exportAll = useCallback(async () => {
+    setExporting(true);
+    try {
+      const fc = buildFilter();
+      const all: Call[] = [];
+      let key: string | undefined;
+      // Page through matching calls, capped at 1000 rows per export.
+      do {
+        const params: ListCallsParams = {
+          limit: 200,
+          sort_order: "descending",
+          ...(key ? { pagination_key: key } : {}),
+          ...(Object.keys(fc).length ? { filter_criteria: fc } : {}),
+        };
+        const res = await api.listCalls(params);
+        all.push(...res.calls);
+        key = res.pagination_key;
+      } while (key && all.length < 1000);
+      downloadCsv(callsToCsv(all), "arhiteq-calls.csv");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  }, [buildFilter]);
+
+  const generateInsights = useCallback(async () => {
+    setInsightsLoading(true);
+    setInsightsError(null);
+    try {
+      const res = await api.getCallInsights({
+        days: 7,
+        ...(agentIds.length ? { agent_id: agentIds } : {}),
+      });
+      setInsights(res.insights);
+      setInsightsMeta(`Based on ${res.calls_analyzed} calls from the last ${res.window_days} days`);
+    } catch (e) {
+      setInsightsError(e instanceof Error ? e.message : "Failed to generate insights");
+    } finally {
+      setInsightsLoading(false);
+    }
+  }, [agentIds]);
 
   const onPage = useCallback(
     (p: number) => {
@@ -327,16 +444,95 @@ export default function CallHistoryPage() {
         </div>
 
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="ghost" aria-label="Column settings" disabled title="Not available yet">
-            <Settings2 className="size-4" />
-          </Button>
-          <Button variant="ghost" aria-label="AI insights" disabled title="Not available yet">
+          <div className="relative">
+            <Button
+              variant="ghost"
+              aria-label="Column settings"
+              onClick={() => {
+                setColumnsOpen((v) => !v);
+                setActionsOpen(false);
+              }}
+            >
+              <Settings2 className="size-4" />
+            </Button>
+            {columnsOpen && (
+              <>
+                <div className="fixed inset-0 z-20" onClick={() => setColumnsOpen(false)} />
+                <div className="absolute right-0 top-full z-30 mt-1 w-56 rounded-xl border border-line bg-white p-2 shadow-lg">
+                  <div className="mb-0.5 px-1 text-xs font-semibold uppercase tracking-wide text-faint">
+                    Columns
+                  </div>
+                  {CALL_COLUMNS.map((col) => (
+                    <CheckboxRow
+                      key={col.id}
+                      checked={visibleColumns.includes(col.id)}
+                      onChange={() => toggleColumn(col.id)}
+                      label={col.header}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+          <Button
+            variant="ghost"
+            aria-label="AI insights"
+            onClick={() => {
+              setInsightsOpen(true);
+              if (!insights && !insightsLoading) generateInsights();
+            }}
+          >
             <Sparkles className="size-4" />
           </Button>
-          <Button variant="primary" disabled title="Not available yet">
-            Actions
-            <ChevronDown className="size-3.5" />
-          </Button>
+          <div className="relative">
+            <Button
+              variant="primary"
+              onClick={() => {
+                setActionsOpen((v) => !v);
+                setColumnsOpen(false);
+              }}
+            >
+              Actions
+              <ChevronDown className="size-3.5" />
+            </Button>
+            {actionsOpen && (
+              <>
+                <div className="fixed inset-0 z-20" onClick={() => setActionsOpen(false)} />
+                <div className="absolute right-0 top-full z-30 mt-1 w-60 rounded-xl border border-line bg-white p-2 shadow-lg">
+                  <button
+                    className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] hover:bg-app cursor-pointer"
+                    onClick={() => {
+                      downloadCsv(callsToCsv(calls), "arhiteq-calls-page.csv");
+                      setActionsOpen(false);
+                    }}
+                    disabled={calls.length === 0}
+                  >
+                    <Download className="size-3.5 text-sub" /> Export current page (CSV)
+                  </button>
+                  <button
+                    className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] hover:bg-app cursor-pointer disabled:opacity-50"
+                    onClick={async () => {
+                      setActionsOpen(false);
+                      await exportAll();
+                    }}
+                    disabled={exporting}
+                  >
+                    <Download className="size-3.5 text-sub" />
+                    {exporting ? "Exporting…" : "Export all matching (CSV)"}
+                  </button>
+                  <button
+                    className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] hover:bg-app cursor-pointer"
+                    onClick={() => {
+                      setReloadTick((t) => t + 1);
+                      setActionsOpen(false);
+                    }}
+                  >
+                    <RefreshCw className="size-3.5 text-sub" /> Refresh
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -357,7 +553,12 @@ export default function CallHistoryPage() {
               : "No calls yet."}
           </p>
         ) : (
-          <CallsTable calls={calls} selectedId={selected?.call_id} onSelect={setSelected} />
+          <CallsTable
+            calls={calls}
+            selectedId={selected?.call_id}
+            onSelect={setSelected}
+            visibleColumns={visibleColumns}
+          />
         )}
       </div>
 
@@ -390,6 +591,44 @@ export default function CallHistoryPage() {
           onUpdated={onCallUpdated}
         />
       )}
+
+      <Modal
+        open={insightsOpen}
+        onClose={() => setInsightsOpen(false)}
+        title={
+          <span className="inline-flex items-center gap-1.5">
+            <Sparkles className="size-4" /> AI Insights
+          </span>
+        }
+        width="max-w-xl"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setInsightsOpen(false)}>
+              Close
+            </Button>
+            <Button variant="primary" onClick={generateInsights} disabled={insightsLoading}>
+              {insightsLoading ? "Analyzing…" : "Regenerate"}
+            </Button>
+          </>
+        }
+      >
+        {insightsLoading ? (
+          <p className="py-8 text-center text-[13px] text-sub">
+            Analyzing recent calls with Gemini…
+          </p>
+        ) : insightsError ? (
+          <p className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-[13px] text-bad">
+            {insightsError}
+          </p>
+        ) : insights ? (
+          <div>
+            {insightsMeta && <p className="mb-2 text-[12px] text-faint">{insightsMeta}</p>}
+            <div className="whitespace-pre-wrap text-[13px] leading-relaxed">
+              {insights.replace(/\*\*/g, "")}
+            </div>
+          </div>
+        ) : null}
+      </Modal>
     </div>
   );
 }
