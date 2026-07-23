@@ -45,9 +45,11 @@ calls recorded before deploy show tool blocks but no timeline markers.
   recording start).
 - `add_message`, `add_tool_invocation`, `add_tool_result` stamp each item with
   `time_ms: int` — milliseconds since the anchor.
-- `add_tool_invocation` / `add_tool_result` gain an optional `tool_call_id`
-  field, passed by callers in `tools.py` where an id exists, so the UI can
-  pair invocation with result like Retell does.
+- `add_tool_invocation` generates a sequential `tool_call_id`
+  (`tool_call_1`, …) and `add_tool_result` attaches the id of the newest
+  same-name invocation without a result, so the UI can pair invocation with
+  result like Retell does. Callers in `tools.py` are unchanged (they have no
+  id to pass — the LLM layer doesn't expose one).
 - These are **additive** fields on items inside `transcript_with_tool_calls`
   and `transcript_object`; the frozen Retell wire contract allows extra
   fields. No rename or removal of existing fields.
@@ -63,10 +65,12 @@ calls recorded before deploy show tool blocks but no timeline markers.
 
 - `RawCall` gains
   `transcript_with_tool_calls?: { role: string; content?: string; name?: string; arguments?: string; tool_call_id?: string; time_ms?: number }[]`.
-- New UI type `TranscriptItem` in `types.ts`:
-  `{ role: "agent" | "user" | "kb_retrieval" | "tool_invocation" | "tool_result"; content: string; name?: string; toolCallId?: string; timeMs?: number }`.
+- `TranscriptTurn` in `types.ts` is renamed/widened to `TranscriptItem`:
+  `{ role: "agent" | "user" | "kb_retrieval" | "tool_invocation" | "tool_result"; content: string; name?: string; tool_call_id?: string; time_ms?: number; time: string }`
+  (snake_case, matching the codebase's `DetailLog.time_ms` convention). The
+  existing `Call.transcript` field carries it — no parallel field.
 - Adapter `uiCallFromRaw` maps `transcript_with_tool_calls` →
-  `Call.transcriptItems` when present; otherwise falls back to the existing
+  `Call.transcript` when non-empty; otherwise falls back to the existing
   `transcript_object` mapping (old calls keep working, minus tool blocks and
   markers). Real `m:ss` times replace the hardcoded `time: ""` when `time_ms`
   is present.
@@ -86,14 +90,15 @@ calls recorded before deploy show tool blocks but no timeline markers.
 ### 5. Audio timeline markers (`AudioPlayer.tsx`)
 
 - New optional prop
-  `markers?: { timeMs: number; kind: "tool" | "kb"; title: string; body?: string }[]`.
+  `markers?: { time_ms: number; kind: "tool" | "kb"; title: string; body?: string }[]`
+  (`AudioMarker`, exported from `AudioPlayer.tsx`).
 - Each marker renders as a small dot absolutely positioned on the seek bar at
-  `left: timeMs / durationMs`. Hover opens a `HoverCard` popup with the
+  `left: time_ms / durationMs`. Hover opens a `HoverCard` popup with the
   annotation (tool name + args/result snippet, or "Knowledge Base
-  Retrieval"); click seeks the audio to `timeMs`.
-- `CallDrawer.tsx` builds markers from `transcriptItems` (tool invocations —
+  Retrieval"); click seeks the audio to `time_ms`.
+- `CallDrawer.tsx` builds markers from `Call.transcript` (tool invocations —
   one marker per invocation, popup includes its paired result — and KB
-  retrievals) and passes them to the player. Items without `timeMs` produce
+  retrievals) and passes them to the player. Items without `time_ms` produce
   no marker.
 
 ## Error handling
@@ -105,9 +110,9 @@ calls recorded before deploy show tool blocks but no timeline markers.
 
 ## Testing
 
-- Worker: unit tests assert `time_ms` monotonicity and `tool_call_id`
-  presence on items and in the finalize payload (`test_state.py`,
-  `test_tools.py`).
+- Worker: unit tests assert `time_ms` stamping/clamping and `tool_call_id`
+  pairing on items and in the finalize payload (`test_state.py`; existing
+  `test_tools.py` assertions stay untouched).
 - Backend: no changes; existing contract tests must stay green (fields are
   additive).
 - Frontend: `bun run build` clean; adapter fallback covered by rendering an
