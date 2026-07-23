@@ -16,6 +16,9 @@ export default function WebhooksPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [deliveries, setDeliveries] = useState<WebhookDelivery[]>([]);
   const [deliveriesLoading, setDeliveriesLoading] = useState(true);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+  const [testOk, setTestOk] = useState(false);
 
   useEffect(() => {
     api
@@ -61,8 +64,32 @@ export default function WebhooksPage() {
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
               />
-              <Button disabled title="Not available yet">
-                Test
+              <Button
+                disabled={testing || !url.trim()}
+                title={url.trim() ? undefined : "Enter a webhook URL first"}
+                onClick={async () => {
+                  setTesting(true);
+                  setTestResult(null);
+                  try {
+                    const res = await api.testWorkspaceWebhook({
+                      webhook_url: url.trim(),
+                      event: "call_ended",
+                    });
+                    setTestOk(res.ok);
+                    setTestResult(
+                      res.ok
+                        ? `Delivered (HTTP ${res.status_code})`
+                        : (res.error ?? "Delivery failed"),
+                    );
+                  } catch (e) {
+                    setTestOk(false);
+                    setTestResult(e instanceof Error ? e.message : "Test failed");
+                  } finally {
+                    setTesting(false);
+                  }
+                }}
+              >
+                {testing ? "Testing…" : "Test"}
               </Button>
               <Button variant="primary" onClick={save} disabled={saving}>
                 {saving ? "Saving…" : saveState === "saved" ? "Saved" : "Save"}
@@ -70,6 +97,11 @@ export default function WebhooksPage() {
             </div>
             {saveState === "error" && saveError && (
               <p className="mt-2 text-[12.5px] text-bad">{saveError}</p>
+            )}
+            {testResult && (
+              <p className={`mt-2 text-[12.5px] ${testOk ? "text-sub" : "text-bad"}`}>
+                {testResult}
+              </p>
             )}
           </SettingsCard>
 

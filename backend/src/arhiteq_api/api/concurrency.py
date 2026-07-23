@@ -1,18 +1,66 @@
+from typing import Any
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import require_api_key
 from ..db import get_session
-from ..models import ApiKey, Call, now_ms
+from ..models import ApiKey, Call, Workspace, now_ms, workspace_settings
 
 router = APIRouter(tags=["concurrency"])
 
-# No billing/purchase system: fixed limits, Retell-shaped.
+# No billing system: purchases are the workspace's `purchased_concurrency`
+# setting (Settings → Limits), free up to CONCURRENCY_PURCHASE_LIMIT.
 BASE_CONCURRENCY = 20
-PURCHASED_CONCURRENCY = 0
 CONCURRENCY_PURCHASE_LIMIT = 100
-CONCURRENCY_LIMIT = BASE_CONCURRENCY + PURCHASED_CONCURRENCY
+# Fallback when a workspace row is missing (shouldn't happen in practice).
+CONCURRENCY_LIMIT = BASE_CONCURRENCY
+
+
+def _burst_limit(normal_limit: int) -> int:
+    # Retell semantics: burst raises the ceiling to min(3x, +300).
+    return min(3 * normal_limit, normal_limit + 300)
+
+
+async def workspace_concurrency(session: AsyncSession, workspace_id: str) -> dict[str, Any]:
+    """Concurrency numbers for a workspace, Retell get-concurrency shaped
+    (minus current usage, which callers count separately)."""
+    ws = await session.get(Workspace, workspace_id)
+    settings = workspace_settings(ws) if ws else {}
+    purchased = int(settings.get("purchased_concurrency") or 0)
+    limit = BASE_CONCURRENCY + purchased
+    burst_enabled = bool(settings.get("concurrency_burst_enabled"))
+    return {
+        "concurrency_limit": limit,
+        "base_concurrency": BASE_CONCURRENCY,
+        "purchased_concurrency": purchased,
+        "concurrency_purchase_limit": CONCURRENCY_PURCHASE_LIMIT,
+        "remaining_purchase_limit": CONCURRENCY_PURCHASE_LIMIT - purchased,
+        "reserved_inbound_concurrency": int(settings.get("reserved_inbound_concurrency") or 0),
+        "concurrency_burst_enabled": burst_enabled,
+        "concurrency_burst_limit": _burst_limit(limit) if burst_enabled else 0,
+    }
+
+
+async def effective_concurrency_limit(
+    session: AsyncSession, workspace_id: str, direction: str = "outbound"
+) -> int:
+    """The ceiling a new call of `direction` must stay under.
+
+    Outbound (and web) calls can't consume slots reserved for inbound
+    capacity; inbound calls use the full (possibly burst) limit.
+    """
+    numbers = await workspace_concurrency(session, workspace_id)
+    limit = (
+        numbers["concurrency_burst_limit"]
+        if numbers["concurrency_burst_enabled"]
+        else numbers["concurrency_limit"]
+    )
+    if direction != "inbound":
+        limit -= numbers["reserved_inbound_concurrency"]
+    return max(limit, 0)
+
 
 # A call occupies a concurrency slot while dialing and while live — the same
 # view consumers hold (ACTIVE_CALL = ["registered", "ongoing"]).
@@ -57,11 +105,5 @@ async def get_concurrency(
     session: AsyncSession = Depends(get_session),
 ):
     current = await count_live_calls(session, api_key.workspace_id)
-    return {
-        "current_concurrency": current,
-        "concurrency_limit": CONCURRENCY_LIMIT,
-        "base_concurrency": BASE_CONCURRENCY,
-        "purchased_concurrency": PURCHASED_CONCURRENCY,
-        "concurrency_purchase_limit": CONCURRENCY_PURCHASE_LIMIT,
-        "remaining_purchase_limit": CONCURRENCY_PURCHASE_LIMIT - PURCHASED_CONCURRENCY,
-    }
+    numbers = await workspace_concurrency(session, api_key.workspace_id)
+    return {"current_concurrency": current, **numbers}

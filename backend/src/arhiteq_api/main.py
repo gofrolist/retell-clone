@@ -68,6 +68,10 @@ def _apply_column_backfills(sync_conn) -> None:
     if "timezone" not in contact_cols:
         sync_conn.execute(text(f"ALTER TABLE contacts ADD COLUMN {guard}timezone VARCHAR(64)"))
 
+    workspace_cols = {c["name"] for c in inspect(sync_conn).get_columns("workspaces")}
+    if "settings" not in workspace_cols:
+        sync_conn.execute(text(f"ALTER TABLE workspaces ADD COLUMN {guard}settings JSON"))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

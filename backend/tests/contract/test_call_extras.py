@@ -154,7 +154,7 @@ async def test_create_web_call_dispatch_failure_is_500(client, monkeypatch):
 async def test_create_web_call_429_at_concurrency_limit(client, monkeypatch):
     from arhiteq_api.api import concurrency
 
-    monkeypatch.setattr(concurrency, "CONCURRENCY_LIMIT", 1)
+    monkeypatch.setattr(concurrency, "BASE_CONCURRENCY", 1)
     first = await client.post(
         "/v2/create-web-call", headers=AUTH_HEADERS, json={"agent_id": AGENT_ID}
     )
@@ -174,7 +174,7 @@ async def test_stale_registered_web_call_is_swept_and_frees_the_slot(client, mon
     from arhiteq_api.api import concurrency
     from arhiteq_api.models import Call, now_ms
 
-    monkeypatch.setattr(concurrency, "CONCURRENCY_LIMIT", 1)
+    monkeypatch.setattr(concurrency, "BASE_CONCURRENCY", 1)
     stale = (
         await client.post("/v2/create-web-call", headers=AUTH_HEADERS, json={"agent_id": AGENT_ID})
     ).json()

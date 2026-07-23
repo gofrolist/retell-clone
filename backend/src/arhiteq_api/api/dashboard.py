@@ -6,6 +6,7 @@ webhook delivery log, and workspace settings. All additive — nothing here
 changes the public Retell-compatible surface.
 """
 
+import re
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, NamedTuple
@@ -16,24 +17,41 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import httpx
+from fastapi.concurrency import run_in_threadpool
+
+from .. import security, signature
 from ..auth import hash_key, require_api_key
 from ..config import get_settings
 from ..db import get_session
 from ..ids import new_api_key, new_invite_token
 from ..models import (
+    DEFAULT_WORKSPACE_SETTINGS,
     Agent,
     AgentFolder,
     Alert,
     ApiKey,
+    BatchCall,
     Call,
+    Chat,
     Contact,
+    ConversationFlow,
+    KnowledgeBase,
+    KnowledgeBaseFile,
+    PhoneNumber,
     QaCohort,
+    RetellLLM,
     WebhookDelivery,
     Workspace,
     WorkspaceInvite,
     WorkspaceMember,
     now_ms,
+    workspace_settings,
 )
+from ..schemas import TestWebhookRequest
+from ..services import webhooks
+from ..services.gemini import genai_credentials_available
+from .concurrency import BASE_CONCURRENCY, CONCURRENCY_PURCHASE_LIMIT
 from ..schemas import CompatModel
 from ..sessions import email_from_authorization
 from ._deps import get_owned
@@ -590,6 +608,77 @@ async def list_webhook_deliveries(
 # ------------------------------------------------------------------ workspace
 
 
+def _workspace_json(ws: Workspace) -> dict[str, Any]:
+    return {
+        "workspace_id": ws.id,
+        "name": ws.name,
+        "webhook_url": ws.webhook_url,
+        "settings": workspace_settings(ws),
+    }
+
+
+def _require_int(value: Any, field: str, lo: int, hi: int) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or not (lo <= value <= hi):
+        raise HTTPException(422, detail=f"{field} must be an integer between {lo} and {hi}")
+    return value
+
+
+def _merged_settings_patch(stored: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    """Validate a partial settings update and merge it over the stored dict.
+
+    Unknown keys are rejected (they'd silently do nothing), value ranges are
+    pinned so the Limits page can't write a broken concurrency config.
+    """
+    out = dict(stored)
+    for key, value in patch.items():
+        match key:
+            case "billing_email":
+                if value is not None and (
+                    not isinstance(value, str) or not re.match(_EMAIL_RE, value)
+                ):
+                    raise HTTPException(422, detail="billing_email must be a valid email")
+                out[key] = value.strip().lower() if isinstance(value, str) else None
+            case "purchased_concurrency":
+                out[key] = _require_int(value, key, 0, CONCURRENCY_PURCHASE_LIMIT)
+            case "reserved_inbound_concurrency":
+                out[key] = _require_int(
+                    value, key, 0, BASE_CONCURRENCY + CONCURRENCY_PURCHASE_LIMIT
+                )
+            case "llm_token_limit":
+                out[key] = _require_int(value, key, 1024, 131_072)
+            case (
+                "concurrency_burst_enabled"
+                | "llm_failover_enabled"
+                | "auto_call_retry_enabled"
+                | "conductor_messages_enabled"
+            ):
+                if not isinstance(value, bool):
+                    raise HTTPException(422, detail=f"{key} must be a boolean")
+                out[key] = value
+            case "cps_limits":
+                if not isinstance(value, dict):
+                    raise HTTPException(422, detail="cps_limits must be an object")
+                limits = dict(stored.get("cps_limits") or {})
+                for provider, cps in value.items():
+                    if provider not in DEFAULT_WORKSPACE_SETTINGS["cps_limits"]:
+                        raise HTTPException(422, detail=f"Unknown cps provider {provider!r}")
+                    limits[provider] = _require_int(cps, f"cps_limits.{provider}", 1, 100)
+                out[key] = limits
+            case _:
+                raise HTTPException(422, detail=f"Unknown setting {key!r}")
+
+    # Reserving more capacity than the workspace has would deadlock outbound.
+    limit = BASE_CONCURRENCY + int(
+        out.get("purchased_concurrency", stored.get("purchased_concurrency", 0)) or 0
+    )
+    if int(out.get("reserved_inbound_concurrency") or 0) > limit:
+        raise HTTPException(
+            422,
+            detail=f"reserved_inbound_concurrency can't exceed the concurrency limit ({limit})",
+        )
+    return out
+
+
 @router.get("/workspace")
 async def get_workspace(
     api_key: ApiKey = Depends(require_api_key),
@@ -598,7 +687,7 @@ async def get_workspace(
     ws = await session.get(Workspace, api_key.workspace_id)
     if ws is None:
         raise HTTPException(404, detail="Workspace not found")
-    return {"workspace_id": ws.id, "name": ws.name, "webhook_url": ws.webhook_url}
+    return _workspace_json(ws)
 
 
 @router.patch("/workspace")
@@ -614,8 +703,165 @@ async def update_workspace(
     for field in ("name", "webhook_url"):
         if field in payload:
             setattr(ws, field, payload[field])
+    if "settings" in payload:
+        if not isinstance(payload["settings"], dict):
+            raise HTTPException(422, detail="settings must be an object")
+        ws.settings = _merged_settings_patch(ws.settings or {}, payload["settings"])
     await session.commit()
-    return {"workspace_id": ws.id, "name": ws.name, "webhook_url": ws.webhook_url}
+    return _workspace_json(ws)
+
+
+@router.post("/test-workspace-webhook")
+async def test_workspace_webhook(
+    body: TestWebhookRequest,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    """Send one signed sample event to the workspace webhook URL (or the URL in
+    the request — the on-screen, possibly-unsaved value) and report back.
+
+    Same contract as /test-agent-webhook, minus the agent: powers the "Test"
+    buttons on Settings → Webhooks and the alert modal.
+    """
+    url = (body.webhook_url or "").strip()
+    if not url:
+        ws = await session.get(Workspace, api_key.workspace_id)
+        url = (ws.webhook_url or "").strip() if ws else ""
+    if not url:
+        raise HTTPException(422, detail="No webhook URL configured to test")
+    try:
+        # DNS resolution is blocking; keep it off the event loop (and this is
+        # the SSRF gate — the URL is user-supplied).
+        await run_in_threadpool(security.assert_url_safe, url)
+    except security.UnsafeUrlError as exc:
+        raise HTTPException(422, detail=f"Refusing to send to unsafe URL: {exc}") from None
+
+    key = await webhooks.signing_key(session, api_key.workspace_id)
+    if key is None:
+        raise HTTPException(409, detail="No active API key available to sign the webhook")
+
+    ts = now_ms()
+    sample = Call(
+        call_id="call_test_webhook",
+        workspace_id=api_key.workspace_id,
+        agent_id="agent_test_webhook",
+        agent_version=0,
+        agent_name="Test agent",
+        call_type="web_call",
+        call_status="ended",
+        direction="outbound",
+        from_number="+15551234567",
+        to_number="+15557654321",
+        metadata_={"arhiteq_test": True},
+        start_timestamp=ts - 30_000,
+        end_timestamp=ts,
+        duration_ms=30_000,
+    )
+    raw_body = webhooks.build_event_body(body.event, sample)
+    timeout = (body.webhook_timeout_ms or 5000) / 1000
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                url,
+                content=raw_body,
+                headers={
+                    "content-type": "application/json",
+                    signature.SIGNATURE_HEADER: signature.sign(raw_body, key),
+                },
+            )
+    except httpx.HTTPError as exc:
+        return {"ok": False, "status_code": None, "error": str(exc)}
+    ok = 200 <= resp.status_code < 300
+    return {
+        "ok": ok,
+        "status_code": resp.status_code,
+        "error": None if ok else f"HTTP {resp.status_code}",
+    }
+
+
+# -------------------------------------------------------------- system status
+
+
+def _component(key: str, name: str, status: str, detail: str = "") -> dict[str, Any]:
+    return {"key": key, "name": name, "status": status, "detail": detail}
+
+
+@router.get("/system-status")
+async def system_status(
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    """Live component health for Settings → Reliability.
+
+    Real checks, not a hardcoded green wall: DB round-trip, LiveKit HTTP
+    reachability, credential presence for the LLM, telephony config, and the
+    webhook-delivery failure backlog for this workspace.
+    """
+    settings = get_settings()
+    components: list[dict[str, Any]] = [_component("api", "API", "operational")]
+
+    try:
+        await session.execute(select(func.count()).select_from(Workspace).limit(1))
+        components.append(_component("database", "Database", "operational"))
+    except Exception as exc:  # noqa: BLE001 — any DB failure is the finding
+        components.append(_component("database", "Database", "down", str(exc)[:200]))
+
+    lk_url = settings.livekit_url.replace("wss://", "https://").replace("ws://", "http://")
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(lk_url)
+        # LiveKit answers its root with 200 "OK"; any HTTP answer proves the
+        # media server is up — 5xx means reachable-but-unhealthy.
+        status = "operational" if resp.status_code < 500 else "degraded"
+        components.append(_component("livekit", "Voice infrastructure (LiveKit)", status))
+    except Exception:  # noqa: BLE001 — unreachable, not an app error
+        components.append(
+            _component("livekit", "Voice infrastructure (LiveKit)", "down", "Unreachable")
+        )
+
+    components.append(
+        _component(
+            "telephony",
+            "Telephony (SIP)",
+            "operational" if settings.sip_outbound_trunk_id else "not_configured",
+            "" if settings.sip_outbound_trunk_id else "No outbound SIP trunk configured",
+        )
+    )
+    components.append(
+        _component(
+            "llm",
+            "LLM (Gemini)",
+            "operational" if genai_credentials_available(settings) else "not_configured",
+            "" if genai_credentials_available(settings) else "No Google GenAI credentials",
+        )
+    )
+
+    # Webhooks: failures pending retry (or exhausted) in the last 24h.
+    day_ago = now_ms() - DAY_MS
+    failed = (
+        await session.scalar(
+            select(func.count())
+            .select_from(WebhookDelivery)
+            .join(Call, Call.call_id == WebhookDelivery.call_id)
+            .where(
+                Call.workspace_id == api_key.workspace_id,
+                WebhookDelivery.delivered.is_(False),
+                WebhookDelivery.attempts > 0,
+                WebhookDelivery.created_at_ms >= day_ago,
+            )
+        )
+        or 0
+    )
+    components.append(
+        _component(
+            "webhooks",
+            "Webhook delivery",
+            "operational" if failed == 0 else "degraded",
+            "" if failed == 0 else f"{failed} failed deliveries in the last 24h",
+        )
+    )
+
+    return {"checked_at_ms": now_ms(), "components": components}
 
 
 # --------------------------------------------------------- members & invites
@@ -818,4 +1064,52 @@ async def remove_member(
     if member is None:
         raise HTTPException(404, detail="Member not found")
     await session.delete(member)
+    await session.commit()
+
+
+# -------------------------------------------------------- workspace deletion
+
+
+@router.delete("/workspace", status_code=204)
+async def delete_workspace(
+    manager: MemberManager = Depends(require_member_manager),
+    session: AsyncSession = Depends(get_session),
+):
+    """Danger zone: delete the workspace and everything in it.
+
+    Gated to owners/admins (or operator API keys) by require_member_manager.
+    Row deletes are ordered children-first so FK constraints hold without
+    relying on database-level cascades.
+    """
+    workspace_id = manager.api_key.workspace_id
+    ws = await session.get(Workspace, workspace_id)
+    if ws is None:
+        raise HTTPException(404, detail="Workspace not found")
+
+    call_ids = select(Call.call_id).where(Call.workspace_id == workspace_id)
+    await session.execute(
+        WebhookDelivery.__table__.delete().where(WebhookDelivery.call_id.in_(call_ids))
+    )
+    for model in (
+        PhoneNumber,  # references agents — must go before Agent
+        Call,
+        Chat,
+        BatchCall,
+        KnowledgeBaseFile,
+        KnowledgeBase,
+        ConversationFlow,
+        Agent,
+        RetellLLM,
+        AgentFolder,
+        Contact,
+        Alert,
+        QaCohort,
+        WorkspaceInvite,
+        WorkspaceMember,
+        ApiKey,
+    ):
+        await session.execute(
+            model.__table__.delete().where(model.__table__.c.workspace_id == workspace_id)
+        )
+    await session.delete(ws)
     await session.commit()

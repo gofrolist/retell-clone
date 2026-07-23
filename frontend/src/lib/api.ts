@@ -332,10 +332,30 @@ export interface RawKnowledgeBase {
   [key: string]: unknown;
 }
 
+export interface WorkspaceSettings {
+  billing_email: string | null;
+  purchased_concurrency: number;
+  reserved_inbound_concurrency: number;
+  concurrency_burst_enabled: boolean;
+  llm_token_limit: number;
+  cps_limits: { telnyx: number; twilio: number; custom_telephony: number };
+  llm_failover_enabled: boolean;
+  auto_call_retry_enabled: boolean;
+  conductor_messages_enabled: boolean;
+}
+
 export interface Workspace {
   workspace_id: string;
   name: string;
   webhook_url: string | null;
+  settings: WorkspaceSettings;
+}
+
+export interface SystemComponent {
+  key: string;
+  name: string;
+  status: "operational" | "degraded" | "down" | "not_configured";
+  detail: string;
 }
 
 export interface WorkspaceMember {
@@ -760,6 +780,9 @@ export const api = {
       purchased_concurrency: number;
       concurrency_purchase_limit: number;
       remaining_purchase_limit: number;
+      reserved_inbound_concurrency: number;
+      concurrency_burst_enabled: boolean;
+      concurrency_burst_limit: number;
     }>("/get-concurrency"),
 
   // ---------------------------------------------------------------- QA
@@ -791,8 +814,22 @@ export const api = {
   listWebhookDeliveries: () => request<WebhookDelivery[]>("/list-webhook-deliveries"),
 
   getWorkspace: () => request<Workspace>("/workspace"),
-  updateWorkspace: (body: { name?: string; webhook_url?: string | null }) =>
-    request<Workspace>("/workspace", patch(body)),
+  updateWorkspace: (body: {
+    name?: string;
+    webhook_url?: string | null;
+    settings?: Partial<WorkspaceSettings>;
+  }) => request<Workspace>("/workspace", patch(body)),
+
+  getSystemStatus: () =>
+    request<{ checked_at_ms: number; components: SystemComponent[] }>("/system-status"),
+
+  testWorkspaceWebhook: (body: { webhook_url?: string; event?: string }) =>
+    request<{ ok: boolean; status_code: number | null; error: string | null }>(
+      "/test-workspace-webhook",
+      post(body),
+    ),
+
+  deleteWorkspace: () => request<void>("/workspace", del),
 
   listMembers: () => request<WorkspaceMember[]>("/list-members"),
   listInvites: () => request<WorkspaceInvite[]>("/list-invites"),

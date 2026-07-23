@@ -72,6 +72,37 @@ class Base(DeclarativeBase):
     type_annotation_map = {dict[str, Any]: JSON, list[Any]: JSON}
 
 
+# Operator-adjustable workspace knobs (Settings → Limits / Reliability /
+# Workspace pages). Stored sparse in Workspace.settings; readers merge over
+# these defaults so old rows and new knobs never need a data migration.
+DEFAULT_WORKSPACE_SETTINGS: dict[str, Any] = {
+    "billing_email": None,
+    # Concurrency (enforced by api/concurrency.py + call creation):
+    "purchased_concurrency": 0,
+    "reserved_inbound_concurrency": 0,
+    "concurrency_burst_enabled": False,
+    # LLM token cap advertised to the dashboard (per-request context budget).
+    "llm_token_limit": 32768,
+    # Calls-per-second dial rates by provider.
+    "cps_limits": {"telnyx": 1, "twilio": 1, "custom_telephony": 1},
+    # Reliability toggles (persisted config; read by the worker via get-agent
+    # config paths as those pipelines land).
+    "llm_failover_enabled": False,
+    "auto_call_retry_enabled": False,
+    "conductor_messages_enabled": False,
+}
+
+
+def workspace_settings(ws: "Workspace") -> dict[str, Any]:
+    """Workspace settings merged over defaults (sparse storage)."""
+    merged = {**DEFAULT_WORKSPACE_SETTINGS, **(ws.settings or {})}
+    merged["cps_limits"] = {
+        **DEFAULT_WORKSPACE_SETTINGS["cps_limits"],
+        **((ws.settings or {}).get("cps_limits") or {}),
+    }
+    return merged
+
+
 class Workspace(Base):
     __tablename__ = "workspaces"
 
@@ -79,6 +110,8 @@ class Workspace(Base):
     name: Mapped[str] = mapped_column(String(255), default="Default workspace")
     # Workspace-level webhook for call events (agent-level URL takes precedence).
     webhook_url: Mapped[str | None] = mapped_column(Text)
+    # Sparse operator knobs; see DEFAULT_WORKSPACE_SETTINGS for the catalog.
+    settings: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     created_at_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
 
     api_keys: Mapped[list["ApiKey"]] = relationship(back_populates="workspace")
