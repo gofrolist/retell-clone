@@ -223,10 +223,10 @@ const TRANSCRIPT: TranscriptItem[] = [
   { role: "user", content: "Yes, I took it with breakfast like always.", time: "0:29" },
   { role: "agent", content: "Perfect. And do you have anything nice planned for today?", time: "0:32" },
   { role: "user", content: "My daughter is coming by this afternoon, we might go for a walk.", time: "0:38" },
-  { role: "agent", content: "That sounds lovely, Margaret. I'll note that down. I'll check in again tomorrow at the same time. Have a wonderful visit!", time: "0:44" },
-  { role: "user", content: "Thank you dear, goodbye.", time: "0:52" },
   { role: "tool_invocation", name: "log_outcome", tool_call_id: "tool_call_1", content: '{"call_type": "morning_checkin", "outcome": "completed"}', time: "0:41", time_ms: 41_000 },
   { role: "tool_result", name: "log_outcome", tool_call_id: "tool_call_1", content: '{"success": true}', time: "0:41", time_ms: 41_000 },
+  { role: "agent", content: "That sounds lovely, Margaret. I'll note that down. I'll check in again tomorrow at the same time. Have a wonderful visit!", time: "0:44" },
+  { role: "user", content: "Thank you dear, goodbye.", time: "0:52" },
 ];
 
 function hex(seed: number, len = 26): string {
