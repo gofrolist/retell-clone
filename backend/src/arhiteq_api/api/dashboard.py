@@ -50,7 +50,7 @@ from ..models import (
 )
 from ..schemas import TestWebhookRequest
 from ..services import webhooks
-from ..services.gemini import genai_credentials_available
+from ..services.gemini import build_genai_client, genai_credentials_available
 from .concurrency import BASE_CONCURRENCY, CONCURRENCY_PURCHASE_LIMIT
 from ..schemas import CompatModel
 from ..sessions import email_from_authorization
@@ -223,6 +223,83 @@ async def chat_analytics(
         "chat_status": _breakdown(statuses),
         "chat_agent": _breakdown(agents),
     }
+
+
+class CallInsightsRequest(CompatModel):
+    days: int = 7
+    agent_id: list[str] = []
+    limit: int = Field(default=200, ge=1, le=500)
+
+
+_INSIGHTS_PROMPT = """\
+You are an analyst for a voice-AI call platform. Below is a sample of recent
+calls (one per line: start time, agent, direction, duration, status,
+disconnection reason, user sentiment, successful flag, then the call summary).
+
+Write a concise insights report in markdown with three short sections:
+**Trends**, **Problems**, and **Recommendations**. Ground every claim in the
+data; quote counts/percentages you can actually derive. No preamble.
+
+Calls:
+{lines}"""
+
+
+@router.post("/analytics/call-insights")
+async def call_insights(
+    body: CallInsightsRequest,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    """AI summary of recent calls (Call History's ✨ button). Real Gemini run
+    over real call rows — 422s when no GenAI credentials are configured."""
+    settings = get_settings()
+    if not genai_credentials_available(settings):
+        raise HTTPException(422, detail="AI insights need Google GenAI credentials configured")
+
+    days = max(1, min(body.days, 90))
+    query = (
+        select(Call)
+        .where(
+            Call.workspace_id == api_key.workspace_id,
+            Call.created_at_ms >= now_ms() - days * DAY_MS,
+        )
+        .order_by(Call.created_at_ms.desc())
+        .limit(body.limit)
+    )
+    if body.agent_id:
+        query = query.where(Call.agent_id.in_(body.agent_id))
+    rows = (await session.scalars(query)).all()
+    if not rows:
+        raise HTTPException(422, detail="No calls in the selected window to analyze")
+
+    def line(c: Call) -> str:
+        analysis = c.call_analysis or {}
+        started = datetime.fromtimestamp(
+            (c.start_timestamp or c.created_at_ms) / 1000, tz=timezone.utc
+        ).strftime("%Y-%m-%d %H:%M")
+        summary = (analysis.get("call_summary") or analysis.get("summary") or "").replace(
+            "\n", " "
+        )[:200]
+        duration_s = round((c.duration_ms or 0) / 1000)
+        return (
+            f"{started} | {c.agent_name or c.agent_id} | {c.direction or '-'} | {duration_s}s"
+            f" | {c.call_status} | {c.disconnection_reason or '-'}"
+            f" | {analysis.get('user_sentiment') or '-'} | {analysis.get('call_successful')}"
+            f" | {summary}"
+        )
+
+    prompt = _INSIGHTS_PROMPT.format(lines="\n".join(line(c) for c in rows))
+    try:
+        client = build_genai_client(settings)
+        resp = await client.aio.models.generate_content(
+            model=settings.analysis_model, contents=prompt, config={"temperature": 0.2}
+        )
+        text = (resp.text or "").strip()
+    except Exception as exc:  # noqa: BLE001 — surface the provider failure
+        raise HTTPException(502, detail=f"Insights generation failed: {exc}") from None
+    if not text:
+        raise HTTPException(502, detail="Insights generation returned an empty response")
+    return {"insights": text, "calls_analyzed": len(rows), "window_days": days}
 
 
 # -------------------------------------------------------------- agent folders

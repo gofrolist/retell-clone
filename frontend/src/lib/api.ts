@@ -795,6 +795,12 @@ export const api = {
   getChatAnalytics: (params: AnalyticsParams = {}) =>
     request<ChatAnalyticsData>(`/analytics/chats${analyticsQuery(params)}`),
 
+  getCallInsights: (body: { days?: number; agent_id?: string[]; limit?: number }) =>
+    request<{ insights: string; calls_analyzed: number; window_days: number }>(
+      "/analytics/call-insights",
+      post(body),
+    ),
+
   // ------------------------------------------------------- concurrency
   getConcurrency: () =>
     request<{
