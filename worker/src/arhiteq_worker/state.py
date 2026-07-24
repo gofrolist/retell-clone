@@ -51,24 +51,26 @@ class CallState:
         if content:
             self.items.append(self._stamp({"role": role, "content": content}))
 
-    def add_tool_invocation(self, name: str, arguments: str) -> None:
+    def add_tool_invocation(self, name: str, arguments: str) -> str:
         self.tool_seq += 1
+        tool_call_id = f"tool_call_{self.tool_seq}"
         self.items.append(
             self._stamp(
                 {
                     "role": "tool_call_invocation",
                     "name": name,
                     "arguments": arguments,
-                    "tool_call_id": f"tool_call_{self.tool_seq}",
+                    "tool_call_id": tool_call_id,
                 }
             )
         )
+        return tool_call_id
 
-    def add_tool_result(self, name: str, content: str) -> None:
+    def add_tool_result(self, name: str, content: str, tool_call_id: str | None = None) -> None:
         item: dict[str, Any] = {"role": "tool_call_result", "name": name, "content": content}
-        tool_call_id = self._pending_tool_call_id(name)
-        if tool_call_id:
-            item["tool_call_id"] = tool_call_id
+        resolved_id = tool_call_id if tool_call_id is not None else self._pending_tool_call_id(name)
+        if resolved_id:
+            item["tool_call_id"] = resolved_id
         self.items.append(self._stamp(item))
 
     def _pending_tool_call_id(self, name: str) -> str | None:

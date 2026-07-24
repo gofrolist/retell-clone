@@ -46,16 +46,24 @@ calls recorded before deploy show tool blocks but no timeline markers.
 - `add_message`, `add_tool_invocation`, `add_tool_result` stamp each item with
   `time_ms: int` — milliseconds since the anchor.
 - `add_tool_invocation` generates a sequential `tool_call_id`
-  (`tool_call_1`, …) and `add_tool_result` attaches the id of the newest
-  same-name invocation without a result, so the UI can pair invocation with
-  result like Retell does. Callers in `tools.py` are unchanged (they have no
-  id to pass — the LLM layer doesn't expose one).
+  (`tool_call_1`, …) and returns it. `add_tool_result` accepts an optional
+  explicit `tool_call_id`; every paired call site in `tools.py` captures the
+  id returned by `add_tool_invocation` and passes it to the matching
+  `add_tool_result`, since concurrent same-name tool calls (livekit-agents
+  allows an `await` between invocation and result at every call site) can
+  otherwise make the newest-unmatched-invocation heuristic pair a result with
+  the wrong invocation. The heuristic remains as a fallback when no explicit
+  id is given.
 - These are **additive** fields on items inside `transcript_with_tool_calls`
   and `transcript_object`; the frozen Retell wire contract allows extra
   fields. No rename or removal of existing fields.
 - Finalize payload construction unchanged apart from the enriched items.
   Mid-call `transcript_update` events are out of scope (the drawer refetches
   the full call).
+- Honesty note: `time_ms` uses the wall-clock `now_ms()` delta from
+  `answered_at_ms` (consistent with existing timestamps); recording egress
+  starts slightly after the anchor, so marker positions are approximate to
+  well under a second — do not tighten without moving the anchor.
 
 ### 2. Backend
 
@@ -100,6 +108,9 @@ calls recorded before deploy show tool blocks but no timeline markers.
   one marker per invocation, popup includes its paired result — and KB
   retrievals) and passes them to the player. Items without `time_ms` produce
   no marker.
+- Honesty note: KB-retrieval markers are currently exercised only by
+  mock/demo data — no production component emits `kb_retrieval` items until a
+  kb_lookup/retrieval event source exists.
 
 ## Error handling
 

@@ -112,7 +112,7 @@ export default function AudioPlayer({
                     e.stopPropagation();
                     seekTo(m.time_ms / 1000);
                   }}
-                  aria-label={m.title}
+                  aria-label={`Seek to ${formatDuration(m.time_ms)}: ${m.title}`}
                   className={`block size-2.5 rounded-full border-2 border-white shadow cursor-pointer ${
                     m.kind === "tool" ? "bg-accent-deep" : "bg-sub"
                   }`}

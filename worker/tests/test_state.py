@@ -134,6 +134,26 @@ class TestItemTimingAndToolIds:
         s.add_tool_result("orphan", "r")
         assert "tool_call_id" not in s.items[0]
 
+    def test_explicit_tool_call_id_survives_interleaved_same_name_calls(self):
+        """livekit-agents can run two same-name tool calls concurrently (every
+        call site has an await between invocation and result), so a LIFO
+        heuristic can pair a result with the wrong invocation. Passing the id
+        returned by add_tool_invocation must pin the correct pairing even when
+        results arrive out of order relative to the naive heuristic."""
+        s = CallState()
+        id1 = s.add_tool_invocation("t", "{}")
+        id2 = s.add_tool_invocation("t", "{}")
+        assert id1 != id2
+        # Result for the FIRST (older) invocation arrives first — the LIFO
+        # heuristic would wrongly pair this with id2.
+        s.add_tool_result("t", "r1", id1)
+        s.add_tool_result("t", "r2", id2)
+        inv1, inv2, res1, res2 = s.items
+        assert inv1["tool_call_id"] == id1
+        assert inv2["tool_call_id"] == id2
+        assert res1["tool_call_id"] == id1
+        assert res2["tool_call_id"] == id2
+
     def test_finalize_payload_items_carry_new_fields(self, monkeypatch):
         s = CallState(call_id="c")
         s.answered_at_ms = 1_000_000

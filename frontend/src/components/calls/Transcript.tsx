@@ -2,7 +2,7 @@
 
 import type { TranscriptItem } from "@/lib/types";
 import { ChevronDown, ChevronRight, Library } from "lucide-react";
-import { useState } from "react";
+import { useId, useState } from "react";
 
 /** Pretty-print JSON payloads; non-JSON content renders verbatim. */
 function prettyJson(s: string): string {
@@ -16,6 +16,7 @@ function prettyJson(s: string): string {
 /** Retell-style collapsible block for a tool invocation or result. */
 function ToolBlock({ item }: { item: TranscriptItem }) {
   const [open, setOpen] = useState(true);
+  const contentId = useId();
   const title =
     item.role === "tool_invocation"
       ? `Tool Invocation${item.name ? `: ${item.name}` : ""}`
@@ -25,6 +26,7 @@ function ToolBlock({ item }: { item: TranscriptItem }) {
       <button
         onClick={() => setOpen(!open)}
         aria-expanded={open}
+        aria-controls={contentId}
         className="flex w-full items-center gap-1 text-[13px] font-medium text-accent-deep cursor-pointer"
       >
         {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
@@ -32,7 +34,10 @@ function ToolBlock({ item }: { item: TranscriptItem }) {
         <span className="ml-auto text-[11px] font-normal text-faint">{item.time}</span>
       </button>
       {open && (
-        <div className="mt-1.5 rounded-lg border border-line bg-app/50 px-3 py-2 font-mono text-[12px] leading-relaxed">
+        <div
+          id={contentId}
+          className="mt-1.5 rounded-lg border border-line bg-app/50 px-3 py-2 font-mono text-[12px] leading-relaxed"
+        >
           {item.tool_call_id && (
             <div className="mb-1 text-sub">tool_call_id: {item.tool_call_id}</div>
           )}

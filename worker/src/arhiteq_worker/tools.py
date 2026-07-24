@@ -199,7 +199,7 @@ async def _run_tool(
     config/validation failures (message goes to the model verbatim), anything
     else is redacted to its exception type.
     """
-    state.add_tool_invocation(name, json.dumps(dict(invocation), default=str))
+    tool_call_id = state.add_tool_invocation(name, json.dumps(dict(invocation), default=str))
     try:
         result = await body()
         metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="success").inc()
@@ -209,7 +209,7 @@ async def _run_tool(
         result = json.dumps({"error": str(exc)})
     except Exception as exc:  # noqa: BLE001 - model sees the redacted error
         result = _tool_error(name, exc)
-    state.add_tool_result(name, result)
+    state.add_tool_result(name, result, tool_call_id)
     return result
 
 
@@ -286,8 +286,9 @@ async def safe_execute_custom_tool(
     entry: Mapping[str, Any] | None = None,
 ) -> str:
     entry = entry or {}
+    tool_call_id: str | None = None
     if state is not None:
-        state.add_tool_invocation(name, json.dumps(dict(args)))
+        tool_call_id = state.add_tool_invocation(name, json.dumps(dict(args)))
     try:
         result = await execute_custom_tool(
             http,
@@ -315,7 +316,7 @@ async def safe_execute_custom_tool(
     except Exception as exc:  # timeout, transport, non-2xx — model sees the error
         result = _tool_error(name, exc)
     if state is not None:
-        state.add_tool_result(name, result)
+        state.add_tool_result(name, result, tool_call_id)
     return result
 
 
@@ -403,7 +404,7 @@ def _make_end_call_tool(entry: dict[str, Any], *, control: CallControl, state: C
     }
 
     async def handler(raw_arguments: dict[str, object], context: RunContext) -> str:
-        state.add_tool_invocation(name, "{}")
+        tool_call_id = state.add_tool_invocation(name, "{}")
         metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="success").inc()
         # Let any pending goodbye finish playing before hanging up. wait_for_playout
         # covers worker→room; flush_grace then covers the room→SIP→phone tail so
@@ -413,7 +414,7 @@ def _make_end_call_tool(entry: dict[str, Any], *, control: CallControl, state: C
         except Exception:  # noqa: BLE001 - never block the hangup
             pass
         await control.end_call("agent_hangup", flush_grace=True)
-        state.add_tool_result(name, "call ended")
+        state.add_tool_result(name, "call ended", tool_call_id)
         return "The call has been ended."
 
     return function_tool(handler, raw_schema=schema)
@@ -451,7 +452,7 @@ def _make_transfer_call_tool(
     async def handler(raw_arguments: dict[str, object], context: RunContext) -> str:
         number = static_number or str(raw_arguments.get("number") or "")
         number = resolve_template(number, variables)
-        state.add_tool_invocation(name, json.dumps({"number": number}))
+        tool_call_id = state.add_tool_invocation(name, json.dumps({"number": number}))
         if not number:
             metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="error").inc()
             return json.dumps({"error": "no transfer destination configured"})
@@ -469,7 +470,7 @@ def _make_transfer_call_tool(
             metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="error").inc()
             logger.warning("transfer to %s failed: %s", number, exc)
             result = json.dumps({"error": f"transfer failed: {exc}"})
-        state.add_tool_result(name, result)
+        state.add_tool_result(name, result, tool_call_id)
         return result
 
     return function_tool(handler, raw_schema=schema)
