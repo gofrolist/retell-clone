@@ -41,8 +41,8 @@ calls recorded before deploy show tool blocks but no timeline markers.
 
 ### 1. Worker: timing capture
 
-- `CallState` records a monotonic anchor at creation (≈ call answer ≈
-  recording start).
+- Items are stamped relative to the existing `answered_at_ms` anchor
+  (≈ recording start; see honesty note below on clock choice).
 - `add_message`, `add_tool_invocation`, `add_tool_result` stamp each item with
   `time_ms: int` — milliseconds since the anchor.
 - `add_tool_invocation` generates a sequential `tool_call_id`
