@@ -240,6 +240,36 @@ async def test_member_role_cannot_manage_invites(client, monkeypatch):
     assert (await client.get("/list-members", headers=member_headers)).status_code == 200
 
 
+async def test_member_role_cannot_mint_api_keys(client, monkeypatch):
+    """Minting a key must not be a way around the owner/admin gate.
+
+    A raw API key skips every role check, so if a member could create one they
+    could re-authenticate with it and manage members unrestricted.
+    """
+    token = await _login_as_member(client, monkeypatch)
+    member_headers = {"Authorization": f"Bearer {token}"}
+
+    resp = await client.post("/create-api-key", json={"name": "escalate"}, headers=member_headers)
+    assert resp.status_code == 403
+
+    existing = (await client.get("/list-api-keys", headers=AUTH_HEADERS)).json()
+    resp = await client.post(f"/revoke-api-key/{existing[0]['key_id']}", headers=member_headers)
+    assert resp.status_code == 403
+    assert (await client.get("/list-api-keys", headers=AUTH_HEADERS)).json()[0]["revoked"] is False
+
+
+async def test_admin_role_can_mint_api_keys(client, monkeypatch):
+    invite = await _create_invite(client, email="admin3@example.com", role="admin")
+    _google_as(monkeypatch, "admin3@example.com")
+    login = await client.post(
+        "/auth/google", json={"id_token": "fake", "invite_token": invite["token"]}
+    )
+    admin_headers = {"Authorization": f"Bearer {login.json()['token']}"}
+    resp = await client.post("/create-api-key", json={"name": "ci"}, headers=admin_headers)
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["secret"]
+
+
 async def test_admin_role_can_manage_invites(client, monkeypatch):
     invite = await _create_invite(client, email="admin2@example.com", role="admin")
     _google_as(monkeypatch, "admin2@example.com")
