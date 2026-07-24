@@ -258,6 +258,34 @@ async def test_member_role_cannot_mint_api_keys(client, monkeypatch):
     assert (await client.get("/list-api-keys", headers=AUTH_HEADERS)).json()[0]["revoked"] is False
 
 
+async def test_allowlisted_domain_does_not_override_member_role(client, monkeypatch):
+    """A domain allowlist must not silently make every employee an owner.
+
+    `_email_allowed` matches whole domains, so with ARHITEQ_DASHBOARD_ALLOWED_
+    DOMAINS set (the prod pattern) the carve-out for allowlisted emails would
+    otherwise let anyone invited as a `member` mint a key and escalate.
+    """
+    from arhiteq_api.config import Settings, get_settings
+
+    settings = get_settings()
+    patched = Settings(**{**settings.model_dump(), "dashboard_allowed_domains": ["example.com"]})
+    monkeypatch.setattr("arhiteq_api.api.auth_google.get_settings", lambda: patched)
+
+    token = await _login_as_member(client, monkeypatch, email="employee@example.com")
+    member_headers = {"Authorization": f"Bearer {token}"}
+
+    resp = await client.post("/create-api-key", json={"name": "escalate"}, headers=member_headers)
+    assert resp.status_code == 403
+    assert (await client.get("/list-invites", headers=member_headers)).status_code == 403
+
+    # The carve-out still applies when no member row exists yet.
+    from arhiteq_api.sessions import issue_session
+
+    stale, _ = issue_session("newcomer@example.com", WORKSPACE_ID)
+    resp = await client.get("/list-invites", headers={"Authorization": f"Bearer {stale}"})
+    assert resp.status_code == 200
+
+
 async def test_admin_role_can_mint_api_keys(client, monkeypatch):
     invite = await _create_invite(client, email="admin3@example.com", role="admin")
     _google_as(monkeypatch, "admin3@example.com")

@@ -38,7 +38,7 @@ Dev escape hatch: `ARHITEQ_ALLOW_PRIVATE_WEBHOOKS=true`.
 
 | Secret | Where | Notes |
 |---|---|---|
-| Workspace API keys | Postgres (`api_keys`) | hash + signing copy; managed via `/list-api-keys` (masked prefix only), `/create-api-key` (secret returned exactly once), `/revoke-api-key/{id}` — workspace-scoped, same auth as the public API |
+| Workspace API keys | Postgres (`api_keys`) | hash + signing copy; workspace-scoped. `/list-api-keys` (masked prefix only) is open to any member; `/create-api-key` (secret returned exactly once) and `/revoke-api-key/{id}` require **owner/admin** — a raw key skips every role check, so minting one is an operator action |
 | `ARHITEQ_SESSION_SECRET` | K8s Secret | rotate to invalidate all dashboard sessions |
 | `ARHITEQ_INTERNAL_TOKEN` | K8s Secret | api + worker |
 | `ARHITEQ_FUNCTION_SECRET` | K8s Secret | = consumer's `RETELL_FUNCTION_SECRET` |

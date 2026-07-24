@@ -13,13 +13,14 @@ import { KeyRound, Plus, TriangleAlert } from "lucide-react";
 import { useState } from "react";
 
 export default function ApiKeysPage() {
-  const { data, loading, error, setError, reload } = useApiData(() => api.listApiKeys());
+  const { data, loading, error, reload } = useApiData(() => api.listApiKeys());
   const keys = data ?? [];
   const [freshSecret, setFreshSecret] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [revokeError, setRevokeError] = useState<string | null>(null);
 
   const createKey = async () => {
     setCreating(true);
@@ -38,11 +39,14 @@ export default function ApiKeysPage() {
   };
 
   const revoke = async (id: string) => {
+    setRevokeError(null);
     try {
       await api.revokeApiKey(id);
       reload();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to revoke API key");
+      // Local state, not the loader's: a failed revoke (e.g. 403 for a
+      // non-admin) must not replace the key list with a load-error panel.
+      setRevokeError(e instanceof Error ? e.message : "Failed to revoke API key");
     }
   };
 
@@ -78,6 +82,9 @@ export default function ApiKeysPage() {
         )}
 
         <SettingsCard title="Keys" description="Authenticate server-side requests to the Arhiteq API.">
+          {revokeError && (
+            <p className="pb-2 text-[12.5px] text-bad">{revokeError}</p>
+          )}
           {loading && (
             <p className="py-6 text-center text-[13px] text-sub">Loading API keys…</p>
           )}

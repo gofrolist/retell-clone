@@ -77,9 +77,14 @@ async def _assert_workspace_admin(
     Returns the caller's email, or None when authenticated with a raw API
     key. A raw key carries no personal identity and is operator credentials,
     so it passes unrestricted (also the dev-mode path). A session JWT must
-    belong to an owner or admin of the workspace — or an allowlisted email,
-    which is owner-by-definition: its member row is only written at login, so
-    sessions issued before that row exists must not be locked out.
+    belong to an owner or admin of the workspace.
+
+    The allowlist carve-out applies only when there is no member row yet: an
+    allowlisted login writes that row as owner, so a session issued before it
+    exists must not be locked out. It must NOT override an existing row —
+    `_email_allowed` matches whole domains, so with ARHITEQ_DASHBOARD_ALLOWED_
+    DOMAINS set (the prod pattern) every employee invited as a `member` would
+    otherwise read as owner and could mint a key to escalate.
     """
     email = email_from_authorization(authorization)
     if email is None:
@@ -90,7 +95,8 @@ async def _assert_workspace_admin(
             WorkspaceMember.email == email,
         )
     )
-    if (member is None or member.role not in ("owner", "admin")) and not _email_allowed(email):
+    allowed = _email_allowed(email) if member is None else member.role in ("owner", "admin")
+    if not allowed:
         raise HTTPException(403, detail=detail)
     return email
 
