@@ -480,6 +480,15 @@ export function uiAgentFromRaw(a: RawAgent, phones: RawPhoneNumber[] = []): Agen
 
 const SENTIMENTS = new Set(["Positive", "Negative", "Neutral", "Unknown"]);
 
+// Wire roles → UI roles; anything unrecognized renders as a user turn,
+// matching the pre-tool-call coercion.
+const UI_TRANSCRIPT_ROLES: Record<string, TranscriptItem["role"]> = {
+  agent: "agent",
+  kb_retrieval: "kb_retrieval",
+  tool_call_invocation: "tool_invocation",
+  tool_call_result: "tool_result",
+};
+
 function transcriptFromRaw(c: RawCall): TranscriptItem[] {
   // Prefer the tool-bearing stream; old calls only have transcript_object.
   const source = c.transcript_with_tool_calls?.length
@@ -487,29 +496,15 @@ function transcriptFromRaw(c: RawCall): TranscriptItem[] {
     : (c.transcript_object ?? []);
   return source.map((t) => {
     const time_ms = typeof t.time_ms === "number" ? t.time_ms : undefined;
-    const base = { time_ms, time: time_ms !== undefined ? formatDuration(time_ms) : "" };
-    if (t.role === "tool_call_invocation") {
-      return {
-        role: "tool_invocation" as const,
-        name: t.name,
-        tool_call_id: t.tool_call_id,
-        content: t.arguments ?? "",
-        ...base,
-      };
-    }
-    if (t.role === "tool_call_result") {
-      return {
-        role: "tool_result" as const,
-        name: t.name,
-        tool_call_id: t.tool_call_id,
-        content: t.content ?? "",
-        ...base,
-      };
-    }
     return {
-      role: t.role === "agent" ? ("agent" as const) : t.role === "kb_retrieval" ? ("kb_retrieval" as const) : ("user" as const),
-      content: t.content ?? "",
-      ...base,
+      role: UI_TRANSCRIPT_ROLES[t.role] ?? "user",
+      name: t.name,
+      tool_call_id: t.tool_call_id,
+      // Invocations carry their payload in `arguments`; everything else
+      // (utterances, results) uses `content`.
+      content: t.content ?? t.arguments ?? "",
+      time_ms,
+      time: time_ms !== undefined ? formatDuration(time_ms) : "",
     };
   });
 }

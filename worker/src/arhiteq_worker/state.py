@@ -66,22 +66,15 @@ class CallState:
         )
         return tool_call_id
 
-    def add_tool_result(self, name: str, content: str, tool_call_id: str | None = None) -> None:
+    def add_tool_result(self, name: str, content: str, tool_call_id: str | None) -> None:
+        # tool_call_id is required (pass None only when there is genuinely no
+        # invocation to pair with): a silent name-matching fallback here would
+        # mispair concurrent same-name tool calls, so callers must thread the
+        # id returned by add_tool_invocation.
         item: dict[str, Any] = {"role": "tool_call_result", "name": name, "content": content}
-        resolved_id = tool_call_id if tool_call_id is not None else self._pending_tool_call_id(name)
-        if resolved_id:
-            item["tool_call_id"] = resolved_id
+        if tool_call_id:
+            item["tool_call_id"] = tool_call_id
         self.items.append(self._stamp(item))
-
-    def _pending_tool_call_id(self, name: str) -> str | None:
-        """tool_call_id of the newest same-name invocation with no result yet."""
-        matched = {i.get("tool_call_id") for i in self.items if i.get("role") == "tool_call_result"}
-        for item in reversed(self.items):
-            if item.get("role") == "tool_call_invocation" and item.get("name") == name:
-                tool_call_id = item.get("tool_call_id")
-                if tool_call_id not in matched:
-                    return tool_call_id
-        return None
 
     def set_reason_once(self, reason: str) -> None:
         """First terminal reason wins (e.g. machine_detected beats the

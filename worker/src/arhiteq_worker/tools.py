@@ -455,14 +455,18 @@ def _make_transfer_call_tool(
         tool_call_id = state.add_tool_invocation(name, json.dumps({"number": number}))
         if not number:
             metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="error").inc()
-            return json.dumps({"error": "no transfer destination configured"})
+            result = json.dumps({"error": "no transfer destination configured"})
+            state.add_tool_result(name, result, tool_call_id)
+            return result
         if not _E164_RE.match(number):
             # The destination may come from LLM output steered by untrusted
             # caller speech — reject anything not strict E.164 so a social-
             # engineered call can't dial premium-rate/international numbers.
             metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="error").inc()
             logger.warning("transfer rejected: destination is not E.164")
-            return json.dumps({"error": "invalid transfer destination"})
+            result = json.dumps({"error": "invalid transfer destination"})
+            state.add_tool_result(name, result, tool_call_id)
+            return result
         try:
             result = await control.transfer_call(number)
             metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="success").inc()

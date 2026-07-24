@@ -1,8 +1,9 @@
 "use client";
 
+import CopyId from "@/components/ui/CopyId";
 import type { TranscriptItem } from "@/lib/types";
 import { ChevronDown, ChevronRight, Library } from "lucide-react";
-import { useId, useState } from "react";
+import { useId, useMemo, useState } from "react";
 
 /** Pretty-print JSON payloads; non-JSON content renders verbatim. */
 function prettyJson(s: string): string {
@@ -17,6 +18,7 @@ function prettyJson(s: string): string {
 function ToolBlock({ item }: { item: TranscriptItem }) {
   const [open, setOpen] = useState(true);
   const contentId = useId();
+  const pretty = useMemo(() => prettyJson(item.content), [item.content]);
   const title =
     item.role === "tool_invocation"
       ? `Tool Invocation${item.name ? `: ${item.name}` : ""}`
@@ -39,9 +41,11 @@ function ToolBlock({ item }: { item: TranscriptItem }) {
           className="mt-1.5 rounded-lg border border-line bg-app/50 px-3 py-2 font-mono text-[12px] leading-relaxed"
         >
           {item.tool_call_id && (
-            <div className="mb-1 text-sub">tool_call_id: {item.tool_call_id}</div>
+            <div className="mb-1 text-sub">
+              tool_call_id: <CopyId value={item.tool_call_id} className="text-[12px]" />
+            </div>
           )}
-          <pre className="whitespace-pre-wrap break-words">{prettyJson(item.content)}</pre>
+          <pre className="whitespace-pre-wrap break-words">{pretty}</pre>
         </div>
       )}
     </div>
