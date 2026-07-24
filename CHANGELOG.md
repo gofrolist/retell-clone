@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.13.0](https://github.com/gofrolist/retell-clone/compare/v0.12.0...v0.13.0) (2026-07-24)
+
+
+### Features
+
+* implement stub dashboard pages and sections with real APIs ([#134](https://github.com/gofrolist/retell-clone/issues/134)) ([8beac05](https://github.com/gofrolist/retell-clone/commit/8beac0556a9536cd5415bb1d3c829f311fd13a99))
+* tool call blocks in call transcript + audio timeline markers ([#136](https://github.com/gofrolist/retell-clone/issues/136)) ([f980dfc](https://github.com/gofrolist/retell-clone/commit/f980dfcf43cba8a66a47b32a82dd493f69df88e1))
+
+
+### Bug Fixes
+
+* **worker:** upgrade livekit-agents to 1.6.6 to patch json-repair DoS ([#137](https://github.com/gofrolist/retell-clone/issues/137)) ([d1e3c4d](https://github.com/gofrolist/retell-clone/commit/d1e3c4d007c308586c7f9aae298b1a76ddc03a22))
+
 ## [0.12.0](https://github.com/gofrolist/retell-clone/compare/v0.11.0...v0.12.0) (2026-07-22)
 
 
