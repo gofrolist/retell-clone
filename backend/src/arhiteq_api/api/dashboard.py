@@ -63,6 +63,64 @@ router = APIRouter(tags=["dashboard"])
 DAY_MS = 86_400_000
 
 
+# ------------------------------------------------------------- authorization
+
+
+async def _assert_workspace_admin(
+    authorization: str | None,
+    api_key: ApiKey,
+    session: AsyncSession,
+    detail: str,
+) -> str | None:
+    """Require owner/admin for a session-authenticated caller.
+
+    Returns the caller's email, or None when authenticated with a raw API
+    key. A raw key carries no personal identity and is operator credentials,
+    so it passes unrestricted (also the dev-mode path). A session JWT must
+    belong to an owner or admin of the workspace.
+
+    The allowlist carve-out applies only when there is no member row yet: an
+    allowlisted login writes that row as owner, so a session issued before it
+    exists must not be locked out. It must NOT override an existing row —
+    `_email_allowed` matches whole domains, so with ARHITEQ_DASHBOARD_ALLOWED_
+    DOMAINS set (the prod pattern) every employee invited as a `member` would
+    otherwise read as owner and could mint a key to escalate.
+    """
+    email = email_from_authorization(authorization)
+    if email is None:
+        return None
+    member = await session.scalar(
+        select(WorkspaceMember).where(
+            WorkspaceMember.workspace_id == api_key.workspace_id,
+            WorkspaceMember.email == email,
+        )
+    )
+    allowed = _email_allowed(email) if member is None else member.role in ("owner", "admin")
+    if not allowed:
+        raise HTTPException(403, detail=detail)
+    return email
+
+
+async def require_workspace_admin(
+    authorization: str | None = Header(default=None),
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+) -> ApiKey:
+    """Gate API-key management to owners and admins.
+
+    Minting a key is equivalent to becoming an operator — a raw key skips
+    every role check below — so this must not be reachable by a role that is
+    denied member management.
+    """
+    await _assert_workspace_admin(
+        authorization,
+        api_key,
+        session,
+        "Only workspace owners and admins can manage API keys",
+    )
+    return api_key
+
+
 # ------------------------------------------------------------------ analytics
 
 
@@ -884,7 +942,7 @@ async def list_api_keys(
 @router.post("/create-api-key", status_code=201)
 async def create_api_key(
     body: CreateApiKeyRequest,
-    api_key: ApiKey = Depends(require_api_key),
+    api_key: ApiKey = Depends(require_workspace_admin),
     session: AsyncSession = Depends(get_session),
 ):
     secret = new_api_key()
@@ -902,7 +960,7 @@ async def create_api_key(
 @router.post("/revoke-api-key/{key_id}")
 async def revoke_api_key(
     key_id: int,
-    api_key: ApiKey = Depends(require_api_key),
+    api_key: ApiKey = Depends(require_workspace_admin),
     session: AsyncSession = Depends(get_session),
 ):
     row = await session.get(ApiKey, key_id)
@@ -1279,23 +1337,15 @@ async def require_member_manager(
 ) -> MemberManager:
     """Gate member/invite management to owners and admins.
 
-    A raw API key carries no personal identity and is operator credentials,
-    so it manages members unrestricted (also the dev-mode path). A session
-    JWT must belong to an owner or admin of the workspace — or an allowlisted
-    email, which is owner-by-definition: its member row is only written at
-    login, so sessions issued before that row exists must not be locked out.
+    Same rule as `require_workspace_admin`, but carries the caller's email
+    through so `remove-member` can refuse self-removal.
     """
-    email = email_from_authorization(authorization)
-    if email is None:
-        return MemberManager(api_key, None)
-    member = await session.scalar(
-        select(WorkspaceMember).where(
-            WorkspaceMember.workspace_id == api_key.workspace_id,
-            WorkspaceMember.email == email,
-        )
+    email = await _assert_workspace_admin(
+        authorization,
+        api_key,
+        session,
+        "Only workspace owners and admins can manage members",
     )
-    if (member is None or member.role not in ("owner", "admin")) and not _email_allowed(email):
-        raise HTTPException(403, detail="Only workspace owners and admins can manage members")
     return MemberManager(api_key, email)
 
 
