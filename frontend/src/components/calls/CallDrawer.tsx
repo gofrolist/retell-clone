@@ -1,12 +1,12 @@
 "use client";
 
-import AudioPlayer from "./AudioPlayer";
+import AudioPlayer, { type AudioMarker } from "./AudioPlayer";
 import Transcript from "./Transcript";
 import CopyId from "@/components/ui/CopyId";
 import StatusDot from "@/components/ui/StatusDot";
 import { UnderlineTabs } from "@/components/ui/Tabs";
 import { api } from "@/lib/api";
-import type { Call, DetailLog } from "@/lib/types";
+import type { Call, DetailLog, TranscriptItem } from "@/lib/types";
 import {
   formatCallTime,
   formatCost,
@@ -22,7 +22,7 @@ import {
   RefreshCw,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 function MetaItem({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -139,6 +139,35 @@ export default function CallDrawer({
 
   const c = full ?? call;
 
+  // Timeline annotations: one dot per tool invocation (popup includes its
+  // paired result) and per KB retrieval. Items without time_ms (calls
+  // recorded before the worker stamped timestamps) get no marker, and every
+  // timestamped invocation carries a tool_call_id, so pairing is a pure id
+  // lookup — no name-based guessing.
+  const markers = useMemo<AudioMarker[]>(() => {
+    const items = c.transcript ?? [];
+    const resultById = new Map<string, TranscriptItem>();
+    for (const r of items) {
+      if (r.role === "tool_result" && r.tool_call_id && !resultById.has(r.tool_call_id)) {
+        resultById.set(r.tool_call_id, r);
+      }
+    }
+    return items.flatMap((t): AudioMarker[] => {
+      if (typeof t.time_ms !== "number") return [];
+      if (t.role === "tool_invocation") {
+        const result = t.tool_call_id ? resultById.get(t.tool_call_id) : undefined;
+        const body = [`args: ${t.content}`, result ? `result: ${result.content}` : null]
+          .filter(Boolean)
+          .join("\n");
+        return [{ time_ms: t.time_ms, kind: "tool", title: t.name ?? "tool call", body }];
+      }
+      if (t.role === "kb_retrieval") {
+        return [{ time_ms: t.time_ms, kind: "kb", title: "Knowledge Base Retrieval" }];
+      }
+      return [];
+    });
+  }, [c.transcript]);
+
   async function rerun() {
     if (rerunning) return;
     setRerunning(true);
@@ -232,7 +261,11 @@ export default function CallDrawer({
 
             {c.recording_url && /^https?:/i.test(c.recording_url) && (
               <div className="mt-4">
-                <AudioPlayer src={c.recording_url} durationMs={c.duration_ms || 0} />
+                <AudioPlayer
+                  src={c.recording_url}
+                  durationMs={c.duration_ms || 0}
+                  markers={markers}
+                />
               </div>
             )}
 

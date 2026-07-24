@@ -1,16 +1,67 @@
 "use client";
 
-import type { TranscriptTurn } from "@/lib/types";
-import { Library } from "lucide-react";
+import CopyId from "@/components/ui/CopyId";
+import type { TranscriptItem } from "@/lib/types";
+import { ChevronDown, ChevronRight, Library } from "lucide-react";
+import { useId, useMemo, useState } from "react";
 
-export default function Transcript({ turns }: { turns: TranscriptTurn[] }) {
+/** Pretty-print JSON payloads; non-JSON content renders verbatim. */
+function prettyJson(s: string): string {
+  try {
+    return JSON.stringify(JSON.parse(s), null, 2);
+  } catch {
+    return s;
+  }
+}
+
+/** Retell-style collapsible block for a tool invocation or result. */
+function ToolBlock({ item }: { item: TranscriptItem }) {
+  const [open, setOpen] = useState(true);
+  const contentId = useId();
+  const pretty = useMemo(() => prettyJson(item.content), [item.content]);
+  const title =
+    item.role === "tool_invocation"
+      ? `Tool Invocation${item.name ? `: ${item.name}` : ""}`
+      : "Tool Result";
+  return (
+    <div>
+      <button
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        aria-controls={contentId}
+        className="flex w-full items-center gap-1 text-[13px] font-medium text-accent-deep cursor-pointer"
+      >
+        {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        {title}
+        <span className="ml-auto text-[11px] font-normal text-faint">{item.time}</span>
+      </button>
+      {open && (
+        <div
+          id={contentId}
+          className="mt-1.5 rounded-lg border border-line bg-app/50 px-3 py-2 font-mono text-[12px] leading-relaxed"
+        >
+          {item.tool_call_id && (
+            <div className="mb-1 text-sub">
+              tool_call_id: <CopyId value={item.tool_call_id} className="text-[12px]" />
+            </div>
+          )}
+          <pre className="whitespace-pre-wrap break-words">{pretty}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function Transcript({ turns }: { turns: TranscriptItem[] }) {
   if (!turns.length) {
     return <p className="py-8 text-center text-[13px] text-sub">No transcript available.</p>;
   }
   return (
     <div className="space-y-3">
       {turns.map((t, i) =>
-        t.role === "kb_retrieval" ? (
+        t.role === "tool_invocation" || t.role === "tool_result" ? (
+          <ToolBlock key={i} item={t} />
+        ) : t.role === "kb_retrieval" ? (
           <div key={i} className="flex items-center gap-2 py-0.5">
             <div className="h-px grow bg-line" />
             <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-app px-2.5 py-0.5 text-[11.5px] font-medium text-sub">

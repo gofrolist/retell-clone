@@ -27,8 +27,8 @@ class TestTranscript:
     def test_tool_calls_excluded_from_transcript_but_kept_in_items(self):
         s = CallState()
         s.add_message("agent", "One sec.")
-        s.add_tool_invocation("schedule_callback", '{"phone": "+1"}')
-        s.add_tool_result("schedule_callback", '{"ok": true}')
+        tcid = s.add_tool_invocation("schedule_callback", '{"phone": "+1"}')
+        s.add_tool_result("schedule_callback", '{"ok": true}', tcid)
         assert s.transcript_object() == [{"role": "agent", "content": "One sec."}]
         payload = s.build_finalize_payload()
         assert len(payload["transcript_with_tool_calls"]) == 3
@@ -84,3 +84,63 @@ class TestLatency:
         latency = s.build_finalize_payload()["latency"]["e2e"]
         assert latency["p50"] == 50
         assert latency["p95"] == 95
+
+
+class TestItemTimingAndToolIds:
+    def test_time_ms_is_offset_from_answer(self, monkeypatch):
+        s = CallState(call_id="c")
+        s.answered_at_ms = 1_000_000
+        monkeypatch.setattr("arhiteq_worker.state.now_ms", lambda: 1_012_345)
+        s.add_message("agent", "Hi")
+        tcid = s.add_tool_invocation("log_outcome", "{}")
+        s.add_tool_result("log_outcome", "ok", tcid)
+        assert [i["time_ms"] for i in s.items] == [12_345, 12_345, 12_345]
+
+    def test_unanswered_items_have_no_time_ms(self):
+        s = CallState()
+        s.add_message("agent", "Hi")
+        s.add_tool_invocation("t", "{}")
+        assert all("time_ms" not in i for i in s.items)
+
+    def test_clock_skew_clamps_to_zero(self, monkeypatch):
+        s = CallState()
+        s.answered_at_ms = 2_000_000
+        monkeypatch.setattr("arhiteq_worker.state.now_ms", lambda: 1_999_000)
+        s.add_message("user", "Hi")
+        assert s.items[0]["time_ms"] == 0
+
+    def test_result_without_invocation_has_no_tool_call_id(self):
+        s = CallState()
+        s.add_tool_result("orphan", "r", None)
+        assert "tool_call_id" not in s.items[0]
+
+    def test_explicit_tool_call_id_survives_interleaved_same_name_calls(self):
+        """livekit-agents can run two same-name tool calls concurrently (every
+        call site has an await between invocation and result), so any
+        name-matching heuristic could pair a result with the wrong invocation.
+        Passing the id returned by add_tool_invocation pins the pairing even
+        when results arrive out of invocation order."""
+        s = CallState()
+        id1 = s.add_tool_invocation("t", "{}")
+        id2 = s.add_tool_invocation("t", "{}")
+        assert id1 != id2
+        # Result for the FIRST (older) invocation arrives first — the LIFO
+        # heuristic would wrongly pair this with id2.
+        s.add_tool_result("t", "r1", id1)
+        s.add_tool_result("t", "r2", id2)
+        inv1, inv2, res1, res2 = s.items
+        assert inv1["tool_call_id"] == id1
+        assert inv2["tool_call_id"] == id2
+        assert res1["tool_call_id"] == id1
+        assert res2["tool_call_id"] == id2
+
+    def test_finalize_payload_items_carry_new_fields(self, monkeypatch):
+        s = CallState(call_id="c")
+        s.answered_at_ms = 1_000_000
+        s.ended_at_ms = 1_060_000
+        monkeypatch.setattr("arhiteq_worker.state.now_ms", lambda: 1_030_000)
+        tcid = s.add_tool_invocation("log_outcome", '{"k": 1}')
+        s.add_tool_result("log_outcome", "ok", tcid)
+        items = s.build_finalize_payload()["transcript_with_tool_calls"]
+        assert items[0]["time_ms"] == 30_000
+        assert items[0]["tool_call_id"] == items[1]["tool_call_id"]

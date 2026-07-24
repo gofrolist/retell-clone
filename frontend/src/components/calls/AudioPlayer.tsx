@@ -1,16 +1,27 @@
 "use client";
 
+import HoverCard from "@/components/ui/HoverCard";
 import { formatDuration, isHttpUrl } from "@/lib/utils";
 import { Download, Play, Pause } from "lucide-react";
-import { useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
+
+/** Timeline annotation (tool call / KB retrieval) shown as a dot on the bar. */
+export interface AudioMarker {
+  time_ms: number;
+  kind: "tool" | "kb";
+  title: string;
+  body?: string;
+}
 
 /** Audio player for call recordings, matching the call drawer design. */
 export default function AudioPlayer({
   src,
   durationMs = 0,
+  markers,
 }: {
   src: string;
   durationMs?: number;
+  markers?: AudioMarker[];
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
@@ -29,15 +40,65 @@ export default function AudioPlayer({
     else audio.pause();
   }
 
-  function seek(e: React.MouseEvent<HTMLDivElement>) {
+  const seekTo = useCallback((sec: number) => {
     const audio = audioRef.current;
+    if (!audio) return;
+    audio.currentTime = sec;
+    setCurrentSec(sec);
+  }, []);
+
+  function seek(e: React.MouseEvent<HTMLDivElement>) {
     const bar = barRef.current;
-    if (!audio || !bar || !durationSec) return;
+    // Marker dots seek precisely to their own time (and their click must also
+    // bubble to HoverCard so the popup opens on tap) — the bar's
+    // position-based seek stands down for clicks that started on one.
+    if (!bar || !durationSec || (e.target as HTMLElement).closest("[data-marker]")) return;
     const rect = bar.getBoundingClientRect();
     const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-    audio.currentTime = ratio * durationSec;
-    setCurrentSec(ratio * durationSec);
+    seekTo(ratio * durationSec);
   }
+
+  // Memoized so the multiple-times-per-second timeupdate re-renders don't
+  // rebuild the marker layer. Items timed past the recording end would render
+  // off-bar — drop them.
+  const markerDots = useMemo(() => {
+    if (durationSec <= 0) return null;
+    const visible = (markers ?? []).filter(
+      (m) => m.time_ms >= 0 && m.time_ms <= durationSec * 1000,
+    );
+    return visible.map((m, i) => (
+      <span
+        key={i}
+        data-marker
+        className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2"
+        style={{ left: `${(m.time_ms / (durationSec * 1000)) * 100}%` }}
+      >
+        <HoverCard
+          trigger={
+            <button
+              onClick={() => seekTo(m.time_ms / 1000)}
+              aria-label={`Seek to ${formatDuration(m.time_ms)}: ${m.title}`}
+              className={`block size-2.5 rounded-full border-2 border-white shadow cursor-pointer ${
+                m.kind === "tool" ? "bg-accent-deep" : "bg-sub"
+              }`}
+            />
+          }
+        >
+          <div className="text-[12px]">
+            <div className="mb-0.5 flex items-center justify-between gap-2">
+              <span className="font-medium">{m.title}</span>
+              <span className="tabular-nums text-faint">{formatDuration(m.time_ms)}</span>
+            </div>
+            {m.body && (
+              <pre className="max-h-40 overflow-hidden font-mono text-[11px] whitespace-pre-wrap break-words text-sub">
+                {m.body}
+              </pre>
+            )}
+          </div>
+        </HoverCard>
+      </span>
+    ));
+  }, [markers, durationSec, seekTo]);
 
   return (
     <div className="flex items-center gap-3 rounded-xl border border-line bg-white px-3 py-2.5 shadow-sm">
@@ -78,6 +139,7 @@ export default function AudioPlayer({
           className="absolute top-1/2 size-3 -translate-y-1/2 rounded-full border border-line-strong bg-white shadow"
           style={{ left: `calc(${progress * 100}% - 6px)` }}
         />
+        {markerDots}
       </div>
       <span className="text-xs tabular-nums text-sub shrink-0">
         {formatDuration(durationSec * 1000)}

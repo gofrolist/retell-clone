@@ -37,16 +37,44 @@ class CallState:
     # Variables captured by extract_dynamic_variable tools during the call
     # (Retell surfaces these as call.collected_dynamic_variables).
     collected_dynamic_variables: dict[str, str] = field(default_factory=dict)
+    # Monotone counter behind generated tool_call_id values.
+    tool_seq: int = field(default=0, init=False)
+
+    def _stamp(self, item: dict[str, Any]) -> dict[str, Any]:
+        # time_ms = offset from answer ≈ offset into the recording; items
+        # logged before answer (none today) simply carry no timestamp.
+        if self.answered_at_ms is not None:
+            item["time_ms"] = max(0, now_ms() - self.answered_at_ms)
+        return item
 
     def add_message(self, role: str, content: str) -> None:
         if content:
-            self.items.append({"role": role, "content": content})
+            self.items.append(self._stamp({"role": role, "content": content}))
 
-    def add_tool_invocation(self, name: str, arguments: str) -> None:
-        self.items.append({"role": "tool_call_invocation", "name": name, "arguments": arguments})
+    def add_tool_invocation(self, name: str, arguments: str) -> str:
+        self.tool_seq += 1
+        tool_call_id = f"tool_call_{self.tool_seq}"
+        self.items.append(
+            self._stamp(
+                {
+                    "role": "tool_call_invocation",
+                    "name": name,
+                    "arguments": arguments,
+                    "tool_call_id": tool_call_id,
+                }
+            )
+        )
+        return tool_call_id
 
-    def add_tool_result(self, name: str, content: str) -> None:
-        self.items.append({"role": "tool_call_result", "name": name, "content": content})
+    def add_tool_result(self, name: str, content: str, tool_call_id: str | None) -> None:
+        # tool_call_id is required (pass None only when there is genuinely no
+        # invocation to pair with): a silent name-matching fallback here would
+        # mispair concurrent same-name tool calls, so callers must thread the
+        # id returned by add_tool_invocation.
+        item: dict[str, Any] = {"role": "tool_call_result", "name": name, "content": content}
+        if tool_call_id:
+            item["tool_call_id"] = tool_call_id
+        self.items.append(self._stamp(item))
 
     def set_reason_once(self, reason: str) -> None:
         """First terminal reason wins (e.g. machine_detected beats the

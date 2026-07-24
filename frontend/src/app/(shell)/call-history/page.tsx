@@ -585,6 +585,9 @@ export default function CallHistoryPage() {
 
       {selected && (
         <CallDrawer
+          // Remount per call: ↑/↓ navigation must not carry over per-call
+          // component state (audio duration, tool-block collapse).
+          key={selected.call_id}
           call={selected}
           onClose={() => setSelected(null)}
           onNavigate={navigate}
