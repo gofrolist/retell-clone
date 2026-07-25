@@ -11,6 +11,9 @@ permissions:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    # Without this a hung test sits on the runner for GitHub's 6h default
+    # before anyone finds out (seen on #158).
+    timeout-minutes: 15
     defaults:
       run: { working-directory: backend }
     steps:
@@ -25,6 +28,7 @@ jobs:
 
   worker:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run: { working-directory: worker }
     steps:
@@ -38,6 +42,7 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run: { working-directory: frontend }
     steps:
@@ -49,6 +54,7 @@ jobs:
 
   infra:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1

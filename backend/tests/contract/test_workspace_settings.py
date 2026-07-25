@@ -168,8 +168,8 @@ async def test_reserving_the_full_limit_is_rejected(client):
 
 
 async def test_live_inbound_calls_do_not_starve_outbound(client, monkeypatch):
-    from arhiteq_api.api import concurrency
     import arhiteq_api.db as db_module
+    from arhiteq_api.api import concurrency
     from arhiteq_api.models import Call
 
     monkeypatch.setattr(concurrency, "BASE_CONCURRENCY", 2)

@@ -23,8 +23,9 @@ import logging
 import os
 import re
 import socket
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import date, timedelta
-from typing import Any, Awaitable, Callable, Mapping, Protocol
+from typing import Any, Protocol
 from urllib.parse import urlparse
 
 import httpx
@@ -313,7 +314,9 @@ async def safe_execute_custom_tool(
             # Later {{var}} references (tool args, transfer destinations)
             # resolve against the same mapping the session was built with.
             variables.update(captured)
-    except Exception as exc:  # timeout, transport, non-2xx — model sees the error
+    # Deliberately total: any tool failure must become an error string the model
+    # can react to, never an exception that kills the turn.
+    except Exception as exc:  # noqa: BLE001 — timeout, transport, non-2xx
         result = _tool_error(name, exc)
     if state is not None:
         state.add_tool_result(name, result, tool_call_id)
@@ -363,7 +366,7 @@ def _make_http_tool(
         if speak_during:
             try:
                 context.session.say(filler, add_to_chat_ctx=False)
-            except Exception:  # noqa: BLE001 - filler speech must never break the tool
+            except Exception:  # filler speech must never break the tool
                 logger.debug("speak_during_execution failed for %s", name, exc_info=True)
         result = await safe_execute_custom_tool(
             http,
@@ -411,8 +414,8 @@ def _make_end_call_tool(entry: dict[str, Any], *, control: CallControl, state: C
         # delete_room doesn't clip the last words.
         try:
             await context.wait_for_playout()
-        except Exception:  # noqa: BLE001 - never block the hangup
-            pass
+        except Exception:  # never block the hangup
+            logger.debug("wait_for_playout failed before hangup", exc_info=True)
         await control.end_call("agent_hangup", flush_grace=True)
         state.add_tool_result(name, "call ended", tool_call_id)
         return "The call has been ended."

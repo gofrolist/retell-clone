@@ -11,14 +11,14 @@ from ..config import get_settings
 from ..db import get_session
 from ..models import Agent, ApiKey, Chat, RetellLLM, now_ms
 from ..schemas import coerce_dynamic_variables
-from ..services.gemini import build_genai_client, genai_credentials_available, is_live_model
-from ..services.template_variables import ChatVariables, resolve_template
 from ..schemas_extra import (
     CreateChatCompletionRequest,
     CreateChatRequest,
     ListChatsRequest,
     chat_to_dict,
 )
+from ..services.gemini import build_genai_client, genai_credentials_available, is_live_model
+from ..services.template_variables import ChatVariables, resolve_template
 from ._deps import apply_keyset_page, get_owned
 
 log = logging.getLogger(__name__)
@@ -96,7 +96,7 @@ async def _agent_reply(chat: Chat, session: AsyncSession) -> tuple[str, bool]:
         )
         text = (resp.text or "").strip()
         return (text, False) if text else (_FALLBACK_REPLY, True)
-    except Exception:  # noqa: BLE001
+    except Exception:
         log.exception("chat completion failed for %s", chat.chat_id)
         return _FALLBACK_REPLY, True
 

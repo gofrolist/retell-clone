@@ -95,7 +95,7 @@ async def analyze_call(
             "in_voicemail": in_voicemail,
             "custom_analysis_data": {},
         }
-    except Exception:  # noqa: BLE001
+    except Exception:
         log.exception("post-call analysis failed")
         ANALYSIS_RUNS.labels(outcome="error").inc()
         return _fallback(in_voicemail_hint)

@@ -14,7 +14,8 @@ uses disconnection_reason="machine_detected" (docs/ARCHITECTURE.md).
 from __future__ import annotations
 
 import logging
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 logger = logging.getLogger("arhiteq-worker.amd")
 

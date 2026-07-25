@@ -36,8 +36,7 @@ import httpx
 from livekit import api, rtc
 from livekit.agents import Agent, AgentSession, CloseReason, JobContext, RoomInputOptions, cli
 
-from arhiteq_worker import amd
-from arhiteq_worker import metrics
+from arhiteq_worker import amd, metrics
 from arhiteq_worker.config import CallConfig, gemini_live_temperature
 from arhiteq_worker.goodbye import looks_like_goodbye
 from arhiteq_worker.internal_api import InternalAPI, InternalAPIError
@@ -486,7 +485,7 @@ async def _wait_for_answer(
             return True
         try:
             await asyncio.wait_for(done.wait(), timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return False
         return answered
     finally:
@@ -750,7 +749,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 participant = await _wait_for_web_participant(ctx, timeout=DIAL_TIMEOUT_S)
             else:
                 participant = await _wait_for_sip_participant(ctx, timeout=DIAL_TIMEOUT_S)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             participant = None
 
     # Inbound: the caller is already on the line, and livekit-sip only
@@ -864,7 +863,7 @@ async def entrypoint(ctx: JobContext) -> None:
                         voice=resolve_cartesia_voice(swap_cfg.agent.voice_id),
                         speed=_cartesia_speed(swap_cfg.agent.voice_speed),
                     )
-                except Exception:  # noqa: BLE001 - voice switch is best-effort
+                except Exception:  # voice switch is best-effort
                     logger.warning("agent_swap voice switch failed", exc_info=True)
         logger.info("agent swap: call %s now running agent %s", cfg.call_id, agent_id)
         return json.dumps({"result": f"now acting as agent {agent_id}"})

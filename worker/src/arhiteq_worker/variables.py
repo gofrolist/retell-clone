@@ -21,8 +21,9 @@ the call started.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping
+from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 # A placeholder key is brace-free text that may embed ONE inner placeholder
@@ -92,7 +93,7 @@ def resolve_deep(value: Any, variables: Mapping[str, Any]) -> Any:
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _format_current_time(dt: datetime) -> str:
