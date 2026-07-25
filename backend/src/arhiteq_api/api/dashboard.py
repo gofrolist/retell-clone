@@ -9,9 +9,10 @@ changes the public Retell-compatible surface.
 import asyncio
 import re
 from collections import Counter
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from hashlib import sha256
-from datetime import datetime, timezone
-from typing import Annotated, Any, Mapping, NamedTuple, Sequence
+from typing import Annotated, Any, NamedTuple
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -123,7 +124,7 @@ async def require_workspace_admin(
 
 
 def _day(ts_ms: int) -> str:
-    return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+    return datetime.fromtimestamp(ts_ms / 1000, tz=UTC).strftime("%Y-%m-%d")
 
 
 def _series(counts: Mapping[str, float], start_ms: int, days: int) -> list[dict[str, Any]]:
@@ -300,7 +301,7 @@ async def chat_analytics(
 
 class CallInsightsRequest(CompatModel):
     days: int = 7
-    agent_id: list[str] = []
+    agent_id: list[str] = Field(default_factory=list)
     limit: int = Field(default=200, ge=1, le=500)
 
 
@@ -348,7 +349,7 @@ async def call_insights(
     def line(c: Call) -> str:
         analysis = c.call_analysis or {}
         started = datetime.fromtimestamp(
-            (c.start_timestamp or c.created_at_ms) / 1000, tz=timezone.utc
+            (c.start_timestamp or c.created_at_ms) / 1000, tz=UTC
         ).strftime("%Y-%m-%d %H:%M")
         summary = (analysis.get("call_summary") or analysis.get("summary") or "").replace(
             "\n", " "
@@ -609,7 +610,7 @@ class CreateAlertRequest(CompatModel):
     compare_to: str = Field(default="value", pattern="^(value|last_cycle)$")
     check_every_min: int = 5
     lookback_min: int = 60
-    notify_emails: list[str] = []
+    notify_emails: list[str] = Field(default_factory=list)
     webhook_url: str | None = None
     enabled: bool = True
 
@@ -769,7 +770,7 @@ def _cohort_to_dict(c: QaCohort, metrics: dict[str, Any] | None = None) -> dict[
 
 class CreateCohortRequest(CompatModel):
     name: str
-    agents: list[str] = []
+    agents: list[str] = Field(default_factory=list)
     sampling_pct: float = 10.0
     weekly_max: int = Field(default=100, ge=0)
     min_duration_s: int | None = Field(default=None, ge=0, le=86_400)

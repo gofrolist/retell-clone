@@ -57,7 +57,10 @@ async def resolve_inbound(
         body: dict[str, Any] = resp.json()
         call_inbound = body.get("call_inbound")
         if not isinstance(call_inbound, dict):
-            raise ValueError("response missing call_inbound object")
+            # TRY004 wants TypeError, but this validates an untrusted remote
+            # payload rather than a caller's argument type — a malformed webhook
+            # body is bad *data*, so ValueError is right. Degrades below either way.
+            raise ValueError("response missing call_inbound object")  # noqa: TRY004
         agent_id = call_inbound.get("override_agent_id")
         dyn = call_inbound.get("dynamic_variables") or {}
         if not isinstance(dyn, dict):

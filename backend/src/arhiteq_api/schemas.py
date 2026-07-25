@@ -5,7 +5,8 @@ fields are tolerated everywhere (`extra="allow"`) — Retell consumers may send
 fields we don't process, and rejecting them would break drop-in compatibility.
 """
 
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 

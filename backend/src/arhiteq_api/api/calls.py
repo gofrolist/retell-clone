@@ -52,7 +52,7 @@ def _web_call_access_token(call: Call) -> str:
             .with_grants(lk_api.VideoGrants(room_join=True, room=call.livekit_room or ""))
             .to_jwt()
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # A fake token would 201 a web call that can never join the room, with
         # the failure surfacing later, disconnected from the cause. Fail now.
         log.exception("failed to mint LiveKit access token for %s", call.call_id)

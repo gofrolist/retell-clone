@@ -54,7 +54,7 @@ async def _dial_wave(
             continue
         try:
             await telephony.start_outbound_call(call)
-        except Exception:  # noqa: BLE001 — one bad dial must not sink the batch
+        except Exception:  # one bad dial must not sink the batch
             log.exception("batch %s: failed to dial %s", batch_id, call.call_id)
             call.call_status = "error"
             call.disconnection_reason = "error_telephony"
@@ -70,7 +70,7 @@ async def _drain_batch(workspace_id: str, batch_id: str, pending: list[str]) -> 
         try:
             async with factory() as session:
                 await _dial_wave(session, workspace_id, batch_id, pending)
-        except Exception:  # noqa: BLE001 — keep pacing through transient DB errors
+        except Exception:  # keep pacing through transient DB errors
             log.exception("batch %s: drain wave failed", batch_id)
     if pending:
         log.error("batch %s: gave up on %d undialed tasks", batch_id, len(pending))

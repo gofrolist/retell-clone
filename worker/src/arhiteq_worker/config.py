@@ -79,7 +79,7 @@ class AgentConfig:
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "AgentConfig":
+    def from_dict(cls, d: dict[str, Any]) -> AgentConfig:
         return cls(
             voice_id=_str(d.get("voice_id"), ""),
             language=_str(d.get("language"), "en-US"),
@@ -110,7 +110,7 @@ class LLMConfig:
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "LLMConfig":
+    def from_dict(cls, d: dict[str, Any]) -> LLMConfig:
         begin = d.get("begin_message")
         return cls(
             model=_str(d.get("model"), ""),
@@ -138,7 +138,7 @@ class CallConfig:
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "CallConfig":
+    def from_dict(cls, d: dict[str, Any]) -> CallConfig:
         return cls(
             call_id=_str(d.get("call_id"), ""),
             direction=_str(d.get("direction"), "outbound"),

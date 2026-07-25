@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -69,7 +69,7 @@ def test_resolve_deep_does_not_rewrite_keys() -> None:
 @pytest.fixture
 def frozen_now(monkeypatch: pytest.MonkeyPatch) -> datetime:
     # 2024-03-28 22:30 UTC == 3:30 PM PDT (Thursday) == 7:30 AM JST (Friday)
-    now = datetime(2024, 3, 28, 22, 30, tzinfo=timezone.utc)
+    now = datetime(2024, 3, 28, 22, 30, tzinfo=UTC)
     monkeypatch.setattr(variables_mod, "_utcnow", lambda: now)
     return now
 

@@ -7,7 +7,7 @@ implementation of its (timestamp, id) tie-break.
 """
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import tuple_
@@ -15,10 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import now_ms
 
-T = TypeVar("T")
 
-
-async def get_owned(
+async def get_owned[T](
     session: AsyncSession,
     model: type[T],
     obj_id: Any,

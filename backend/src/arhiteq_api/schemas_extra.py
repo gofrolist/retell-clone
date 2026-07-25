@@ -12,7 +12,6 @@ from pydantic import Field
 from .models import Call, Chat, ConversationFlow, KnowledgeBase, WebhookDelivery
 from .schemas import CompatModel, call_to_dict
 
-
 # ── Requests ────────────────────────────────────────────────────────────────
 
 

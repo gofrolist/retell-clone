@@ -2,8 +2,8 @@
 
 import json
 
-from tests.conftest import AUTH_HEADERS, OTHER_AUTH_HEADERS
 from arhiteq_api.api import knowledge_bases as kb_module
+from tests.conftest import AUTH_HEADERS, OTHER_AUTH_HEADERS
 
 
 async def _create_kb(client):

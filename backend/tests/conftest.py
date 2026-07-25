@@ -1,4 +1,3 @@
-# ruff: noqa: E402 — env vars must be set before arhiteq_api imports
 import atexit
 import os
 import tempfile
@@ -8,15 +7,16 @@ import tempfile
 # (StaticPool), where a background task's session close() issues ROLLBACK on
 # that connection and can wipe a request's flushed-but-uncommitted UPDATE —
 # seen on CI as finalize returning 200 with the transcript silently lost.
-_db_file = tempfile.NamedTemporaryFile(prefix="arhiteq-test-", suffix=".sqlite", delete=False)
-_db_file.close()
+# mkstemp rather than NamedTemporaryFile: we want the path, not an open handle
+# (SQLite opens the file itself), so there is nothing to keep in a `with` block.
+_db_fd, _db_path = tempfile.mkstemp(prefix="arhiteq-test-", suffix=".sqlite")
+os.close(_db_fd)
 atexit.register(
     lambda: [
-        os.path.exists(p) and os.remove(p)
-        for p in (_db_file.name, _db_file.name + "-wal", _db_file.name + "-shm")
+        os.path.exists(p) and os.remove(p) for p in (_db_path, _db_path + "-wal", _db_path + "-shm")
     ]
 )
-os.environ["ARHITEQ_DATABASE_URL"] = f"sqlite+aiosqlite:///{_db_file.name}"
+os.environ["ARHITEQ_DATABASE_URL"] = f"sqlite+aiosqlite:///{_db_path}"
 os.environ["ARHITEQ_INTERNAL_TOKEN"] = "test-internal-token"
 os.environ["ARHITEQ_FUNCTION_SECRET"] = "test-function-secret"
 # Webhook targets in tests are fake hosts intercepted by respx — skip the
@@ -36,9 +36,9 @@ from sqlalchemy import event
 import arhiteq_api.db as db_module
 from arhiteq_api.api import batch_calls
 from arhiteq_api.auth import hash_key
-from arhiteq_api.services import webhooks
 from arhiteq_api.main import app
 from arhiteq_api.models import Agent, ApiKey, Base, PhoneNumber, RetellLLM, Workspace
+from arhiteq_api.services import webhooks
 
 API_KEY = "key_test_0123456789abcdef0123456789abcdef"
 AGENT_ID = "agent_sales0000000000000000000001"

@@ -1,6 +1,8 @@
 """Dashboard-only endpoints: analytics, contacts, alerts, QA cohorts,
 API-key management, webhook delivery log, workspace settings."""
 
+from datetime import UTC
+
 from tests.conftest import AGENT_ID, AUTH_HEADERS, FROM_NUMBER, OTHER_AUTH_HEADERS
 
 
@@ -379,7 +381,7 @@ async def test_qa_cohort_weekly_max_zero_scores_nothing(client):
 
 
 async def test_explicit_range_series_includes_every_counted_call(client):
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import update
 
@@ -388,7 +390,7 @@ async def test_explicit_range_series_includes_every_counted_call(client):
 
     await _place_call(client)
     # A UTC+3 browser sends local midnight = 21:00Z of the previous UTC day.
-    start_ms = int(datetime(2026, 6, 30, 21, tzinfo=timezone.utc).timestamp() * 1000)
+    start_ms = int(datetime(2026, 6, 30, 21, tzinfo=UTC).timestamp() * 1000)
     async with db_module.session_factory()() as session:
         # Call placed mid-morning local time: lands on the NEXT UTC day.
         await session.execute(update(Call).values(created_at_ms=start_ms + 12 * 3_600_000))

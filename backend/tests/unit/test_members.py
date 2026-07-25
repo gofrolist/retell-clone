@@ -2,7 +2,6 @@
 
 import time
 
-
 from arhiteq_api.api import auth_google
 from tests.conftest import AUTH_HEADERS, OTHER_AUTH_HEADERS, WORKSPACE_ID
 

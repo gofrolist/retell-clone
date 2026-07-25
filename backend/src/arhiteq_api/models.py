@@ -1,5 +1,5 @@
 import time
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlalchemy import (
     JSON,
@@ -69,7 +69,9 @@ DEFAULT_WEBHOOK_TIMEOUT_MS = 5000
 
 
 class Base(DeclarativeBase):
-    type_annotation_map = {dict[str, Any]: JSON, list[Any]: JSON}
+    # ClassVar keeps this out of declarative's mapped-attribute scan; it is
+    # SQLAlchemy configuration, not a column.
+    type_annotation_map: ClassVar[dict[Any, Any]] = {dict[str, Any]: JSON, list[Any]: JSON}
 
 
 # Operator-adjustable workspace knobs (Settings → Limits / Reliability /
@@ -95,7 +97,7 @@ DEFAULT_WORKSPACE_SETTINGS: dict[str, Any] = {
 }
 
 
-def workspace_settings(ws: "Workspace") -> dict[str, Any]:
+def workspace_settings(ws: Workspace) -> dict[str, Any]:
     """Workspace settings merged over defaults (sparse storage)."""
     merged = {**DEFAULT_WORKSPACE_SETTINGS, **(ws.settings or {})}
     merged["cps_limits"] = {
@@ -116,7 +118,7 @@ class Workspace(Base):
     settings: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     created_at_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
 
-    api_keys: Mapped[list["ApiKey"]] = relationship(back_populates="workspace")
+    api_keys: Mapped[list[ApiKey]] = relationship(back_populates="workspace")
 
 
 class ApiKey(Base):
