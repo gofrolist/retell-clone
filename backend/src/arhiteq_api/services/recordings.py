@@ -14,6 +14,7 @@ import asyncio
 import logging
 import os
 import re
+import threading
 from datetime import timedelta
 
 logger = logging.getLogger("arhiteq.recordings")
@@ -30,6 +31,14 @@ def _ttl() -> timedelta:
 # Cached across calls: auth.default() re-runs credential discovery and
 # refresh() is a live round trip to the GKE metadata server, so building both
 # per signed URL costs two network hops for a token that is valid ~1 hour.
+#
+# _sign runs under asyncio.to_thread, so this is genuinely concurrent. The lock
+# keeps a half-built cache from being observed: publishing the credentials
+# before the client exists would let another thread sign with storage_client
+# None, and a failure in storage.Client() would leave that state stuck for the
+# life of the process (sign_recording_url swallows the error and the caller
+# persists the *unsigned* URL, so the recording link breaks permanently).
+_signer_lock = threading.Lock()
 _credentials = None
 _storage_client = None
 
@@ -41,13 +50,16 @@ def _signer():
     from google.auth.transport import requests as ga_requests
     from google.cloud import storage
 
-    if _credentials is None:
-        _credentials, _ = auth.default()
-        _storage_client = storage.Client(credentials=_credentials)
-    if not _credentials.valid:
-        # refresh() populates token and, on GKE/GCE, the real SA email.
-        _credentials.refresh(ga_requests.Request())
-    return _credentials, _storage_client
+    with _signer_lock:
+        if _credentials is None:
+            credentials, _ = auth.default()
+            storage_client = storage.Client(credentials=credentials)
+            # Publish both together, only once both exist.
+            _credentials, _storage_client = credentials, storage_client
+        if not _credentials.valid:
+            # refresh() populates token and, on GKE/GCE, the real SA email.
+            _credentials.refresh(ga_requests.Request())
+        return _credentials, _storage_client
 
 
 def _sign(bucket: str, obj: str) -> str:

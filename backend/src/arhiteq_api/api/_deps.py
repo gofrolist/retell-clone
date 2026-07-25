@@ -6,7 +6,8 @@ the single contract-relevant artifact per router, and keyset pagination has one
 implementation of its (timestamp, id) tie-break.
 """
 
-from typing import Any, Mapping, TypeVar
+from collections.abc import Mapping
+from typing import Any, TypeVar
 
 from fastapi import HTTPException
 from sqlalchemy import tuple_
@@ -51,6 +52,11 @@ def apply_patch(
     default (Retell semantics: null clears the field) instead of writing a
     NULL that would either IntegrityError or corrupt the wire contract.
     """
+    # PATCH handlers hand us `await request.json()` unvalidated, so a body that
+    # is a JSON array or string reaches here. Reject it as a 422 rather than
+    # letting .items() raise AttributeError into an opaque 500.
+    if not isinstance(payload, Mapping):
+        raise HTTPException(422, detail="Request body must be a JSON object")
     for field, value in payload.items():
         if field not in fields:
             continue

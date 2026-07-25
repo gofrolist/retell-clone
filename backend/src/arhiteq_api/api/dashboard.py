@@ -16,7 +16,7 @@ from typing import Annotated, Any, Mapping, NamedTuple, Sequence
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BeforeValidator, Field, field_validator
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -515,24 +515,22 @@ async def list_contacts(
         await session.scalars(select(Contact).where(Contact.workspace_id == api_key.workspace_id))
     ).all()
     # Conversation stats come from the calls table, matched on either leg.
-    # Restricted to the numbers actually on screen: aggregating the whole
-    # workspace history would grow with total call volume forever.
+    # Aggregated DB-side (one row per number, not per call), and restricted to
+    # the numbers actually on screen so the scan doesn't grow with total
+    # workspace call volume forever.
     numbers = [c.phone_number for c in contacts if c.phone_number]
     stats: dict[str, tuple[int, int]] = {}
-    if numbers:
+    for number_col in (Call.to_number, Call.from_number):
+        if not numbers:
+            break
         result = await session.execute(
-            select(Call.to_number, Call.from_number, Call.created_at_ms).where(
-                Call.workspace_id == api_key.workspace_id,
-                or_(Call.to_number.in_(numbers), Call.from_number.in_(numbers)),
-            )
+            select(number_col, func.count(), func.max(Call.created_at_ms))
+            .where(Call.workspace_id == api_key.workspace_id, number_col.in_(numbers))
+            .group_by(number_col)
         )
-        wanted = set(numbers)
-        for to_number, from_number, created in result:
-            # A call matching on both legs counts once per leg, as before.
-            for number in (to_number, from_number):
-                if number in wanted:
-                    count, latest = stats.get(number, (0, 0))
-                    stats[number] = (count + 1, max(latest, created or 0))
+        for number, count, latest in result:
+            prev = stats.get(number, (0, 0))
+            stats[number] = (prev[0] + count, max(prev[1], latest or 0))
     return [
         _contact_to_dict(
             c,
