@@ -15,6 +15,7 @@ from fastapi.concurrency import run_in_threadpool
 from .. import security
 from ..config import get_settings
 from ..models import PhoneNumber
+from ..schemas import coerce_dynamic_variables
 from .metrics import INBOUND_RESOLUTIONS
 
 log = logging.getLogger(__name__)
@@ -62,7 +63,7 @@ async def resolve_inbound(
         if not isinstance(dyn, dict):
             dyn = {}
         INBOUND_RESOLUTIONS.labels(outcome="webhook_ok").inc()
-        return agent_id, {str(k): str(v) for k, v in dyn.items()}
+        return agent_id, coerce_dynamic_variables(dyn)
     except Exception as exc:  # noqa: BLE001 — any failure degrades, never drops
         # Log the exception *type* only: when the caller_secret is carried in
         # the query string, httpx exceptions stringify the full URL and would

@@ -5,7 +5,7 @@ fields are tolerated everywhere (`extra="allow"`) — Retell consumers may send
 fields we don't process, and rejecting them would break drop-in compatibility.
 """
 
-from typing import Any
+from typing import Any, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -14,6 +14,35 @@ from .models import WEBHOOK_EVENT_TYPES, Agent, Call, PhoneNumber, RetellLLM
 
 class CompatModel(BaseModel):
     model_config = ConfigDict(extra="allow")
+
+
+# ── Contract rules shared by request models and PATCH handlers ──────────────
+#
+# PATCH handlers take raw JSON (to tell an absent field from an explicit null),
+# so they bypass Pydantic. These helpers are the one definition of each rule, so
+# the create and update paths can't drift apart.
+
+WEBHOOK_TIMEOUT_MS_MIN = 1000
+WEBHOOK_TIMEOUT_MS_MAX = 30000
+
+
+def coerce_dynamic_variables(raw: Mapping[str, Any] | None) -> dict[str, str]:
+    """Dynamic variables are stored verbatim: arbitrary string keys, values
+    coerced to strings (contract: don't rename, don't drop)."""
+    return {str(k): str(v) for k, v in (raw or {}).items()}
+
+
+def normalize_webhook_events(v: list[str] | None) -> list[str] | None:
+    """Reject unknown event names, then de-dupe preserving the caller's order."""
+    if v is None:
+        return None
+    unknown = [e for e in v if e not in WEBHOOK_EVENT_TYPES]
+    if unknown:
+        raise ValueError(
+            f"unknown webhook event(s): {', '.join(map(str, unknown))}; "
+            f"allowed: {', '.join(WEBHOOK_EVENT_TYPES)}"
+        )
+    return list(dict.fromkeys(v))
 
 
 # ── Requests ────────────────────────────────────────────────────────────────
@@ -81,7 +110,9 @@ class CreateAgentRequest(CompatModel):
     webhook_url: str | None = None
     # Per-agent webhook overrides (dashboard "Webhook Settings"). Additive to
     # Retell's shape. timeout: null = platform default; events: null = all.
-    webhook_timeout_ms: int | None = Field(default=None, ge=1000, le=30000)
+    webhook_timeout_ms: int | None = Field(
+        default=None, ge=WEBHOOK_TIMEOUT_MS_MIN, le=WEBHOOK_TIMEOUT_MS_MAX
+    )
     webhook_events: list[str] | None = None
     boosted_keywords: list[str] | None = None
     pronunciation_dictionary: list[dict[str, Any]] | None = None
@@ -110,16 +141,7 @@ class CreateAgentRequest(CompatModel):
     @field_validator("webhook_events")
     @classmethod
     def _known_events(cls, v: list[str] | None) -> list[str] | None:
-        if v is None:
-            return None
-        unknown = [e for e in v if e not in WEBHOOK_EVENT_TYPES]
-        if unknown:
-            raise ValueError(
-                f"unknown webhook event(s): {', '.join(unknown)}; "
-                f"allowed: {', '.join(WEBHOOK_EVENT_TYPES)}"
-            )
-        # De-dupe while preserving the caller's order.
-        return list(dict.fromkeys(v))
+        return normalize_webhook_events(v)
 
 
 class TestWebhookRequest(CompatModel):
@@ -130,7 +152,9 @@ class TestWebhookRequest(CompatModel):
     """
 
     webhook_url: str | None = None
-    webhook_timeout_ms: int | None = Field(default=None, ge=1000, le=30000)
+    webhook_timeout_ms: int | None = Field(
+        default=None, ge=WEBHOOK_TIMEOUT_MS_MIN, le=WEBHOOK_TIMEOUT_MS_MAX
+    )
     event: str = "call_ended"
 
     @field_validator("event")

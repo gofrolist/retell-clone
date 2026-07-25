@@ -59,6 +59,42 @@ async def test_contact_crud_and_call_stats(client):
     assert (await client.get("/list-contacts", headers=AUTH_HEADERS)).json() == []
 
 
+async def test_contact_stats_count_every_call_on_both_legs(client):
+    """Stats are aggregated DB-side; multiple calls to one contact must sum,
+    and a contact with no calls must stay at zero rather than borrowing another
+    number's counts."""
+    await _place_call(client, to_number="+15550003333")
+    await _place_call(client, to_number="+15550003333")
+    for number in ("+15550003333", "+15550004444"):
+        assert (
+            await client.post(
+                "/create-contact", headers=AUTH_HEADERS, json={"phone_number": number}
+            )
+        ).status_code == 201
+
+    listed = (await client.get("/list-contacts", headers=AUTH_HEADERS)).json()
+    stats = {c["phone_number"]: c for c in listed}
+    assert stats["+15550003333"]["related_conversations"] == 2
+    assert stats["+15550003333"]["latest_conversation"] is not None
+    assert stats["+15550004444"]["related_conversations"] == 0
+    assert stats["+15550004444"]["latest_conversation"] is None
+
+
+async def test_patch_with_non_object_body_is_422_not_500(client):
+    """PATCH handlers read raw JSON to tell an absent field from an explicit
+    null, so a non-object body reaches apply_patch; it must be rejected."""
+    created = await client.post(
+        "/create-contact", headers=AUTH_HEADERS, json={"phone_number": "+15550005555"}
+    )
+    contact_id = created.json()["contact_id"]
+
+    for body in (["name"], "name"):
+        resp = await client.patch(f"/update-contact/{contact_id}", headers=AUTH_HEADERS, json=body)
+        assert resp.status_code == 422, resp.text
+        resp = await client.patch("/workspace", headers=AUTH_HEADERS, json=body)
+        assert resp.status_code == 422, resp.text
+
+
 async def test_agent_folder_crud_and_assignment(client):
     created = await client.post(
         "/create-agent-folder", headers=AUTH_HEADERS, json={"folder_name": "  Template Agents  "}

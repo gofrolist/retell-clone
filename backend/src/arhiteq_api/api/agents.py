@@ -1,24 +1,26 @@
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import security, signature
 from ..auth import require_api_key
 from ..db import get_session
 from ..models import (
     DEFAULT_WEBHOOK_TIMEOUT_MS,
-    WEBHOOK_EVENT_TYPES,
     Agent,
     AgentFolder,
     ApiKey,
-    Call,
     PhoneNumber,
     Workspace,
     now_ms,
 )
-from ..schemas import CreateAgentRequest, TestWebhookRequest, agent_to_dict
+from ..schemas import (
+    WEBHOOK_TIMEOUT_MS_MAX,
+    WEBHOOK_TIMEOUT_MS_MIN,
+    CreateAgentRequest,
+    TestWebhookRequest,
+    agent_to_dict,
+    normalize_webhook_events,
+)
 from ..services import webhooks
 from ._deps import apply_patch, get_owned
 from .chat_agents import CHAT_VOICE_ID
@@ -87,9 +89,9 @@ _MUTABLE_FIELDS = {
 def _validate_webhook_patch(payload: dict) -> None:
     """Validate + normalize the webhook overrides on PATCH, in place.
 
-    apply_patch writes raw payload values straight onto the ORM object, so this
-    has to mirror what CreateAgentRequest's Pydantic validators do: accept
-    integer-valued timeouts within bounds and de-dupe the event list.
+    apply_patch writes raw payload values straight onto the ORM object, so the
+    PATCH path has to apply the same rules CreateAgentRequest's validators do.
+    Both call the shared normalizers in schemas so they can't drift.
     """
     if "webhook_timeout_ms" in payload:
         t = payload["webhook_timeout_ms"]
@@ -99,24 +101,24 @@ def _validate_webhook_patch(payload: dict) -> None:
             if isinstance(t, bool) or not isinstance(t, (int, float)) or t != int(t):
                 raise HTTPException(422, detail="webhook_timeout_ms must be an integer")
             t = int(t)
-            if not 1000 <= t <= 30000:
-                raise HTTPException(422, detail="webhook_timeout_ms must be between 1000 and 30000")
+            if not WEBHOOK_TIMEOUT_MS_MIN <= t <= WEBHOOK_TIMEOUT_MS_MAX:
+                raise HTTPException(
+                    422,
+                    detail=(
+                        f"webhook_timeout_ms must be between {WEBHOOK_TIMEOUT_MS_MIN} "
+                        f"and {WEBHOOK_TIMEOUT_MS_MAX}"
+                    ),
+                )
             payload["webhook_timeout_ms"] = t
     if "webhook_events" in payload:
         events = payload["webhook_events"]
         if events is not None:
             if not isinstance(events, list):
                 raise HTTPException(422, detail="webhook_events must be a list or null")
-            unknown = [e for e in events if e not in WEBHOOK_EVENT_TYPES]
-            if unknown:
-                raise HTTPException(
-                    422,
-                    detail=(
-                        f"unknown webhook event(s): {', '.join(map(str, unknown))}; "
-                        f"allowed: {', '.join(WEBHOOK_EVENT_TYPES)}"
-                    ),
-                )
-            payload["webhook_events"] = list(dict.fromkeys(events))
+            try:
+                payload["webhook_events"] = normalize_webhook_events(events)
+            except ValueError as exc:
+                raise HTTPException(422, detail=str(exc)) from None
 
 
 async def _validate_folder_id(session, folder_id, workspace_id: str) -> None:
@@ -222,40 +224,6 @@ async def publish_agent(
     return agent_to_dict(agent)
 
 
-def _sample_call(agent: Agent) -> Call:
-    """A representative, non-persisted Call for the Test button.
-
-    Fed through webhooks.build_event_body so the signed sample stays byte-
-    identical in shape to a real delivery. Marked with metadata so consumers can
-    drop it if they choose.
-    """
-    ts = now_ms()
-    return Call(
-        call_id="call_test_webhook",
-        workspace_id=agent.workspace_id,
-        agent_id=agent.agent_id,
-        agent_version=agent.version,
-        agent_name=agent.agent_name,
-        call_type="web_call",
-        call_status="ended",
-        direction="outbound",
-        from_number="+15551234567",
-        to_number="+15557654321",
-        metadata_={"arhiteq_test": True},
-        start_timestamp=ts - 30_000,
-        end_timestamp=ts,
-        duration_ms=30_000,
-        disconnection_reason="agent_hangup",
-        transcript="Agent: This is a test webhook from Arhiteq.\nUser: Great, it works!",
-        call_analysis={
-            "call_summary": "Test webhook delivery from the Arhiteq dashboard.",
-            "user_sentiment": "Positive",
-            "call_successful": True,
-            "in_voicemail": False,
-        },
-    )
-
-
 @router.post("/test-agent-webhook/{agent_id}")
 async def test_agent_webhook(
     agent_id: str,
@@ -275,38 +243,16 @@ async def test_agent_webhook(
         url = ws.webhook_url if ws is not None else None
     if not url:
         raise HTTPException(422, detail="No webhook URL configured to test")
-    try:
-        # DNS resolution is blocking; keep it off the event loop (and this is the
-        # SSRF gate — the URL is user-supplied).
-        await run_in_threadpool(security.assert_url_safe, url)
-    except security.UnsafeUrlError as exc:
-        raise HTTPException(422, detail=f"Refusing to send to unsafe URL: {exc}")
-
-    key = await webhooks.signing_key(session, api_key.workspace_id)
-    if key is None:
-        raise HTTPException(409, detail="No active API key available to sign the webhook")
-
-    raw_body = webhooks.build_event_body(body.event, _sample_call(agent))
-    timeout_ms = body.webhook_timeout_ms or agent.webhook_timeout_ms or DEFAULT_WEBHOOK_TIMEOUT_MS
-    timeout = timeout_ms / 1000
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                url,
-                content=raw_body,
-                headers={
-                    "content-type": "application/json",
-                    signature.SIGNATURE_HEADER: signature.sign(raw_body, key),
-                },
-            )
-    except httpx.HTTPError as exc:
-        return {"ok": False, "status_code": None, "error": str(exc)}
-    ok = 200 <= resp.status_code < 300
-    return {
-        "ok": ok,
-        "status_code": resp.status_code,
-        "error": None if ok else f"HTTP {resp.status_code}",
-    }
+    return await webhooks.send_test_event(
+        session,
+        api_key.workspace_id,
+        url=url,
+        event=body.event,
+        call=webhooks.sample_call(agent.workspace_id, agent),
+        timeout_ms=(
+            body.webhook_timeout_ms or agent.webhook_timeout_ms or DEFAULT_WEBHOOK_TIMEOUT_MS
+        ),
+    )
 
 
 @router.delete("/delete-agent/{agent_id}", status_code=204)

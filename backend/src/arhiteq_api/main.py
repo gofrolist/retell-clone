@@ -36,105 +36,61 @@ from .security import (
 logging.basicConfig(level=logging.INFO)
 
 
+# (table, column, DDL type) for columns added after their table shipped.
+# Append here when a model grows a column; the loop below does the rest.
+_COLUMN_BACKFILLS: tuple[tuple[str, str, str], ...] = (
+    ("agents", "folder_id", "VARCHAR(64)"),
+    ("agents", "webhook_timeout_ms", "BIGINT"),
+    ("agents", "webhook_events", "JSON"),
+    ("agents", "pii_config", "JSON"),
+    ("agents", "fallback_voice_ids", "JSON"),
+    ("agents", "allow_user_dtmf", "BOOLEAN DEFAULT TRUE"),
+    ("agents", "allow_dtmf_interruption", "BOOLEAN DEFAULT FALSE"),
+    ("agents", "user_dtmf_options", "JSON"),
+    ("agents", "opt_in_signed_url", "BOOLEAN DEFAULT FALSE"),
+    ("agents", "ivr_option", "JSON"),
+    ("agents", "call_screening_option", "JSON"),
+    ("retell_llms", "mcps", "JSON"),
+    ("calls", "collected_dynamic_variables", "JSON"),
+    ("contacts", "timezone", "VARCHAR(64)"),
+    ("contacts", "custom_fields", "JSON"),
+    ("phone_numbers", "fallback_number", "VARCHAR(20)"),
+    ("workspaces", "settings", "JSON"),
+    ("alerts", "compare_to", "VARCHAR(16) DEFAULT 'value'"),
+    ("batch_calls", "reserved_concurrency", "INTEGER"),
+    ("batch_calls", "call_time_window", "JSON"),
+    ("qa_cohorts", "min_duration_s", "INTEGER"),
+    ("qa_cohorts", "success_criteria", "TEXT"),
+    ("qa_cohorts", "scoring_metric", "VARCHAR(32) DEFAULT 'call_successful'"),
+)
+
+# Indexes on backfilled columns. CREATE INDEX IF NOT EXISTS is idempotent on
+# its own, so these run unconditionally.
+_BACKFILL_INDEXES: tuple[str, ...] = (
+    "CREATE INDEX IF NOT EXISTS ix_agents_folder_id ON agents (folder_id)",
+)
+
+
 def _apply_column_backfills(sync_conn) -> None:
     """Additive schema fixups for columns added after a table shipped.
 
     create_all only creates missing *tables*, so pre-existing databases need
     new columns added by hand. Everything here must be idempotent.
     """
+    # IF NOT EXISTS guards concurrent replica boots racing past the inspect()
+    # check (Postgres only; SQLite dev/test DBs are single-process and get the
+    # column from create_all anyway).
     guard = "IF NOT EXISTS " if sync_conn.dialect.name == "postgresql" else ""
+    inspector = inspect(sync_conn)
+    existing: dict[str, set[str]] = {}
 
-    agent_cols = {c["name"] for c in inspect(sync_conn).get_columns("agents")}
-    if "folder_id" not in agent_cols:
-        # IF NOT EXISTS guards concurrent replica boots racing past the
-        # inspect() check (Postgres only; SQLite dev/test DBs are
-        # single-process and get the column from create_all anyway).
-        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}folder_id VARCHAR(64)"))
-        sync_conn.execute(
-            text("CREATE INDEX IF NOT EXISTS ix_agents_folder_id ON agents (folder_id)")
-        )
-    if "webhook_timeout_ms" not in agent_cols:
-        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}webhook_timeout_ms BIGINT"))
-    if "webhook_events" not in agent_cols:
-        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}webhook_events JSON"))
-    if "pii_config" not in agent_cols:
-        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}pii_config JSON"))
-    if "fallback_voice_ids" not in agent_cols:
-        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}fallback_voice_ids JSON"))
-    if "allow_user_dtmf" not in agent_cols:
-        sync_conn.execute(
-            text(f"ALTER TABLE agents ADD COLUMN {guard}allow_user_dtmf BOOLEAN DEFAULT TRUE")
-        )
-    if "allow_dtmf_interruption" not in agent_cols:
-        sync_conn.execute(
-            text(
-                f"ALTER TABLE agents ADD COLUMN {guard}allow_dtmf_interruption BOOLEAN "
-                "DEFAULT FALSE"
-            )
-        )
-    if "user_dtmf_options" not in agent_cols:
-        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}user_dtmf_options JSON"))
-    if "opt_in_signed_url" not in agent_cols:
-        sync_conn.execute(
-            text(f"ALTER TABLE agents ADD COLUMN {guard}opt_in_signed_url BOOLEAN DEFAULT FALSE")
-        )
-    if "ivr_option" not in agent_cols:
-        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}ivr_option JSON"))
-    if "call_screening_option" not in agent_cols:
-        sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {guard}call_screening_option JSON"))
+    for table, column, ddl in _COLUMN_BACKFILLS:
+        columns = existing.setdefault(table, {c["name"] for c in inspector.get_columns(table)})
+        if column not in columns:
+            sync_conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {guard}{column} {ddl}"))
 
-    llm_cols = {c["name"] for c in inspect(sync_conn).get_columns("retell_llms")}
-    if "mcps" not in llm_cols:
-        sync_conn.execute(text(f"ALTER TABLE retell_llms ADD COLUMN {guard}mcps JSON"))
-
-    call_cols = {c["name"] for c in inspect(sync_conn).get_columns("calls")}
-    if "collected_dynamic_variables" not in call_cols:
-        sync_conn.execute(
-            text(f"ALTER TABLE calls ADD COLUMN {guard}collected_dynamic_variables JSON")
-        )
-
-    contact_cols = {c["name"] for c in inspect(sync_conn).get_columns("contacts")}
-    if "timezone" not in contact_cols:
-        sync_conn.execute(text(f"ALTER TABLE contacts ADD COLUMN {guard}timezone VARCHAR(64)"))
-    if "custom_fields" not in contact_cols:
-        sync_conn.execute(text(f"ALTER TABLE contacts ADD COLUMN {guard}custom_fields JSON"))
-
-    phone_cols = {c["name"] for c in inspect(sync_conn).get_columns("phone_numbers")}
-    if "fallback_number" not in phone_cols:
-        sync_conn.execute(
-            text(f"ALTER TABLE phone_numbers ADD COLUMN {guard}fallback_number VARCHAR(20)")
-        )
-
-    workspace_cols = {c["name"] for c in inspect(sync_conn).get_columns("workspaces")}
-    if "settings" not in workspace_cols:
-        sync_conn.execute(text(f"ALTER TABLE workspaces ADD COLUMN {guard}settings JSON"))
-
-    alert_cols = {c["name"] for c in inspect(sync_conn).get_columns("alerts")}
-    if "compare_to" not in alert_cols:
-        sync_conn.execute(
-            text(f"ALTER TABLE alerts ADD COLUMN {guard}compare_to VARCHAR(16) DEFAULT 'value'")
-        )
-
-    batch_cols = {c["name"] for c in inspect(sync_conn).get_columns("batch_calls")}
-    if "reserved_concurrency" not in batch_cols:
-        sync_conn.execute(
-            text(f"ALTER TABLE batch_calls ADD COLUMN {guard}reserved_concurrency INTEGER")
-        )
-    if "call_time_window" not in batch_cols:
-        sync_conn.execute(text(f"ALTER TABLE batch_calls ADD COLUMN {guard}call_time_window JSON"))
-
-    cohort_cols = {c["name"] for c in inspect(sync_conn).get_columns("qa_cohorts")}
-    if "min_duration_s" not in cohort_cols:
-        sync_conn.execute(text(f"ALTER TABLE qa_cohorts ADD COLUMN {guard}min_duration_s INTEGER"))
-    if "success_criteria" not in cohort_cols:
-        sync_conn.execute(text(f"ALTER TABLE qa_cohorts ADD COLUMN {guard}success_criteria TEXT"))
-    if "scoring_metric" not in cohort_cols:
-        sync_conn.execute(
-            text(
-                f"ALTER TABLE qa_cohorts ADD COLUMN {guard}scoring_metric VARCHAR(32) "
-                "DEFAULT 'call_successful'"
-            )
-        )
+    for statement in _BACKFILL_INDEXES:
+        sync_conn.execute(text(statement))
 
 
 @asynccontextmanager

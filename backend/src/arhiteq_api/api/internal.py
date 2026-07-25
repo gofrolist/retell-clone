@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..auth import require_internal_token
 from ..db import get_session, session_factory
 from ..models import Agent, Call, Contact, PhoneNumber, RetellLLM, now_ms
-from ..schemas import agent_to_dict, llm_to_dict
+from ..schemas import agent_to_dict, coerce_dynamic_variables, llm_to_dict
 from ..services import inbound as inbound_svc
 from ..services import webhooks
 from ..services.analysis import analyze_call
@@ -41,7 +41,7 @@ async def _call_config(call: Call, session: AsyncSession) -> dict[str, Any]:
     llm = await session.get(RetellLLM, llm_id) if llm_id else None
     dyn: dict[str, str] = {}
     if llm is not None and llm.default_dynamic_variables:
-        dyn.update({str(k): str(v) for k, v in llm.default_dynamic_variables.items()})
+        dyn.update(coerce_dynamic_variables(llm.default_dynamic_variables))
     dyn.update(call.retell_llm_dynamic_variables or {})
     return {
         "call_id": call.call_id,

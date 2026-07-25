@@ -13,7 +13,7 @@ import time
 from collections import defaultdict, deque
 from urllib.parse import urlparse
 
-from fastapi import HTTPException, Request
+from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -170,11 +170,3 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "Strict-Transport-Security", "max-age=63072000; includeSubDomains"
             )
         return response
-
-
-def require_https_url(url: str) -> None:
-    """422 helper for endpoints that persist customer webhook URLs."""
-    try:
-        assert_url_safe(url)
-    except UnsafeUrlError as exc:
-        raise HTTPException(422, detail=f"Rejected webhook URL: {exc}") from exc

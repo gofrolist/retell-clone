@@ -21,6 +21,7 @@ from ..db import get_session
 from ..ids import new_knowledge_base_id, new_source_id
 from ..models import ApiKey, KnowledgeBase, KnowledgeBaseFile, now_ms
 from ..schemas_extra import knowledge_base_to_dict
+from ._deps import get_owned
 
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["knowledge-bases"])
@@ -162,10 +163,13 @@ async def _build_sources_inner(
 async def _get_workspace_kb(
     session: AsyncSession, workspace_id: str, knowledge_base_id: str
 ) -> KnowledgeBase:
-    kb = await session.get(KnowledgeBase, knowledge_base_id)
-    if kb is None or kb.workspace_id != workspace_id:
-        raise HTTPException(404, detail="Knowledge base not found")
-    return kb
+    return await get_owned(
+        session,
+        KnowledgeBase,
+        knowledge_base_id,
+        workspace_id,
+        detail="Knowledge base not found",
+    )
 
 
 @router.post("/create-knowledge-base", status_code=201)

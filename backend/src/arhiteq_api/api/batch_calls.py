@@ -8,9 +8,11 @@ from ..auth import require_api_key
 from ..db import get_session, session_factory
 from ..ids import new_batch_call_id, new_call_id
 from ..models import Agent, ApiKey, BatchCall, Call, PhoneNumber, now_ms
+from ..schemas import coerce_dynamic_variables
 from ..schemas_extra import CreateBatchCallRequest
 from ..services import telephony
 from . import concurrency
+from ._deps import get_owned
 
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["batch-calls"])
@@ -90,14 +92,24 @@ async def create_batch_call(
     if not body.tasks:
         raise HTTPException(422, detail="tasks must not be empty")
 
-    number = await session.get(PhoneNumber, body.from_number)
-    if number is None or number.workspace_id != api_key.workspace_id:
-        raise HTTPException(422, detail=f"from_number {body.from_number} not found in workspace")
+    number = await get_owned(
+        session,
+        PhoneNumber,
+        body.from_number,
+        api_key.workspace_id,
+        detail=f"from_number {body.from_number} not found in workspace",
+        status=422,
+    )
     if not number.outbound_agent_id:
         raise HTTPException(422, detail="No outbound agent bound to from_number")
-    agent = await session.get(Agent, number.outbound_agent_id)
-    if agent is None:
-        raise HTTPException(422, detail=f"agent {number.outbound_agent_id} not found")
+    agent = await get_owned(
+        session,
+        Agent,
+        number.outbound_agent_id,
+        api_key.workspace_id,
+        detail=f"agent {number.outbound_agent_id} not found",
+        status=422,
+    )
 
     scheduled = body.trigger_timestamp is not None
     batch = BatchCall(
@@ -115,7 +127,7 @@ async def create_batch_call(
 
     calls: list[Call] = []
     for task in body.tasks:
-        dyn = {str(k): str(v) for k, v in (task.retell_llm_dynamic_variables or {}).items()}
+        dyn = coerce_dynamic_variables(task.retell_llm_dynamic_variables)
         call = Call(
             call_id=new_call_id(),
             workspace_id=api_key.workspace_id,
