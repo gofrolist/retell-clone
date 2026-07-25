@@ -1,7 +1,10 @@
+import logging
 from functools import lru_cache
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+log = logging.getLogger(__name__)
 
 
 def _shared(name: str) -> AliasChoices:
@@ -93,10 +96,24 @@ class Settings(BaseSettings):
     # How long a workspace invite link stays redeemable.
     invite_ttl_hours: int = 168
 
+    @property
+    def effective_public_livekit_url(self) -> str:
+        """Browser-facing LiveKit URL, falling back to the internal one."""
+        return self.public_livekit_url or self.livekit_url
+
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    if not settings.public_livekit_url:
+        # lru_cache makes this once per process, at the point the fallback
+        # becomes reachable rather than on the first web call that trips it.
+        log.warning(
+            "ARHITEQ_PUBLIC_LIVEKIT_URL is not set; returning LIVEKIT_URL (%s) as "
+            "livekit_server_url — fine for local dev, wrong (and internal) anywhere else",
+            settings.livekit_url,
+        )
+    return settings
 
 
 def public_base_url() -> str:

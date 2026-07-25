@@ -13,8 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import require_api_key
 from ..db import get_session
-from ..models import Agent, ApiKey, now_ms
+from ..models import Agent, ApiKey
 from ..schemas import CompatModel, ResponseEngine
+from ._deps import apply_patch, get_owned
 
 router = APIRouter(tags=["chat-agents"])
 
@@ -46,10 +47,16 @@ def chat_agent_to_dict(agent: Agent) -> dict[str, Any]:
     }
 
 
-def _is_chat_agent(agent: Agent | None, workspace_id: str) -> bool:
-    return (
-        agent is not None and agent.workspace_id == workspace_id and agent.voice_id == CHAT_VOICE_ID
-    )
+async def _get_chat_agent(session: AsyncSession, agent_id: str, workspace_id: str) -> Agent:
+    """Workspace-scoped lookup restricted to chat agents.
+
+    Mirrors agents._get_voice_agent in the opposite polarity: the CHAT_VOICE_ID
+    sentinel is what separates the two surfaces over one Agent table.
+    """
+    agent = await get_owned(session, Agent, agent_id, workspace_id, detail="Chat agent not found")
+    if agent.voice_id != CHAT_VOICE_ID:
+        raise HTTPException(404, detail="Chat agent not found")
+    return agent
 
 
 @router.post("/create-chat-agent", status_code=201)
@@ -81,9 +88,7 @@ async def get_chat_agent(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    agent = await session.get(Agent, agent_id)
-    if not _is_chat_agent(agent, api_key.workspace_id):
-        raise HTTPException(404, detail="Chat agent not found")
+    agent = await _get_chat_agent(session, agent_id, api_key.workspace_id)
     return chat_agent_to_dict(agent)
 
 
@@ -109,15 +114,9 @@ async def update_chat_agent(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    agent = await session.get(Agent, agent_id)
-    if not _is_chat_agent(agent, api_key.workspace_id):
-        raise HTTPException(404, detail="Chat agent not found")
+    agent = await _get_chat_agent(session, agent_id, api_key.workspace_id)
     payload = await request.json()
-    for field, value in payload.items():
-        if field in _MUTABLE_FIELDS:
-            setattr(agent, field, value)
-    agent.version += 1
-    agent.last_modification_timestamp = now_ms()
+    apply_patch(agent, payload, _MUTABLE_FIELDS, bump_version=True, touch=True)
     await session.commit()
     return chat_agent_to_dict(agent)
 
@@ -128,8 +127,6 @@ async def delete_chat_agent(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    agent = await session.get(Agent, agent_id)
-    if not _is_chat_agent(agent, api_key.workspace_id):
-        raise HTTPException(404, detail="Chat agent not found")
+    agent = await _get_chat_agent(session, agent_id, api_key.workspace_id)
     await session.delete(agent)
     await session.commit()

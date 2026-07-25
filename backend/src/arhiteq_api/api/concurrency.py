@@ -1,6 +1,6 @@
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,8 +14,6 @@ router = APIRouter(tags=["concurrency"])
 # setting (Settings → Limits), free up to CONCURRENCY_PURCHASE_LIMIT.
 BASE_CONCURRENCY = 20
 CONCURRENCY_PURCHASE_LIMIT = 100
-# Fallback when a workspace row is missing (shouldn't happen in practice).
-CONCURRENCY_LIMIT = BASE_CONCURRENCY
 
 
 def _burst_limit(normal_limit: int) -> int:
@@ -106,6 +104,21 @@ async def count_live_calls(
     if outbound_only:
         query = query.where(or_(Call.direction != "inbound", Call.call_type == "web_call"))
     return await session.scalar(query) or 0
+
+
+async def assert_outbound_capacity(session: AsyncSession, workspace_id: str) -> None:
+    """Admit one new outbound (or web) call, or raise 429.
+
+    Retell signals a full channel pool with 429; consumers match
+    /concurrency limit|429/i and re-queue instead of marking the lead failed.
+    Only calls drawing on the outbound budget count against it: live inbound
+    traffic above its reservation must not starve outbound dialing.
+    """
+    await expire_stale_web_calls(session, workspace_id)
+    limit = await effective_concurrency_limit(session, workspace_id)
+    live = await count_live_calls(session, workspace_id, outbound_only=True)
+    if live >= limit:
+        raise HTTPException(429, detail=f"Concurrency limit reached ({limit})")
 
 
 @router.get("/get-concurrency")

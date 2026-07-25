@@ -3,13 +3,14 @@ import secrets
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, tuple_
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import require_api_key
 from ..config import get_settings
 from ..db import get_session
 from ..models import Agent, ApiKey, Chat, RetellLLM, now_ms
+from ..schemas import coerce_dynamic_variables
 from ..services.gemini import build_genai_client, genai_credentials_available, is_live_model
 from ..services.template_variables import ChatVariables, resolve_template
 from ..schemas_extra import (
@@ -18,7 +19,7 @@ from ..schemas_extra import (
     ListChatsRequest,
     chat_to_dict,
 )
-from ._deps import get_owned
+from ._deps import apply_keyset_page, get_owned
 
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["chats"])
@@ -50,7 +51,7 @@ def _resolve_chat_prompt(general_prompt: str, chat: Chat) -> str:
     # the current_time family) resolve underneath user-supplied dynamic
     # variables, with the same template semantics as voice calls.
     variables = ChatVariables(
-        {str(k): str(v) for k, v in (chat.retell_llm_dynamic_variables or {}).items()},
+        coerce_dynamic_variables(chat.retell_llm_dynamic_variables),
         chat_id=chat.chat_id,
         start_timestamp_ms=chat.start_timestamp,
     )
@@ -122,9 +123,7 @@ async def create_chat(
         chat_status="ongoing",
         messages=[],
         metadata_=body.metadata,
-        retell_llm_dynamic_variables={
-            str(k): str(v) for k, v in (body.retell_llm_dynamic_variables or {}).items()
-        },
+        retell_llm_dynamic_variables=coerce_dynamic_variables(body.retell_llm_dynamic_variables),
     )
     session.add(chat)
     await session.commit()
@@ -170,18 +169,15 @@ async def list_chats_v3(
         values = statuses.get("value") if isinstance(statuses, dict) else statuses
         if values:
             q = q.where(Chat.chat_status.in_(values))
-    # Tie-break on chat_id so same-millisecond rows aren't skipped by the anchor.
-    ascending = body.sort_order == "ascending"
-    if body.pagination_key:
-        anchor = await session.get(Chat, body.pagination_key)
-        if anchor is not None:
-            key = tuple_(Chat.created_at_ms, Chat.chat_id)
-            bound = (anchor.created_at_ms, anchor.chat_id)
-            q = q.where(key > bound if ascending else key < bound)
-    if ascending:
-        q = q.order_by(Chat.created_at_ms.asc(), Chat.chat_id.asc())
-    else:
-        q = q.order_by(Chat.created_at_ms.desc(), Chat.chat_id.desc())
+    q = await apply_keyset_page(
+        session,
+        q,
+        Chat,
+        Chat.created_at_ms,
+        Chat.chat_id,
+        pagination_key=body.pagination_key,
+        ascending=body.sort_order == "ascending",
+    )
     rows = (await session.scalars(q.limit(body.limit + 1))).all()
     has_more = len(rows) > body.limit
     rows = rows[: body.limit]

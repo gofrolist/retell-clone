@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import select, tuple_
+from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import require_api_key
 from ..db import get_session
-from ..models import ApiKey, ConversationFlow, now_ms
+from ..models import ApiKey, ConversationFlow
 from ..schemas_extra import CreateConversationFlowRequest, conversation_flow_to_dict
+from ._deps import apply_keyset_page, apply_patch, get_owned
 
 router = APIRouter(tags=["conversation-flows"])
 
@@ -23,10 +24,13 @@ _MUTABLE_FIELDS = {
 async def _get_workspace_flow(
     session: AsyncSession, workspace_id: str, conversation_flow_id: str
 ) -> ConversationFlow:
-    flow = await session.get(ConversationFlow, conversation_flow_id)
-    if flow is None or flow.workspace_id != workspace_id:
-        raise HTTPException(404, detail="Conversation flow not found")
-    return flow
+    return await get_owned(
+        session,
+        ConversationFlow,
+        conversation_flow_id,
+        workspace_id,
+        detail="Conversation flow not found",
+    )
 
 
 @router.post("/create-conversation-flow", status_code=201)
@@ -72,22 +76,15 @@ async def list_conversation_flows(
     session: AsyncSession = Depends(get_session),
 ):
     q = select(ConversationFlow).where(ConversationFlow.workspace_id == api_key.workspace_id)
-    # Tie-break on the id so same-millisecond rows aren't skipped by the anchor.
-    ascending = sort_order == "ascending"
-    if pagination_key:
-        anchor = await session.get(ConversationFlow, pagination_key)
-        if anchor is not None:
-            key = tuple_(ConversationFlow.created_at_ms, ConversationFlow.conversation_flow_id)
-            bound = (anchor.created_at_ms, anchor.conversation_flow_id)
-            q = q.where(key > bound if ascending else key < bound)
-    if ascending:
-        q = q.order_by(
-            ConversationFlow.created_at_ms.asc(), ConversationFlow.conversation_flow_id.asc()
-        )
-    else:
-        q = q.order_by(
-            ConversationFlow.created_at_ms.desc(), ConversationFlow.conversation_flow_id.desc()
-        )
+    q = await apply_keyset_page(
+        session,
+        q,
+        ConversationFlow,
+        ConversationFlow.created_at_ms,
+        ConversationFlow.conversation_flow_id,
+        pagination_key=pagination_key,
+        ascending=sort_order == "ascending",
+    )
     # Fetch one extra row to compute has_more without a count query.
     rows = (await session.scalars(q.limit(limit + 1))).all()
     has_more = len(rows) > limit
@@ -108,11 +105,7 @@ async def update_conversation_flow(
 ):
     flow = await _get_workspace_flow(session, api_key.workspace_id, conversation_flow_id)
     payload = await request.json()
-    for field, value in payload.items():
-        if field in _MUTABLE_FIELDS:
-            setattr(flow, field, value)
-    flow.version += 1
-    flow.last_modification_timestamp = now_ms()
+    apply_patch(flow, payload, _MUTABLE_FIELDS, bump_version=True, touch=True)
     await session.commit()
     return conversation_flow_to_dict(flow)
 

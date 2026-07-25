@@ -6,27 +6,26 @@ webhook delivery log, and workspace settings. All additive — nothing here
 changes the public Retell-compatible surface.
 """
 
+import asyncio
 import re
 from collections import Counter
 from hashlib import sha256
 from datetime import datetime, timezone
-from typing import Any, NamedTuple
+from typing import Annotated, Any, Mapping, NamedTuple, Sequence
 
+import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import Field, field_validator
-from sqlalchemy import func, select, update
+from pydantic import BeforeValidator, Field, field_validator
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import httpx
-from fastapi.concurrency import run_in_threadpool
-
-from .. import security, signature
 from ..auth import hash_key, require_api_key
 from ..config import get_settings
 from ..db import get_session
 from ..ids import new_api_key, new_invite_token
 from ..models import (
+    DEFAULT_WEBHOOK_TIMEOUT_MS,
     DEFAULT_WORKSPACE_SETTINGS,
     Agent,
     AgentFolder,
@@ -49,14 +48,13 @@ from ..models import (
     now_ms,
     workspace_settings,
 )
-from ..schemas import TestWebhookRequest
+from ..schemas import CompatModel, TestWebhookRequest
 from ..services import webhooks
 from ..services.gemini import build_genai_client, genai_credentials_available
-from .concurrency import BASE_CONCURRENCY, CONCURRENCY_PURCHASE_LIMIT
-from ..schemas import CompatModel
 from ..sessions import email_from_authorization
-from ._deps import get_owned
+from ._deps import apply_patch, get_owned
 from .auth_google import _email_allowed
+from .concurrency import BASE_CONCURRENCY, CONCURRENCY_PURCHASE_LIMIT
 
 router = APIRouter(tags=["dashboard"])
 
@@ -128,7 +126,7 @@ def _day(ts_ms: int) -> str:
     return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
-def _series(counts: dict[str, float], start_ms: int, days: int) -> list[dict[str, Any]]:
+def _series(counts: Mapping[str, float], start_ms: int, days: int) -> list[dict[str, Any]]:
     """Dense day series over the window (charts need every day present)."""
     return [
         {"date": day, "value": counts.get(day, 0)}
@@ -167,14 +165,26 @@ async def call_analytics(
 ):
     start_ms, end_ms, days = _window(days, start_ms, end_ms)
     agent_ids = request.query_params.getlist("agent_id")
-    query = select(Call).where(
+    # Column-scoped: the aggregation below reads nine small fields, so selecting
+    # whole Call rows would ship every transcript in the window to count them.
+    query = select(
+        Call.created_at_ms,
+        Call.start_timestamp,
+        Call.duration_ms,
+        Call.call_analysis,
+        Call.disconnection_reason,
+        Call.direction,
+        Call.agent_id,
+        Call.agent_name,
+        Call.latency,
+    ).where(
         Call.workspace_id == api_key.workspace_id,
         Call.created_at_ms >= start_ms,
         Call.created_at_ms <= end_ms + DAY_MS,  # tolerate end-of-day timestamps
     )
     if agent_ids:
         query = query.where(Call.agent_id.in_(agent_ids))
-    rows = (await session.scalars(query)).all()
+    rows = (await session.execute(query)).all()
 
     durations = [c.duration_ms for c in rows if c.duration_ms]
     latencies: list[float] = []
@@ -184,11 +194,14 @@ async def call_analytics(
     reasons: Counter = Counter()
     sentiments: Counter = Counter()
     directions: Counter = Counter()
+    grouping = group_by if group_by in ("agent", "direction") else None
+    group_counts: dict[str, Counter] = {}
 
     for c in rows:
-        day_counts[_day(c.start_timestamp or c.created_at_ms)] += 1
+        day = _day(c.start_timestamp or c.created_at_ms)
+        day_counts[day] += 1
         if c.duration_ms:
-            day_minutes[_day(c.start_timestamp or c.created_at_ms)] += c.duration_ms / 60_000
+            day_minutes[day] += c.duration_ms / 60_000
         analysis = c.call_analysis or {}
         if (ok := analysis.get("call_successful")) is not None:
             successful["Successful" if ok else "Unsuccessful"] += 1
@@ -200,12 +213,19 @@ async def call_analytics(
         e2e = (c.latency or {}).get("e2e") or {}
         if isinstance(e2e, dict) and e2e.get("p50"):
             latencies.append(e2e["p50"])
+        if grouping:
+            # Per-group daily call-count series (small-multiples chart),
+            # accumulated in the same pass rather than re-walking rows.
+            name = (
+                (c.agent_name or c.agent_id) if grouping == "agent" else (c.direction or "unknown")
+            )
+            group_counts.setdefault(name, Counter())[day] += 1
 
     out: dict[str, Any] = {
         "call_counts": len(rows),
         "avg_duration_s": round(sum(durations) / len(durations) / 1000, 1) if durations else 0,
         "avg_latency_ms": round(sum(latencies) / len(latencies)) if latencies else 0,
-        "call_counts_series": _series(dict(day_counts), start_ms, days),
+        "call_counts_series": _series(day_counts, start_ms, days),
         "concurrency_series": _series(
             {d: round(m, 1) for d, m in day_minutes.items()}, start_ms, days
         ),
@@ -215,18 +235,9 @@ async def call_analytics(
         "phone_direction": _breakdown(directions),
     }
 
-    # Breakdown: per-group daily call-count series (small-multiples chart).
-    if group_by in ("agent", "direction"):
-        group_counts: dict[str, Counter] = {}
-        for c in rows:
-            name = (
-                (c.agent_name or c.agent_id) if group_by == "agent" else (c.direction or "unknown")
-            )
-            group_counts.setdefault(name, Counter())[
-                _day(c.start_timestamp or c.created_at_ms)
-            ] += 1
+    if grouping:
         out["call_counts_groups"] = [
-            {"name": name, "series": _series(dict(counts), start_ms, days)}
+            {"name": name, "series": _series(counts, start_ms, days)}
             for name, counts in sorted(group_counts.items(), key=lambda kv: -sum(kv[1].values()))[
                 :12
             ]
@@ -280,8 +291,8 @@ async def chat_analytics(
         "avg_duration_s": round(sum(durations_ms) / len(durations_ms) / 1000, 1)
         if durations_ms
         else 0,
-        "chat_counts_series": _series(dict(day_counts), start_ms, days),
-        "messages_series": _series(dict(day_messages), start_ms, days),
+        "chat_counts_series": _series(day_counts, start_ms, days),
+        "messages_series": _series(day_messages, start_ms, days),
         "chat_status": _breakdown(statuses),
         "chat_agent": _breakdown(agents),
     }
@@ -492,6 +503,9 @@ class CreateContactRequest(CompatModel):
     custom_fields: dict[str, Any] | None = None
 
 
+_CONTACT_MUTABLE_FIELDS = set(CreateContactRequest.model_fields)
+
+
 @router.get("/list-contacts")
 async def list_contacts(
     api_key: ApiKey = Depends(require_api_key),
@@ -501,16 +515,24 @@ async def list_contacts(
         await session.scalars(select(Contact).where(Contact.workspace_id == api_key.workspace_id))
     ).all()
     # Conversation stats come from the calls table, matched on either leg.
+    # Restricted to the numbers actually on screen: aggregating the whole
+    # workspace history would grow with total call volume forever.
+    numbers = [c.phone_number for c in contacts if c.phone_number]
     stats: dict[str, tuple[int, int]] = {}
-    for number_col in (Call.to_number, Call.from_number):
+    if numbers:
         result = await session.execute(
-            select(number_col, func.count(), func.max(Call.created_at_ms))
-            .where(Call.workspace_id == api_key.workspace_id, number_col.is_not(None))
-            .group_by(number_col)
+            select(Call.to_number, Call.from_number, Call.created_at_ms).where(
+                Call.workspace_id == api_key.workspace_id,
+                or_(Call.to_number.in_(numbers), Call.from_number.in_(numbers)),
+            )
         )
-        for number, count, latest in result:
-            prev = stats.get(number, (0, 0))
-            stats[number] = (prev[0] + count, max(prev[1], latest or 0))
+        wanted = set(numbers)
+        for to_number, from_number, created in result:
+            # A call matching on both legs counts once per leg, as before.
+            for number in (to_number, from_number):
+                if number in wanted:
+                    count, latest = stats.get(number, (0, 0))
+                    stats[number] = (count + 1, max(latest, created or 0))
     return [
         _contact_to_dict(
             c,
@@ -540,21 +562,11 @@ async def update_contact(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    contact = await session.get(Contact, contact_id)
-    if contact is None or contact.workspace_id != api_key.workspace_id:
-        raise HTTPException(404, detail="Contact not found")
+    contact = await get_owned(
+        session, Contact, contact_id, api_key.workspace_id, detail="Contact not found"
+    )
     payload = await request.json()
-    for field in (
-        "phone_number",
-        "first_name",
-        "last_name",
-        "timezone",
-        "do_not_call",
-        "external_id",
-        "custom_fields",
-    ):
-        if field in payload:
-            setattr(contact, field, payload[field])
+    apply_patch(contact, payload, _CONTACT_MUTABLE_FIELDS)
     await session.commit()
     return _contact_to_dict(contact)
 
@@ -565,9 +577,9 @@ async def delete_contact(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    contact = await session.get(Contact, contact_id)
-    if contact is None or contact.workspace_id != api_key.workspace_id:
-        raise HTTPException(404, detail="Contact not found")
+    contact = await get_owned(
+        session, Contact, contact_id, api_key.workspace_id, detail="Contact not found"
+    )
     await session.delete(contact)
     await session.commit()
 
@@ -619,18 +631,10 @@ class UpdateAlertRequest(CompatModel):
     enabled: bool | None = None
 
 
-_ALERT_FIELDS = (
-    "name",
-    "metric",
-    "condition",
-    "threshold",
-    "compare_to",
-    "check_every_min",
-    "lookback_min",
-    "notify_emails",
-    "webhook_url",
-    "enabled",
-)
+# Derived, so a new alert field can't be added to the model and silently
+# no-op on PATCH. Still excludes the extra="allow" passthrough keys, which is
+# what the allowlist is for.
+_ALERT_FIELDS = set(UpdateAlertRequest.model_fields)
 
 
 @router.get("/list-alerts")
@@ -663,17 +667,16 @@ async def update_alert(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    alert = await session.get(Alert, alert_id)
-    if alert is None or alert.workspace_id != api_key.workspace_id:
-        raise HTTPException(404, detail="Alert not found")
+    alert = await get_owned(
+        session, Alert, alert_id, api_key.workspace_id, detail="Alert not found"
+    )
     payload = body.model_dump(exclude_unset=True)
-    for field in _ALERT_FIELDS:
-        if field not in payload:
-            continue
-        # Only webhook_url is nullable; null on the others means "no change".
-        if payload[field] is None and field != "webhook_url":
-            continue
-        setattr(alert, field, payload[field])
+    # Only webhook_url is nullable; null on the others means "no change".
+    apply_patch(
+        alert,
+        {k: v for k, v in payload.items() if v is not None or k == "webhook_url"},
+        _ALERT_FIELDS,
+    )
     await session.commit()
     return _alert_to_dict(alert)
 
@@ -684,9 +687,9 @@ async def delete_alert(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    alert = await session.get(Alert, alert_id)
-    if alert is None or alert.workspace_id != api_key.workspace_id:
-        raise HTTPException(404, detail="Alert not found")
+    alert = await get_owned(
+        session, Alert, alert_id, api_key.workspace_id, detail="Alert not found"
+    )
     await session.delete(alert)
     await session.commit()
 
@@ -702,12 +705,15 @@ def _sample_bucket(call_id: str) -> int:
     return int(sha256(call_id.encode()).hexdigest()[:8], 16) % 100
 
 
-def _cohort_metrics(cohort: QaCohort, calls: list[Call]) -> dict[str, Any]:
+def _cohort_metrics(
+    cohort: QaCohort, calls: Sequence[Any], buckets: Mapping[str, int] | None = None
+) -> dict[str, Any]:
     """Score a cohort over its sampled calls (last QA_WINDOW_DAYS).
 
     Sampling is deterministic per call (hash of call_id vs sampling_pct) so
     repeated page loads score the same sample, capped at ~a month of the
-    cohort's weekly_max.
+    cohort's weekly_max. `buckets` lets a caller scoring many cohorts over one
+    window hash each call_id once instead of once per cohort.
     """
     agent_set = set(cohort.agents or [])
     matching = [
@@ -718,7 +724,11 @@ def _cohort_metrics(cohort: QaCohort, calls: list[Call]) -> dict[str, Any]:
     ]
     pct = max(0.0, min(cohort.sampling_pct or 0.0, 100.0))
     # Stable digest, not hash(): PYTHONHASHSEED would resample per process.
-    sampled = [c for c in matching if _sample_bucket(c.call_id) < pct]
+    sampled = [
+        c
+        for c in matching
+        if (buckets[c.call_id] if buckets is not None else _sample_bucket(c.call_id)) < pct
+    ]
     # weekly_max is non-null (default 100); 0 legitimately means "score
     # nothing", so no falsy-or fallback here.
     cap = cohort.weekly_max * 4
@@ -753,16 +763,9 @@ def _cohort_to_dict(c: QaCohort, metrics: dict[str, Any] | None = None) -> dict[
         "min_duration_s": c.min_duration_s,
         "success_criteria": c.success_criteria,
         "scoring_metric": c.scoring_metric or "call_successful",
-        **(
-            metrics
-            or {
-                "sample_size": 0,
-                "success_rate": 0,
-                "transfer_success_rate": 0,
-                "transfer_wait_time_s": 0,
-                "score": 0,
-            }
-        ),
+        # Scoring an empty window yields exactly the all-zero metric block, so
+        # create-qa-cohort and list-qa-cohorts can't return different shapes.
+        **(metrics if metrics is not None else _cohort_metrics(c, [])),
     }
 
 
@@ -787,9 +790,18 @@ async def list_qa_cohorts(
     if not rows:
         return []
     # One shared window of ended calls; per-cohort filters run in memory.
+    # Column-scoped: scoring reads six small fields, so hydrating full Call rows
+    # would ship every transcript in the window for nothing.
     calls = (
-        await session.scalars(
-            select(Call)
+        await session.execute(
+            select(
+                Call.call_id,
+                Call.agent_id,
+                Call.duration_ms,
+                Call.call_analysis,
+                Call.disconnection_reason,
+                Call.created_at_ms,
+            )
             .where(
                 Call.workspace_id == api_key.workspace_id,
                 Call.created_at_ms >= now_ms() - QA_WINDOW_DAYS * DAY_MS,
@@ -800,7 +812,9 @@ async def list_qa_cohorts(
             .order_by(Call.created_at_ms.desc(), Call.call_id)
         )
     ).all()
-    return [_cohort_to_dict(c, _cohort_metrics(c, list(calls))) for c in rows]
+    # The bucket depends only on call_id, so hash once for all cohorts.
+    buckets = {c.call_id: _sample_bucket(c.call_id) for c in calls}
+    return [_cohort_to_dict(c, _cohort_metrics(c, calls, buckets)) for c in rows]
 
 
 @router.post("/create-qa-cohort", status_code=201)
@@ -821,9 +835,9 @@ async def delete_qa_cohort(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    cohort = await session.get(QaCohort, cohort_id)
-    if cohort is None or cohort.workspace_id != api_key.workspace_id:
-        raise HTTPException(404, detail="Cohort not found")
+    cohort = await get_owned(
+        session, QaCohort, cohort_id, api_key.workspace_id, detail="Cohort not found"
+    )
     await session.delete(cohort)
     await session.commit()
 
@@ -897,8 +911,12 @@ async def delete_batch_call_draft(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    draft = await session.get(BatchCall, batch_call_id)
-    if draft is None or draft.workspace_id != api_key.workspace_id or draft.status != "draft":
+    draft = await get_owned(
+        session, BatchCall, batch_call_id, api_key.workspace_id, detail="Draft not found"
+    )
+    # A sent batch is no longer a draft, and stays indistinguishable from a
+    # missing one here.
+    if draft.status != "draft":
         raise HTTPException(404, detail="Draft not found")
     await session.delete(draft)
     await session.commit()
@@ -963,9 +981,7 @@ async def revoke_api_key(
     api_key: ApiKey = Depends(require_workspace_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    row = await session.get(ApiKey, key_id)
-    if row is None or row.workspace_id != api_key.workspace_id:
-        raise HTTPException(404, detail="API key not found")
+    row = await get_owned(session, ApiKey, key_id, api_key.workspace_id, detail="API key not found")
     row.revoked = True
     await session.commit()
     return _api_key_to_dict(row)
@@ -1026,6 +1042,51 @@ def _require_int(value: Any, field: str, lo: int, hi: int) -> int:
     return value
 
 
+def _validate_contact_fields(value: Any) -> list[dict[str, str]]:
+    """Normalize the custom contact-field definitions (Settings → Contacts)."""
+    if not isinstance(value, list) or len(value) > 50:
+        raise HTTPException(422, detail="contact_field_definitions must be a list (max 50)")
+    seen_keys: set[str] = set()
+    for item in value:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("key"), str)
+            or not re.match(r"^[a-z][a-z0-9_]{0,63}$", item["key"])
+            or item.get("type") not in ("string", "number", "boolean", "date")
+            or not isinstance(item.get("label"), str)
+            or not item["label"].strip()
+        ):
+            raise HTTPException(
+                422,
+                detail=(
+                    "each contact field needs a snake_case key, a label, and a "
+                    "type of string|number|boolean|date"
+                ),
+            )
+        if item["key"] in seen_keys:
+            raise HTTPException(422, detail=f"duplicate field key {item['key']!r}")
+        seen_keys.add(item["key"])
+    return [{"key": i["key"], "label": i["label"].strip(), "type": i["type"]} for i in value]
+
+
+def _validate_cps_limits(stored: dict[str, Any], value: Any) -> dict[str, int]:
+    """Merge a per-provider calls-per-second patch over the stored limits."""
+    if not isinstance(value, dict):
+        raise HTTPException(422, detail="cps_limits must be an object")
+    limits = dict(stored.get("cps_limits") or {})
+    for provider, cps in value.items():
+        if provider not in DEFAULT_WORKSPACE_SETTINGS["cps_limits"]:
+            raise HTTPException(422, detail=f"Unknown cps provider {provider!r}")
+        limits[provider] = _require_int(cps, f"cps_limits.{provider}", 1, 100)
+    return limits
+
+
+def _validate_billing_email(value: Any) -> str | None:
+    if value is not None and (not isinstance(value, str) or not re.match(_EMAIL_RE, value)):
+        raise HTTPException(422, detail="billing_email must be a valid email")
+    return _norm_email(value) if isinstance(value, str) else None
+
+
 def _merged_settings_patch(stored: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     """Validate a partial settings update and merge it over the stored dict.
 
@@ -1036,11 +1097,7 @@ def _merged_settings_patch(stored: dict[str, Any], patch: dict[str, Any]) -> dic
     for key, value in patch.items():
         match key:
             case "billing_email":
-                if value is not None and (
-                    not isinstance(value, str) or not re.match(_EMAIL_RE, value)
-                ):
-                    raise HTTPException(422, detail="billing_email must be a valid email")
-                out[key] = value.strip().lower() if isinstance(value, str) else None
+                out[key] = _validate_billing_email(value)
             case "purchased_concurrency":
                 out[key] = _require_int(value, key, 0, CONCURRENCY_PURCHASE_LIMIT)
             case "reserved_inbound_concurrency":
@@ -1059,54 +1116,18 @@ def _merged_settings_patch(stored: dict[str, Any], patch: dict[str, Any]) -> dic
                     raise HTTPException(422, detail=f"{key} must be a boolean")
                 out[key] = value
             case "contact_field_definitions":
-                if not isinstance(value, list) or len(value) > 50:
-                    raise HTTPException(
-                        422, detail="contact_field_definitions must be a list (max 50)"
-                    )
-                seen_keys: set[str] = set()
-                for item in value:
-                    if (
-                        not isinstance(item, dict)
-                        or not isinstance(item.get("key"), str)
-                        or not re.match(r"^[a-z][a-z0-9_]{0,63}$", item["key"])
-                        or item.get("type") not in ("string", "number", "boolean", "date")
-                        or not isinstance(item.get("label"), str)
-                        or not item["label"].strip()
-                    ):
-                        raise HTTPException(
-                            422,
-                            detail=(
-                                "each contact field needs a snake_case key, a label, and a "
-                                "type of string|number|boolean|date"
-                            ),
-                        )
-                    if item["key"] in seen_keys:
-                        raise HTTPException(422, detail=f"duplicate field key {item['key']!r}")
-                    seen_keys.add(item["key"])
-                out[key] = [
-                    {"key": i["key"], "label": i["label"].strip(), "type": i["type"]} for i in value
-                ]
+                out[key] = _validate_contact_fields(value)
             case "cps_limits":
-                if not isinstance(value, dict):
-                    raise HTTPException(422, detail="cps_limits must be an object")
-                limits = dict(stored.get("cps_limits") or {})
-                for provider, cps in value.items():
-                    if provider not in DEFAULT_WORKSPACE_SETTINGS["cps_limits"]:
-                        raise HTTPException(422, detail=f"Unknown cps provider {provider!r}")
-                    limits[provider] = _require_int(cps, f"cps_limits.{provider}", 1, 100)
-                out[key] = limits
+                out[key] = _validate_cps_limits(stored, value)
             case _:
                 raise HTTPException(422, detail=f"Unknown setting {key!r}")
 
     # Reserving the workspace's entire capacity would silently deadlock every
     # outbound and web call (effective outbound limit 0), so at least one
-    # non-reserved slot must remain.
-    limit = BASE_CONCURRENCY + int(
-        out.get("purchased_concurrency", stored.get("purchased_concurrency", 0)) or 0
-    )
-    reserved = int(
-        out.get("reserved_inbound_concurrency", stored.get("reserved_inbound_concurrency", 0)) or 0
-    )
+    # non-reserved slot must remain. `out` starts as a copy of `stored`, so it
+    # already carries the unpatched values.
+    limit = BASE_CONCURRENCY + int(out.get("purchased_concurrency", 0) or 0)
+    reserved = int(out.get("reserved_inbound_concurrency", 0) or 0)
     if reserved >= limit:
         raise HTTPException(
             422,
@@ -1139,9 +1160,7 @@ async def update_workspace(
     if ws is None:
         raise HTTPException(404, detail="Workspace not found")
     payload = await request.json()
-    for field in ("name", "webhook_url"):
-        if field in payload:
-            setattr(ws, field, payload[field])
+    apply_patch(ws, payload, {"name", "webhook_url"})
     if "settings" in payload:
         if not isinstance(payload["settings"], dict):
             raise HTTPException(422, detail="settings must be an object")
@@ -1168,54 +1187,14 @@ async def test_workspace_webhook(
         url = (ws.webhook_url or "").strip() if ws else ""
     if not url:
         raise HTTPException(422, detail="No webhook URL configured to test")
-    try:
-        # DNS resolution is blocking; keep it off the event loop (and this is
-        # the SSRF gate — the URL is user-supplied).
-        await run_in_threadpool(security.assert_url_safe, url)
-    except security.UnsafeUrlError as exc:
-        raise HTTPException(422, detail=f"Refusing to send to unsafe URL: {exc}") from None
-
-    key = await webhooks.signing_key(session, api_key.workspace_id)
-    if key is None:
-        raise HTTPException(409, detail="No active API key available to sign the webhook")
-
-    ts = now_ms()
-    sample = Call(
-        call_id="call_test_webhook",
-        workspace_id=api_key.workspace_id,
-        agent_id="agent_test_webhook",
-        agent_version=0,
-        agent_name="Test agent",
-        call_type="web_call",
-        call_status="ended",
-        direction="outbound",
-        from_number="+15551234567",
-        to_number="+15557654321",
-        metadata_={"arhiteq_test": True},
-        start_timestamp=ts - 30_000,
-        end_timestamp=ts,
-        duration_ms=30_000,
+    return await webhooks.send_test_event(
+        session,
+        api_key.workspace_id,
+        url=url,
+        event=body.event,
+        call=webhooks.sample_call(api_key.workspace_id),
+        timeout_ms=body.webhook_timeout_ms or DEFAULT_WEBHOOK_TIMEOUT_MS,
     )
-    raw_body = webhooks.build_event_body(body.event, sample)
-    timeout = (body.webhook_timeout_ms or 5000) / 1000
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                url,
-                content=raw_body,
-                headers={
-                    "content-type": "application/json",
-                    signature.SIGNATURE_HEADER: signature.sign(raw_body, key),
-                },
-            )
-    except httpx.HTTPError as exc:
-        return {"ok": False, "status_code": None, "error": str(exc)}
-    ok = 200 <= resp.status_code < 300
-    return {
-        "ok": ok,
-        "status_code": resp.status_code,
-        "error": None if ok else f"HTTP {resp.status_code}",
-    }
 
 
 # -------------------------------------------------------------- system status
@@ -1223,6 +1202,26 @@ async def test_workspace_webhook(
 
 def _component(key: str, name: str, status: str, detail: str = "") -> dict[str, Any]:
     return {"key": key, "name": name, "status": status, "detail": detail}
+
+
+def _configured(key: str, name: str, ok: bool, missing_detail: str) -> dict[str, Any]:
+    """A component whose health is just "is it configured" — status and detail
+    stay paired so one can't be flipped without the other."""
+    return _component(
+        key, name, "operational" if ok else "not_configured", "" if ok else missing_detail
+    )
+
+
+async def _probe_livekit(url: str) -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(url)
+        # LiveKit answers its root with 200 "OK"; any HTTP answer proves the
+        # media server is up — 5xx means reachable-but-unhealthy.
+        status = "operational" if resp.status_code < 500 else "degraded"
+        return _component("livekit", "Voice infrastructure (LiveKit)", status)
+    except Exception:  # noqa: BLE001 — unreachable, not an app error
+        return _component("livekit", "Voice infrastructure (LiveKit)", "down", "Unreachable")
 
 
 @router.get("/system-status")
@@ -1237,6 +1236,12 @@ async def system_status(
     webhook-delivery failure backlog for this workspace.
     """
     settings = get_settings()
+    lk_url = settings.livekit_url.replace("wss://", "https://").replace("ws://", "http://")
+    # Start the probe first and await it last: it's the slow check (up to 3s
+    # when LiveKit is down, exactly when an operator loads this page) and it
+    # shares nothing with the DB queries.
+    probe = asyncio.create_task(_probe_livekit(lk_url))
+
     components: list[dict[str, Any]] = [_component("api", "API", "operational")]
 
     try:
@@ -1245,33 +1250,21 @@ async def system_status(
     except Exception as exc:  # noqa: BLE001 — any DB failure is the finding
         components.append(_component("database", "Database", "down", str(exc)[:200]))
 
-    lk_url = settings.livekit_url.replace("wss://", "https://").replace("ws://", "http://")
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(lk_url)
-        # LiveKit answers its root with 200 "OK"; any HTTP answer proves the
-        # media server is up — 5xx means reachable-but-unhealthy.
-        status = "operational" if resp.status_code < 500 else "degraded"
-        components.append(_component("livekit", "Voice infrastructure (LiveKit)", status))
-    except Exception:  # noqa: BLE001 — unreachable, not an app error
-        components.append(
-            _component("livekit", "Voice infrastructure (LiveKit)", "down", "Unreachable")
-        )
-
+    components.append(await probe)
     components.append(
-        _component(
+        _configured(
             "telephony",
             "Telephony (SIP)",
-            "operational" if settings.sip_outbound_trunk_id else "not_configured",
-            "" if settings.sip_outbound_trunk_id else "No outbound SIP trunk configured",
+            bool(settings.sip_outbound_trunk_id),
+            "No outbound SIP trunk configured",
         )
     )
     components.append(
-        _component(
+        _configured(
             "llm",
             "LLM (Gemini)",
-            "operational" if genai_credentials_available(settings) else "not_configured",
-            "" if genai_credentials_available(settings) else "No Google GenAI credentials",
+            genai_credentials_available(settings),
+            "No Google GenAI credentials",
         )
     )
 
@@ -1306,6 +1299,17 @@ async def system_status(
 # --------------------------------------------------------- members & invites
 
 _EMAIL_RE = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+
+
+def _norm_email(v: Any) -> Any:
+    """Members and invites store emails lowercase; normalize before the
+    pattern check so validation sees the stored form."""
+    return v.strip().lower() if isinstance(v, str) else v
+
+
+NormalizedEmail = Annotated[
+    str, BeforeValidator(_norm_email), Field(min_length=3, max_length=320, pattern=_EMAIL_RE)
+]
 
 
 def _member_json(m: WorkspaceMember) -> dict[str, Any]:
@@ -1387,15 +1391,8 @@ async def list_invites(
 
 
 class CreateInviteRequest(CompatModel):
-    email: str = Field(min_length=3, max_length=320, pattern=_EMAIL_RE)
+    email: NormalizedEmail
     role: str = Field(default="member", pattern="^(admin|member)$")
-
-    @field_validator("email", mode="before")
-    @classmethod
-    def _normalize_email(cls, v: Any) -> Any:
-        # Members and invites store emails lowercase; normalize before the
-        # pattern check so validation sees the stored form.
-        return v.strip().lower() if isinstance(v, str) else v
 
 
 @router.post("/create-invite", status_code=201)
@@ -1457,9 +1454,13 @@ async def revoke_invite(
     manager: MemberManager = Depends(require_member_manager),
     session: AsyncSession = Depends(get_session),
 ):
-    invite = await session.get(WorkspaceInvite, invite_id)
-    if invite is None or invite.workspace_id != manager.api_key.workspace_id:
-        raise HTTPException(404, detail="Invite not found")
+    invite = await get_owned(
+        session,
+        WorkspaceInvite,
+        invite_id,
+        manager.api_key.workspace_id,
+        detail="Invite not found",
+    )
     if invite.status != "pending":
         raise HTTPException(409, detail=f"Invite is already {invite.status}")
     invite.status = "revoked"
@@ -1467,12 +1468,9 @@ async def revoke_invite(
 
 
 class RemoveMemberRequest(CompatModel):
-    email: str = Field(min_length=3, max_length=320)
-
-    @field_validator("email", mode="before")
-    @classmethod
-    def _normalize_email(cls, v: Any) -> Any:
-        return v.strip().lower() if isinstance(v, str) else v
+    # No pattern check here on purpose: removing a member that was never a
+    # valid email should 404, not 422.
+    email: Annotated[str, BeforeValidator(_norm_email), Field(min_length=3, max_length=320)]
 
 
 @router.post("/remove-member", status_code=204)

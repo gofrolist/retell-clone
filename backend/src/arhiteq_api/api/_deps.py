@@ -1,13 +1,15 @@
-"""Shared router helpers: workspace-scoped lookup and PATCH application.
+"""Shared router helpers: workspace-scoped lookup, PATCH application, paging.
 
-These centralize two patterns that were copy-pasted across every CRUD router,
-so workspace scoping can't be forgotten and the mutable-field allowlist stays
-the single contract-relevant artifact per router.
+These centralize the patterns that were copy-pasted across every CRUD router,
+so workspace scoping can't be forgotten, the mutable-field allowlist stays
+the single contract-relevant artifact per router, and keyset pagination has one
+implementation of its (timestamp, id) tie-break.
 """
 
 from typing import Any, Mapping, TypeVar
 
 from fastapi import HTTPException
+from sqlalchemy import tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import now_ms
@@ -18,7 +20,7 @@ T = TypeVar("T")
 async def get_owned(
     session: AsyncSession,
     model: type[T],
-    obj_id: str,
+    obj_id: Any,
     workspace_id: str,
     *,
     detail: str,
@@ -64,3 +66,31 @@ def apply_patch(
         obj.version += 1
     if touch:
         obj.last_modification_timestamp = now_ms()
+
+
+async def apply_keyset_page(
+    session: AsyncSession,
+    query: Any,
+    model: type[Any],
+    ts_col: Any,
+    id_col: Any,
+    *,
+    pagination_key: str | None,
+    ascending: bool,
+) -> Any:
+    """Anchor `query` on `pagination_key` and order it deterministically.
+
+    Ordering and paging both key on (timestamp, id): create-batch-call inserts
+    many rows in the same millisecond, so a timestamp-only anchor would skip
+    every sibling of the anchor row. Callers keep their own limit/has_more and
+    response shaping — those differ on the wire and must not be unified here.
+    """
+    if pagination_key:
+        anchor = await session.get(model, pagination_key)
+        if anchor is not None:
+            key = tuple_(ts_col, id_col)
+            bound = (getattr(anchor, ts_col.key), getattr(anchor, id_col.key))
+            query = query.where(key > bound if ascending else key < bound)
+    if ascending:
+        return query.order_by(ts_col.asc(), id_col.asc())
+    return query.order_by(ts_col.desc(), id_col.desc())

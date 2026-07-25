@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from fastapi import HTTPException
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -146,6 +147,88 @@ async def send_event(session: AsyncSession, call: Call, event: str) -> None:
     delivery.next_attempt_at_ms = now_ms() + 600_000
     log.error("webhook %s for %s failed after retries", event, call.call_id)
     await session.commit()
+
+
+def sample_call(workspace_id: str, agent: Agent | None = None) -> Call:
+    """A representative, non-persisted Call for the dashboard "Test" button.
+
+    Fed through build_event_body so the signed sample stays byte-identical in
+    shape to a real delivery. Marked with metadata so consumers can drop it if
+    they choose. `agent` is None for the workspace-level test, which has no
+    agent to describe.
+    """
+    ts = now_ms()
+    return Call(
+        call_id="call_test_webhook",
+        workspace_id=workspace_id,
+        agent_id=agent.agent_id if agent is not None else "agent_test_webhook",
+        agent_version=agent.version if agent is not None else 0,
+        agent_name=agent.agent_name if agent is not None else "Test agent",
+        call_type="web_call",
+        call_status="ended",
+        direction="outbound",
+        from_number="+15551234567",
+        to_number="+15557654321",
+        metadata_={"arhiteq_test": True},
+        start_timestamp=ts - 30_000,
+        end_timestamp=ts,
+        duration_ms=30_000,
+        disconnection_reason="agent_hangup",
+        transcript="Agent: This is a test webhook from Arhiteq.\nUser: Great, it works!",
+        call_analysis={
+            "call_summary": "Test webhook delivery from the Arhiteq dashboard.",
+            "user_sentiment": "Positive",
+            "call_successful": True,
+            "in_voicemail": False,
+        },
+    )
+
+
+async def send_test_event(
+    session: AsyncSession,
+    workspace_id: str,
+    *,
+    url: str,
+    event: str,
+    call: Call,
+    timeout_ms: int,
+) -> dict[str, Any]:
+    """Deliver one signed sample event and report the outcome, no retries.
+
+    The single implementation behind /test-agent-webhook and
+    /test-workspace-webhook, so the SSRF gate, the signature header and the
+    {ok, status_code, error} result shape can't drift between them.
+    """
+    try:
+        # DNS resolution is blocking; keep it off the event loop (and this is
+        # the SSRF gate — the URL is user-supplied).
+        await run_in_threadpool(security.assert_url_safe, url)
+    except security.UnsafeUrlError as exc:
+        raise HTTPException(422, detail=f"Refusing to send to unsafe URL: {exc}") from None
+
+    key = await signing_key(session, workspace_id)
+    if key is None:
+        raise HTTPException(409, detail="No active API key available to sign the webhook")
+
+    raw_body = build_event_body(event, call)
+    try:
+        async with httpx.AsyncClient(timeout=timeout_ms / 1000) as client:
+            resp = await client.post(
+                url,
+                content=raw_body,
+                headers={
+                    "content-type": "application/json",
+                    signature.SIGNATURE_HEADER: signature.sign(raw_body, key),
+                },
+            )
+    except httpx.HTTPError as exc:
+        return {"ok": False, "status_code": None, "error": str(exc)}
+    ok = 200 <= resp.status_code < 300
+    return {
+        "ok": ok,
+        "status_code": resp.status_code,
+        "error": None if ok else f"HTTP {resp.status_code}",
+    }
 
 
 # Strong references so pending tasks can't be garbage-collected mid-flight;

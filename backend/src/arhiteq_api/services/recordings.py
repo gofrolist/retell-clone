@@ -27,16 +27,33 @@ def _ttl() -> timedelta:
     return timedelta(seconds=min(raw, _V4_MAX_TTL_S))
 
 
-def _sign(bucket: str, obj: str) -> str:
-    """Blocking; run via asyncio.to_thread."""
+# Cached across calls: auth.default() re-runs credential discovery and
+# refresh() is a live round trip to the GKE metadata server, so building both
+# per signed URL costs two network hops for a token that is valid ~1 hour.
+_credentials = None
+_storage_client = None
+
+
+def _signer():
+    """Blocking; callers must already be off the event loop."""
+    global _credentials, _storage_client
     from google import auth
     from google.auth.transport import requests as ga_requests
     from google.cloud import storage
 
-    credentials, _ = auth.default()
-    # refresh() populates token and, on GKE/GCE, the real SA email.
-    credentials.refresh(ga_requests.Request())
-    blob = storage.Client(credentials=credentials).bucket(bucket).blob(obj)
+    if _credentials is None:
+        _credentials, _ = auth.default()
+        _storage_client = storage.Client(credentials=_credentials)
+    if not _credentials.valid:
+        # refresh() populates token and, on GKE/GCE, the real SA email.
+        _credentials.refresh(ga_requests.Request())
+    return _credentials, _storage_client
+
+
+def _sign(bucket: str, obj: str) -> str:
+    """Blocking; run via asyncio.to_thread."""
+    credentials, storage_client = _signer()
+    blob = storage_client.bucket(bucket).blob(obj)
     return blob.generate_signed_url(
         version="v4",
         expiration=_ttl(),
