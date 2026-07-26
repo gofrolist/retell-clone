@@ -18,9 +18,22 @@ def test_tolerates_inner_whitespace_like_the_resolver():
     assert resolve_template("{{  phone  }}", {"phone": "+1"}) == "+1"
 
 
-def test_nesting_reports_the_inner_name_that_can_be_set():
-    """The composed key is derived, so `user_timezone` is the settable name."""
+def test_nesting_reports_the_inner_name():
+    """The inner name is the only part a caller can address directly."""
     assert prompt_variables("{{current_time_{{user_timezone}}}}") == ["user_timezone"]
+
+
+def test_setting_the_inner_name_alone_leaves_a_nested_placeholder_literal():
+    """The limit callers have to know about: reporting a name is not a promise
+    that setting it resolves the placeholder it appeared in. The outer key is
+    composed from the inner value and then looked up in turn."""
+    text = "{{current_time_{{user_timezone}}}}"
+    zone = "America/Los_Angeles"
+    assert resolve_template(text, {"user_timezone": zone}) == text
+    resolved = resolve_template(
+        text, {"user_timezone": zone, f"current_time_{zone}": "Sunday at 5 PM"}
+    )
+    assert resolved == "Sunday at 5 PM"
 
 
 def test_no_placeholders_reports_nothing():

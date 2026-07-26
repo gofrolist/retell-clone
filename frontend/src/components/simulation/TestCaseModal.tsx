@@ -192,10 +192,18 @@ export default function TestCaseModal({
                 <span key={name}>
                   {i > 0 && ", "}
                   <button
-                    onClick={() => setVariables([...variables, { key: name, value: "" }])}
+                    // Seeded with the agent default, never blank: a case value
+                    // beats the default at run time, so adding an empty row
+                    // would replace "friend" with "" — worse than not clicking.
+                    onClick={() =>
+                      setVariables([
+                        ...variables,
+                        { key: name, value: agentDefaultVariables[name] ?? "" },
+                      ])
+                    }
                     title={
                       name in agentDefaultVariables
-                        ? `Falls back to the agent default: ${agentDefaultVariables[name]}`
+                        ? `Add it, starting from the agent default: ${agentDefaultVariables[name]}`
                         : "No value anywhere — stays literal at run time"
                     }
                     className={`font-mono cursor-pointer hover:underline ${

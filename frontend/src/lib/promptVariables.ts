@@ -1,7 +1,10 @@
 /** Placeholder names a prompt reads — the dashboard's mirror of the backend's
  *  `template_variables.prompt_variables`. Same grammar: inner whitespace is
  *  stripped, and a nested key ({{current_time_{{user_timezone}}}}) reports its
- *  inner name, since that is the one worth setting. */
+ *  inner name, the only part a caller can address. Setting that inner name
+ *  composes the key without resolving the outer placeholder, which also needs
+ *  a value under the composed name — so a nested placeholder can stay literal
+ *  even after every name listed here has one. */
 
 const PLACEHOLDER = /\{\{\s*((?:[^{}]|\{\{[^{}]+?\}\})+?)\s*\}\}/g;
 const INNER = /\{\{\s*([^{}]+?)\s*\}\}/g;

@@ -196,6 +196,22 @@ def _json_object(raw: str | None) -> dict[str, Any]:
     return data
 
 
+def _variable_value(value: Any) -> str:
+    """A model-written variable as the string a live call would carry.
+
+    The generate prompt asks for strings, but models routinely answer a
+    true/false flag with a JSON boolean. Plain ``str()`` would store that as
+    Python's ``"True"``, so a prompt branching on ``= "true"`` still would not
+    fire — the exact failure these variables exist to prevent. Booleans and
+    null therefore render JSON-style; everything else stringifies normally.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    return str(value)
+
+
 def _metric_key(metric: str) -> str:
     """Normalize a criterion for matching a judge verdict back to its criterion.
 
@@ -782,7 +798,7 @@ async def generate_test_cases(llm: RetellLLM, count: int) -> list[dict[str, Any]
         # `current_time_<zone>`), and an unused key costs nothing at run time.
         raw_variables = raw.get("dynamic_variables")
         case_variables = (
-            {str(k).strip(): str(v) for k, v in raw_variables.items() if str(k).strip()}
+            {str(k).strip(): _variable_value(v) for k, v in raw_variables.items() if str(k).strip()}
             if isinstance(raw_variables, dict)
             else {}
         )

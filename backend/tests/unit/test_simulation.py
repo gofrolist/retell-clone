@@ -13,6 +13,7 @@ import pytest
 from arhiteq_api.config import get_settings
 from arhiteq_api.models import RetellLLM
 from arhiteq_api.services import simulation
+from arhiteq_api.services.template_variables import resolve_template
 
 
 class FakeModel:
@@ -562,8 +563,13 @@ async def test_generate_defaults_variables_to_an_empty_set(monkeypatch, returned
     assert cases[0]["dynamic_variables"] == {}
 
 
-async def test_generate_coerces_variable_values_to_strings(monkeypatch):
-    """`resolve_template` substitutes strings; a bare `true` must not break it."""
+async def test_generate_coerces_variable_values_the_way_a_prompt_reads_them(monkeypatch):
+    """A JSON boolean must land as `"true"`, not Python's `"True"`.
+
+    The prompt this feature exists for branches on `= "true"`; storing the
+    model's `true` as `"True"` would leave that branch shut and reintroduce
+    the failure the variables are meant to remove.
+    """
     client, _ = fake_client(
         [
             {
@@ -572,7 +578,13 @@ async def test_generate_coerces_variable_values_to_strings(monkeypatch):
                         "name": "Typed",
                         "user_prompt": "You want a callback.",
                         "metrics": ["Agent books it"],
-                        "dynamic_variables": {"is_last_day_of_trial": True, "  ": "x", "n": 7},
+                        "dynamic_variables": {
+                            "is_last_day_of_trial": True,
+                            "is_day_1": False,
+                            "prior_conversation": None,
+                            "  ": "dropped — blank key",
+                            "n": 7,
+                        },
                     }
                 ]
             }
@@ -581,5 +593,17 @@ async def test_generate_coerces_variable_values_to_strings(monkeypatch):
     monkeypatch.setattr(simulation, "build_genai_client", lambda _s: client)
     monkeypatch.setattr(simulation, "genai_credentials_available", lambda _s: True)
     cases = await simulation.generate_test_cases(_gated_llm(), 1)
-    # The blank key is dropped; everything else becomes a string.
-    assert cases[0]["dynamic_variables"] == {"is_last_day_of_trial": "True", "n": "7"}
+    assert cases[0]["dynamic_variables"] == {
+        "is_last_day_of_trial": "true",
+        "is_day_1": "false",
+        # null is "no value", not the literal word None in a tool argument.
+        "prior_conversation": "",
+        "n": "7",
+    }
+
+
+def test_variable_value_renders_a_flag_the_prompt_can_match():
+    """The coercion, end to end: the branch a `true` flag gates actually fires."""
+    variables = {"is_last_day_of_trial": simulation._variable_value(True)}
+    rendered = resolve_template('If {{is_last_day_of_trial}} = "true", say goodbye.', variables)
+    assert rendered == 'If true = "true", say goodbye.'

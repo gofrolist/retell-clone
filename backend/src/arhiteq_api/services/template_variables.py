@@ -71,9 +71,12 @@ def prompt_variables(text: str) -> list[str]:
     which names matter. Since an unset placeholder stays literal, a branch the
     prompt gates on one is unreachable until that name has a value.
 
-    A nested placeholder reports the inner name, not the composed key:
-    ``{{current_time_{{user_timezone}}}}`` resolves through ``user_timezone``,
-    so that is the name worth setting.
+    A nested placeholder reports its inner name, not the composed key:
+    ``{{current_time_{{user_timezone}}}}`` reports ``user_timezone``, which is
+    the only part a caller can address directly. Setting it *composes* the key
+    but does not resolve the outer placeholder — that needs a value under the
+    composed name (``current_time_America/Los_Angeles``) as well, which on a
+    live call comes from the system variables rather than from the caller.
     """
     names: list[str] = []
     for match in _PLACEHOLDER.finditer(text or ""):
