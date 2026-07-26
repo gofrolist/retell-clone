@@ -1,3 +1,6 @@
+from collections.abc import Mapping
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -86,6 +89,16 @@ _MUTABLE_FIELDS = {
     "response_engine",
     "folder_id",
 }
+
+
+def _require_object_body(payload: Any) -> None:
+    """Reject a non-object PATCH body before the field validators index it.
+
+    apply_patch makes the same check, but the validators below run first and
+    would raise a TypeError (opaque 500) on a JSON array or string body.
+    """
+    if not isinstance(payload, Mapping):
+        raise HTTPException(422, detail="Request body must be a JSON object")
 
 
 def _validate_timezone_patch(payload: dict) -> None:
@@ -203,6 +216,7 @@ async def update_agent(
 ):
     agent = await _get_voice_agent(session, agent_id, api_key.workspace_id)
     payload = await request.json()
+    _require_object_body(payload)
     _validate_webhook_patch(payload)
     _validate_timezone_patch(payload)
     if "folder_id" in payload:

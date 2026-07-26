@@ -79,6 +79,13 @@ async def test_agent_timezone_round_trip_and_validation(client):
     assert cleared.json()["timezone"] is None
 
 
+async def test_non_object_patch_body_is_rejected(client):
+    # The PATCH field validators index the raw body; a JSON array must 422
+    # (apply_patch's own guard) rather than TypeError into a 500.
+    resp = await client.patch(f"/update-agent/{AGENT_ID}", headers=AUTH_HEADERS, json=["timezone"])
+    assert resp.status_code == 422
+
+
 async def test_create_agent_validates_timezone(client):
     body = {
         "response_engine": {"type": "retell-llm", "llm_id": LLM_ID},

@@ -198,6 +198,15 @@ class ResolutionVariables(dict):
             self._facts["agent_number"] = to_number if inbound else from_number
         self._answered_at_ms = answered_at_ms
 
+    def set_default_timezone(self, name: str | None) -> None:
+        """Adopt another agent's zone mid-call (agent_swap).
+
+        Mutates in place: the live session's tools hold this same object (it
+        also accumulates captured response/extract variables), so replacing it
+        would strand those updates.
+        """
+        self._default_timezone = _known_zone(name) or DEFAULT_TIMEZONE
+
     def _system_value(self, key: str) -> str | None:
         fact = self._facts.get(key)
         if fact:

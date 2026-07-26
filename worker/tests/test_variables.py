@@ -108,6 +108,17 @@ def test_agent_timezone_sets_default_zone(frozen_now: datetime) -> None:
     )
 
 
+def test_set_default_timezone_applies_to_later_lookups(frozen_now: datetime) -> None:
+    # agent_swap: the destination agent's zone takes over mid-call, and the
+    # variables object (which also carries captured values) survives the swap.
+    variables = ResolutionVariables({"captured": "keep me"})
+    variables.set_default_timezone("Asia/Tokyo")
+    assert (
+        resolve_template("{{current_time}}", variables) == "Friday, March 29, 2024 at 7:30 AM JST"
+    )
+    assert variables["captured"] == "keep me"
+
+
 def test_unknown_agent_timezone_falls_back_to_default(frozen_now: datetime) -> None:
     # A bad zone must not blank out every time variable mid-call.
     variables = ResolutionVariables({}, default_timezone="Fake/Zone")

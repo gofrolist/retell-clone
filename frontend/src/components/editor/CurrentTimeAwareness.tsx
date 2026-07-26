@@ -15,7 +15,9 @@ function zoneNames(): string[] {
     Intl as typeof Intl & { supportedValuesOf?: (key: string) => string[] }
   ).supportedValuesOf;
   const zones = supported ? supported("timeZone") : [];
-  if (zones.length) return zones;
+  // Engines list only canonical zones, and which ones varies (V8 omits UTC,
+  // JSC includes it) — so UTC is added explicitly and deduped below.
+  if (zones.length) return [...zones, "UTC"];
   return [
     "America/Los_Angeles",
     "America/Denver",
@@ -43,6 +45,12 @@ function offsetLabel(zone: string): string {
   }
 }
 
+/**
+ * The agent's local time, in the shape the backend formats `{{current_time}}`
+ * with ("Thursday, March 28, 2024 at 3:30 PM"). The zone abbreviation is left
+ * off: the backend takes it from tzdata (`JST`) while browsers render CLDR
+ * (`GMT+9`), so printing one here would misstate the other.
+ */
 function currentTimeIn(zone: string): string {
   try {
     return new Intl.DateTimeFormat("en-US", {
@@ -50,9 +58,9 @@ function currentTimeIn(zone: string): string {
       weekday: "long",
       month: "long",
       day: "numeric",
+      year: "numeric",
       hour: "numeric",
       minute: "2-digit",
-      timeZoneName: "short",
     }).format(new Date());
   } catch {
     return "";
@@ -87,13 +95,19 @@ export default function CurrentTimeAwareness({
   // Built on first open only: labelling ~400 zones means ~400 formatters.
   const options = useMemo(() => {
     if (!open) return [];
-    const zones = zoneNames().map((zone) => {
+    // The stored zone is always an option: the backend accepts any zone
+    // zoneinfo knows (aliases like US/Eastern included, and agents imported
+    // from Retell carry whatever they were set to), while the engine lists
+    // canonical names only. Without this the select would render blank —
+    // reading as "No timezone set" for an agent that has one.
+    const names = [...new Set([...zoneNames(), ...(timezone ? [timezone] : [])])];
+    const zones = names.map((zone) => {
       const offset = offsetLabel(zone);
       return { value: zone, label: offset ? `${zone} (${offset})` : zone };
     });
     zones.sort((a, b) => a.value.localeCompare(b.value));
     return [{ value: "", label: "No timezone set" }, ...zones];
-  }, [open]);
+  }, [open, timezone]);
 
   const effective = timezone || FALLBACK_ZONE;
   const now = open ? currentTimeIn(effective) : "";
@@ -148,8 +162,8 @@ export default function CurrentTimeAwareness({
           </div>
           <p className="mt-2 text-[12px] leading-snug text-faint">
             {timezone
-              ? `{{current_time}} now resolves to ${now}.`
-              : `No timezone set — time variables use ${FALLBACK_ZONE} (${now}).`}
+              ? `It is ${now} for this agent.`
+              : `No timezone set — time variables use ${FALLBACK_ZONE}, where it is ${now}.`}
           </p>
         </div>
       )}
