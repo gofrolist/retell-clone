@@ -12,10 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import require_internal_token
 from ..db import get_session, session_factory
-from ..models import Agent, Call, Contact, PhoneNumber, RetellLLM, now_ms
+from ..models import Agent, Call, Contact, PhoneNumber, now_ms
 from ..schemas import agent_to_dict, coerce_dynamic_variables, llm_to_dict
 from ..services import inbound as inbound_svc
-from ..services import webhooks
+from ..services import versions, webhooks
 from ..services.analysis import analyze_call
 from ..services.metrics import CALL_DURATION, CALLS_ONGOING, CALLS_TOTAL
 from ..services.recordings import sign_recording_url
@@ -34,11 +34,13 @@ def _function_secret() -> str | None:
 
 
 async def _call_config(call: Call, session: AsyncSession) -> dict[str, Any]:
-    agent = await session.get(Agent, call.agent_id)
-    if agent is None:
+    live = await session.get(Agent, call.agent_id)
+    if live is None:
         raise HTTPException(500, detail=f"agent {call.agent_id} missing")
-    llm_id = (agent.response_engine or {}).get("llm_id")
-    llm = await session.get(RetellLLM, llm_id) if llm_id else None
+    # Serve the version pinned when the call was created, not the live rows:
+    # editing (or publishing) mid-call must not swap config under a running
+    # session, and the worker re-fetches config on reconnects.
+    agent, llm, _ = await versions.resolve(session, live, call.agent_version)
     dyn: dict[str, str] = {}
     if llm is not None and llm.default_dynamic_variables:
         dyn.update(coerce_dynamic_variables(llm.default_dynamic_variables))
@@ -82,11 +84,12 @@ async def get_agent_config(
     call = await session.get(Call, call_id)
     if call is None:
         raise HTTPException(404, detail="Call not found")
-    agent = await session.get(Agent, agent_id)
-    if agent is None or agent.workspace_id != call.workspace_id:
+    live = await session.get(Agent, agent_id)
+    if live is None or live.workspace_id != call.workspace_id:
         raise HTTPException(404, detail="Agent not found")
-    llm_id = (agent.response_engine or {}).get("llm_id")
-    llm = await session.get(RetellLLM, llm_id) if llm_id else None
+    # Swapping to another agent lands on its published version, same as if the
+    # call had started there.
+    agent, llm, _ = await versions.resolve(session, live)
     return {
         "agent": agent_to_dict(agent),
         "llm": llm_to_dict(llm) if llm is not None else None,
@@ -173,11 +176,14 @@ async def resolve_inbound(
         if agent is None:
             raise HTTPException(404, detail="No usable inbound agent")
 
+    await versions.ensure_seeded(session, agent)
+    pinned, _, agent_version = await versions.resolve(session, agent)
+
     call = Call(
         workspace_id=number.workspace_id,
         agent_id=agent.agent_id,
-        agent_version=agent.version,
-        agent_name=agent.agent_name,
+        agent_version=agent_version,
+        agent_name=pinned.agent_name,
         direction="inbound",
         call_status="registered",
         from_number=body.from_number,

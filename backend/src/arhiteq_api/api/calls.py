@@ -24,7 +24,7 @@ from ..schemas_extra import (
     serialize_call,
     web_call_to_dict,
 )
-from ..services import analysis, telephony
+from ..services import analysis, telephony, versions
 from . import concurrency
 from ._deps import apply_keyset_page, get_owned
 
@@ -38,6 +38,21 @@ async def _get_workspace_agent(session: AsyncSession, workspace_id: str, agent_i
     return await get_owned(
         session, Agent, agent_id, workspace_id, detail=f"agent {agent_id} not found", status=422
     )
+
+
+async def _pin_version(
+    session: AsyncSession, agent: Agent, ref: object = None
+) -> tuple[Agent, int]:
+    """Resolve the agent config this call will run, and the version to stamp.
+
+    Calls default to the *published* version: an open draft in the dashboard
+    must not reach live traffic. The stamped `agent_version` then pins the call
+    for its whole life (see api/internal.py), so publishing mid-call can't swap
+    config underneath it.
+    """
+    await versions.ensure_seeded(session, agent)
+    pinned, _, version = await versions.resolve(session, agent, versions.parse_ref(ref))
+    return pinned, version
 
 
 def _web_call_access_token(call: Call) -> str:
@@ -83,6 +98,7 @@ async def create_phone_call(
     if not agent_id:
         raise HTTPException(422, detail="No agent bound to from_number and no override_agent_id")
     agent = await _get_workspace_agent(session, api_key.workspace_id, agent_id)
+    pinned, agent_version = await _pin_version(session, agent, body.override_agent_version)
 
     await concurrency.assert_outbound_capacity(session, api_key.workspace_id)
 
@@ -91,8 +107,8 @@ async def create_phone_call(
     call = Call(
         workspace_id=api_key.workspace_id,
         agent_id=agent.agent_id,
-        agent_version=agent.version,
-        agent_name=agent.agent_name,
+        agent_version=agent_version,
+        agent_name=pinned.agent_name,
         direction="outbound",
         call_status="registered",
         from_number=body.from_number,
@@ -191,13 +207,14 @@ async def register_phone_call(
 ):
     """Register a phone call for custom telephony — no dial is performed."""
     agent = await _get_workspace_agent(session, api_key.workspace_id, body.agent_id)
+    pinned, agent_version = await _pin_version(session, agent, body.agent_version)
 
     call = Call(
         workspace_id=api_key.workspace_id,
         call_type="phone_call",
         agent_id=agent.agent_id,
-        agent_version=agent.version,
-        agent_name=agent.agent_name,
+        agent_version=agent_version,
+        agent_name=pinned.agent_name,
         call_status="registered",
         direction=body.direction or "inbound",
         from_number=body.from_number,
@@ -217,6 +234,9 @@ async def create_web_call(
     session: AsyncSession = Depends(get_session),
 ):
     agent = await _get_workspace_agent(session, api_key.workspace_id, body.agent_id)
+    # The dashboard's test call passes the version being edited, so a draft can
+    # still be tried out; API callers default to the published version.
+    pinned, agent_version = await _pin_version(session, agent, body.agent_version)
 
     await concurrency.assert_outbound_capacity(session, api_key.workspace_id)
 
@@ -225,8 +245,8 @@ async def create_web_call(
         workspace_id=api_key.workspace_id,
         call_type="web_call",
         agent_id=agent.agent_id,
-        agent_version=agent.version,
-        agent_name=agent.agent_name,
+        agent_version=agent_version,
+        agent_name=pinned.agent_name,
         call_status="registered",
         direction="inbound",  # not exposed for web calls; column is non-null
         metadata_=body.metadata,

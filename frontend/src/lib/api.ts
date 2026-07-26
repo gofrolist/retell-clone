@@ -212,6 +212,23 @@ export interface RawAgent {
   [key: string]: unknown;
 }
 
+/**
+ * One entry of GET /get-agent-versions: the agent shape as of that version,
+ * plus lineage and publish bookkeeping. Published versions are immutable
+ * snapshots; at most one draft exists and it is always the highest version.
+ */
+export interface RawAgentVersion extends RawAgent {
+  /** Version this one was branched from; null for an agent's first version. */
+  base_version: number | null;
+  version_title: string | null;
+  version_description: string | null;
+  /** Whether live calls resolve to this entry (publishing an older version
+   *  re-points this without minting a new version). */
+  is_live: boolean;
+  created_timestamp: number;
+  published_timestamp: number | null;
+}
+
 export interface McpServer {
   name: string;
   url: string;
@@ -768,6 +785,12 @@ export const api = {
       .map((a) => uiAgentFromRaw(a, phones));
   },
 
+  /** One agent. `version` accepts a number, "latest" or "latest_published". */
+  getAgent: (agentId: string, version?: number | string) =>
+    request<RawAgent>(
+      `/get-agent/${encodeURIComponent(agentId)}${version === undefined ? "" : `?version=${version}`}`,
+    ),
+
   /** Agent + its Retell LLM (prompt lives on the LLM, not the agent). */
   getAgentDetail: async (agentId: string): Promise<AgentDetail> => {
     const agent = await request<RawAgent>(`/get-agent/${encodeURIComponent(agentId)}`);
@@ -790,8 +813,37 @@ export const api = {
       post(body),
     ),
 
+  /** Full version history, newest first. */
   getAgentVersions: (agentId: string) =>
-    request<RawAgent[]>(`/get-agent-versions/${encodeURIComponent(agentId)}`),
+    request<RawAgentVersion[]>(`/get-agent-versions/${encodeURIComponent(agentId)}`),
+
+  /** One version with its prompt/tools attached, for read-only viewing. */
+  getAgentVersion: (agentId: string, version: number) =>
+    request<RawAgentVersion & { response_engine_config: RawLlm | null }>(
+      `/get-agent-version/${encodeURIComponent(agentId)}/${version}`,
+    ),
+
+  /** Open a draft carrying `baseVersion`'s config — the restore/rollback path. */
+  createAgentVersion: (agentId: string, baseVersion: number) =>
+    request<RawAgentVersion>(
+      `/create-agent-version/${encodeURIComponent(agentId)}`,
+      post({ base_version: baseVersion }),
+    ),
+
+  /** Publish a draft, or an older version to roll production back to it. */
+  publishAgentVersion: (
+    agentId: string,
+    version: number,
+    meta: { version_title?: string | null; version_description?: string | null } = {},
+  ) =>
+    request<RawAgent>(
+      `/publish-agent-version/${encodeURIComponent(agentId)}`,
+      post({ version, ...meta }),
+    ),
+
+  /** Discard a draft; the editor reverts to the version it branched from. */
+  deleteAgentVersion: (agentId: string, version: number) =>
+    request<void>(`/delete-agent-version/${encodeURIComponent(agentId)}/${version}`, del),
 
   // ------------------------------------------------------ Test LLM (text chat)
   createChat: (agentId: string, dynamicVariables?: Record<string, string>) =>
@@ -849,8 +901,10 @@ export const api = {
   deleteAgent: (agentId: string) =>
     request<void>(`/delete-agent/${encodeURIComponent(agentId)}`, del),
 
-  publishAgent: (agentId: string) =>
-    request<RawAgent>(`/publish-agent/${encodeURIComponent(agentId)}`, post({})),
+  publishAgent: (
+    agentId: string,
+    meta: { version_title?: string | null; version_description?: string | null } = {},
+  ) => request<RawAgent>(`/publish-agent/${encodeURIComponent(agentId)}`, post(meta)),
 
   // ------------------------------------------------------ agent folders
   listAgentFolders: () => request<AgentFolder[]>("/list-agent-folders"),

@@ -297,11 +297,52 @@ class Agent(Base):
     # {{current_calendar}}) resolve in; null keeps Retell's America/Los_Angeles.
     timezone: Mapped[str | None] = mapped_column(String(64))
     last_modification_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
-    # Publishing model: single live version; publish-agent flips this on.
+    # True while `version` names a published version, False while a draft is
+    # open. See AgentVersion for the full publishing model.
     is_published: Mapped[bool] = mapped_column(Boolean, default=True)
+    # The version live calls resolve against. NULL only for rows predating
+    # versioning; services.versions.ensure_seeded fills it in on first touch.
+    published_version: Mapped[int | None] = mapped_column(Integer)
     # Dashboard folder assignment (no FK: added post-launch via the lifespan
     # column backfill, and a dangling id just means "no folder").
     folder_id: Mapped[str | None] = mapped_column(String(64), index=True)
+
+
+class AgentVersion(Base):
+    """One entry in an agent's version history.
+
+    Publishing model (see docs/AGENT_VERSIONING.md):
+
+    - Versions number 0..N monotonically. `Agent.published_version` names the
+      one live calls resolve against; published versions are immutable.
+    - At most one draft exists and it is always the highest version N. A
+      draft's *content is the live agents/retell_llms rows* — snapshots are
+      taken once, at publish — so editing never re-snapshots and the editor
+      keeps writing through the ordinary update-agent/update-retell-llm paths.
+    - Snapshots hold raw column values for the routers' mutable-field
+      allowlists; services.versions rehydrates them into transient ORM objects
+      so agent_to_dict/llm_to_dict stay the only serializers.
+    """
+
+    __tablename__ = "agent_versions"
+
+    agent_id: Mapped[str] = mapped_column(
+        ForeignKey("agents.agent_id", ondelete="CASCADE"), primary_key=True
+    )
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    # Version this one was branched from; NULL for an agent's initial version.
+    base_version: Mapped[int | None] = mapped_column(Integer)
+    is_published: Mapped[bool] = mapped_column(Boolean, default=False)
+    # User-facing label + changelog note, both set at publish time.
+    version_title: Mapped[str | None] = mapped_column(String(255))
+    version_description: Mapped[str | None] = mapped_column(Text)
+    # NULL while this version is a draft (its content is the live rows).
+    agent_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    llm_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    created_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+    last_modification_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+    published_timestamp: Mapped[int | None] = mapped_column(BigInteger)
 
 
 class PhoneNumber(Base):

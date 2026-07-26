@@ -174,6 +174,25 @@ class CreateAgentRequest(CompatModel):
         return normalize_timezone(v)
 
 
+class PublishAgentRequest(CompatModel):
+    """Optional label/changelog carried by POST /publish-agent."""
+
+    version_title: str | None = None
+    version_description: str | None = None
+
+
+class PublishAgentVersionRequest(PublishAgentRequest):
+    """POST /publish-agent-version — publish a draft, or roll back to an older one."""
+
+    version: int
+
+
+class CreateAgentVersionRequest(CompatModel):
+    """POST /create-agent-version — open a draft carrying base_version's config."""
+
+    base_version: int
+
+
 class TestWebhookRequest(CompatModel):
     """Dashboard "Test" button (Arhiteq-extra; not in Retell's public API).
 

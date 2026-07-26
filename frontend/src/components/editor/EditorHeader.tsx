@@ -1,6 +1,5 @@
 "use client";
 
-import VersionHistory from "@/components/editor/VersionHistory";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import { PillTabs } from "@/components/ui/Tabs";
@@ -21,6 +20,17 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+/** Autosave lifecycle of the draft, surfaced next to the version chip. */
+export type SaveState = "idle" | "pending" | "saving" | "saved" | "error";
+
+const SAVE_LABEL: Record<SaveState, string | null> = {
+  idle: null,
+  pending: "Unsaved changes",
+  saving: "Saving…",
+  saved: "Saved",
+  error: null, // the error text itself is shown instead
+};
+
 export default function EditorHeader({
   name,
   onName,
@@ -28,11 +38,14 @@ export default function EditorHeader({
   llm,
   tab,
   onTab,
-  dirty,
-  saving,
-  onSave,
+  saveState,
   publishing,
   onPublish,
+  viewingVersion,
+  readOnly,
+  onBranch,
+  panelOpen,
+  onTogglePanel,
   error,
 }: {
   name: string;
@@ -42,17 +55,25 @@ export default function EditorHeader({
   /** "create" (prompt + settings) or "simulation" (tests + manual testing). */
   tab: string;
   onTab: (key: string) => void;
-  dirty: boolean;
-  saving: boolean;
-  onSave: () => void;
+  saveState: SaveState;
   publishing: boolean;
-  onPublish: () => void;
+  onPublish: (meta: { version_title?: string; version_description?: string }) => void;
+  /** Version currently open in the editor. */
+  viewingVersion: number;
+  /** True when viewing a frozen (published, non-latest) version. */
+  readOnly: boolean;
+  onBranch: () => void;
+  panelOpen: boolean;
+  onTogglePanel: () => void;
   error?: string | null;
 }) {
   const router = useRouter();
   const [shared, setShared] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
   const [busy, setBusy] = useState(false);
   const [menuError, setMenuError] = useState<string | null>(null);
 
@@ -118,6 +139,18 @@ export default function EditorHeader({
     }
   };
 
+  const confirmPublish = () => {
+    onPublish({
+      version_title: title.trim() || undefined,
+      version_description: description.trim() || undefined,
+    });
+    setPublishOpen(false);
+    setTitle("");
+    setDescription("");
+  };
+
+  const saveLabel = SAVE_LABEL[saveState];
+
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-line bg-card px-4">
       <Link
@@ -132,9 +165,10 @@ export default function EditorHeader({
         onChange={(e) => onName(e.target.value)}
         placeholder="Untitled agent"
         aria-label="Agent name"
-        className="w-64 truncate rounded-md border border-transparent bg-transparent px-1.5 py-0.5 text-[15px] font-semibold outline-none transition-colors hover:border-line focus:border-accent"
+        readOnly={readOnly}
+        className="w-56 truncate rounded-md border border-transparent bg-transparent px-1.5 py-0.5 text-[15px] font-semibold outline-none transition-colors hover:border-line focus:border-accent read-only:hover:border-transparent"
       />
-      <span className="inline-flex items-center gap-1 rounded-md border border-line bg-app px-2 py-0.5 text-xs font-medium text-sub">
+      <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-line bg-app px-2 py-0.5 text-xs font-medium text-sub">
         <Tag className="size-3" />
         {agent.is_published ? "Published" : "Draft"}
       </span>
@@ -150,7 +184,13 @@ export default function EditorHeader({
         />
       </div>
 
-      {error && <span className="max-w-64 truncate text-xs text-bad" title={error}>{error}</span>}
+      {error ? (
+        <span className="max-w-56 truncate text-xs text-bad" title={error}>
+          {error}
+        </span>
+      ) : (
+        saveLabel && <span className="shrink-0 text-xs text-faint">{saveLabel}</span>
+      )}
       <div className="relative">
         <button
           onClick={() => setMoreOpen((v) => !v)}
@@ -187,9 +227,7 @@ export default function EditorHeader({
               >
                 <Trash2 className="size-3.5" /> Delete agent
               </button>
-              {menuError && (
-                <p className="px-2 pt-1.5 text-[12px] text-bad">{menuError}</p>
-              )}
+              {menuError && <p className="px-2 pt-1.5 text-[12px] text-bad">{menuError}</p>}
             </div>
           </>
         )}
@@ -202,26 +240,29 @@ export default function EditorHeader({
       >
         {shared ? <Check className="size-4 text-ok" /> : <Share2 className="size-4" />}
       </button>
-      <VersionHistory
-        agentId={agent.agent_id}
-        trigger={(open) => (
-          <Button size="sm" onClick={open}>
-            <History className="size-3.5" />
-            V{agent.version}
-          </Button>
-        )}
-      />
-      <Button size="sm" variant="primary" onClick={onSave} disabled={!dirty || saving}>
-        {saving ? "Saving…" : "Save"}
-      </Button>
       <Button
         size="sm"
-        onClick={onPublish}
-        disabled={publishing}
-        title={dirty ? "You have unsaved changes; Publish uses the last saved version" : undefined}
+        onClick={onTogglePanel}
+        aria-pressed={panelOpen}
+        className={panelOpen ? "border-accent text-accent-deep" : undefined}
+        title="Version history"
       >
-        {publishing ? "Publishing…" : "Publish"}
+        <History className="size-3.5" />V{viewingVersion}
       </Button>
+      {readOnly ? (
+        <Button size="sm" variant="primary" onClick={onBranch} disabled={publishing}>
+          Edit as new draft
+        </Button>
+      ) : (
+        <Button
+          size="sm"
+          variant="primary"
+          onClick={() => setPublishOpen(true)}
+          disabled={publishing}
+        >
+          {publishing ? "Publishing…" : "Publish"}
+        </Button>
+      )}
       <Button
         size="sm"
         variant="secondary"
@@ -232,6 +273,47 @@ export default function EditorHeader({
         <Sparkles className="size-3.5" />
         Conductor
       </Button>
+
+      <Modal
+        open={publishOpen}
+        onClose={() => setPublishOpen(false)}
+        title={`Publish V${viewingVersion}`}
+        width="max-w-md"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setPublishOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={confirmPublish}>
+              Publish
+            </Button>
+          </>
+        }
+      >
+        <p className="text-[13px] text-sub">
+          Live calls switch to this version. It becomes immutable — the next edit opens a new
+          draft.
+        </p>
+        <label className="mt-3 block text-[12px] font-medium text-sub">
+          Title <span className="font-normal text-faint">(optional)</span>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Hotfix"
+            className="mt-1 h-9 w-full rounded-lg border border-line px-2.5 text-[13px] font-normal text-ink outline-none focus:border-accent"
+          />
+        </label>
+        <label className="mt-3 block text-[12px] font-medium text-sub">
+          What changed? <span className="font-normal text-faint">(optional)</span>
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={3}
+            placeholder="Shown in the version history."
+            className="mt-1 w-full resize-y rounded-lg border border-line px-2.5 py-2 text-[13px] font-normal text-ink outline-none focus:border-accent"
+          />
+        </label>
+      </Modal>
 
       <Modal
         open={deleteOpen}
@@ -250,8 +332,9 @@ export default function EditorHeader({
         }
       >
         <p className="text-[13px] text-sub">
-          This permanently deletes <span className="font-medium text-ink">{agent.agent_name ?? "this agent"}</span>.
-          Phone numbers still routed to it must be re-pointed first.
+          This permanently deletes{" "}
+          <span className="font-medium text-ink">{agent.agent_name ?? "this agent"}</span>. Phone
+          numbers still routed to it must be re-pointed first.
         </p>
         {menuError && <p className="mt-2 text-[13px] text-bad">{menuError}</p>}
       </Modal>

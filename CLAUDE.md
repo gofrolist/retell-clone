@@ -58,6 +58,7 @@ names match project names:
 
 `docs/ARCHITECTURE.md` (system design), `docs/INTERNAL_API.md` (api⇄worker
 contract), `docs/API_COVERAGE.md` (Retell endpoint matrix),
-`docs/SECURITY.md` (auth model, SSRF/rate-limit/allowlists),
+`docs/AGENT_VERSIONING.md` (drafts, published snapshots, which version a call
+runs), `docs/SECURITY.md` (auth model, SSRF/rate-limit/allowlists),
 `docs/UI_INVENTORY.md` (dashboard spec from screenshots),
 `docs/MIGRATION.md` (cutover runbook), `infra/README.md` (deploy + releasing).

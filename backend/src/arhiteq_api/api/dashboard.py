@@ -30,6 +30,7 @@ from ..models import (
     DEFAULT_WORKSPACE_SETTINGS,
     Agent,
     AgentFolder,
+    AgentVersion,
     Alert,
     ApiKey,
     BatchCall,
@@ -78,6 +79,7 @@ WORKSPACE_CHILD_MODELS: tuple[type[Any], ...] = (
     KnowledgeBaseFile,
     KnowledgeBase,
     ConversationFlow,
+    AgentVersion,  # references agents — must go before Agent
     Agent,
     RetellLLM,
     AgentFolder,
