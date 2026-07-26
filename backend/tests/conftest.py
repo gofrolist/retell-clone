@@ -38,7 +38,7 @@ from arhiteq_api.api import batch_calls
 from arhiteq_api.auth import hash_key
 from arhiteq_api.main import app
 from arhiteq_api.models import Agent, ApiKey, Base, PhoneNumber, RetellLLM, Workspace
-from arhiteq_api.services import webhooks
+from arhiteq_api.services import simulation, webhooks
 
 API_KEY = "key_test_0123456789abcdef0123456789abcdef"
 AGENT_ID = "agent_sales0000000000000000000001"
@@ -131,6 +131,9 @@ async def _fresh_db():
         task.cancel()
     if batch_calls._drain_tasks:
         await asyncio.gather(*list(batch_calls._drain_tasks), return_exceptions=True)
+    # Same for simulation batches: a leaked run would write test-case rows into
+    # the next test's schema.
+    await simulation.shutdown()
     await engine.dispose()
 
 

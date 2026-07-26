@@ -19,6 +19,7 @@ names; extra fields may be present (allowed by the compatibility policy).
 | **Chat agent** | `POST /create-chat-agent`, `GET /get-chat-agent/{id}`, `GET /list-chat-agents`, `PATCH /update-chat-agent/{id}`, `DELETE /delete-chat-agent/{id}` | Full |
 | **Concurrency** | `GET /get-concurrency` | Full (static limit of 20 until billing exists; `create-phone-call` returns 429 "Concurrency limit reached" when live calls — registered+ongoing — hit the limit) |
 | **Webhooks (outbound)** | `call_started`, `call_ended`, `call_analyzed` + inbound `call_inbound` routing webhook | Full incl. `x-retell-signature` |
+| **Simulation testing** | `POST /create-test-case-definition`, `GET /get-test-case-definition/{id}`, `PUT /update-test-case-definition/{id}`, `DELETE /delete-test-case-definition/{id}`, `GET /v2/list-test-case-definitions`, `POST /create-batch-test`, `GET /get-batch-test/{id}`, `GET /v2/list-batch-tests`, `GET /get-test-run/{id}`, `GET /v2/list-test-runs/{batch_id}` | Full for `retell-llm` engines (custom-LLM rejected, as in Retell; conversation-flow cases store and list but runs need flow execution) |
 
 Dashboard-only endpoints (Arhiteq additions, `backend/src/arhiteq_api/api/dashboard.py`;
 Retell serves these from its private dashboard API): `GET /analytics/calls`
@@ -53,9 +54,15 @@ Known intentional deviations (all additive or dashboard-only):
   (the browser-reachable LiveKit signalling URL to connect to; additive,
   contract-safe).
 - Optional `agent_id` on create-agent / create-chat-agent (id-preserving import).
+- `POST /generate-test-case-definitions` has no Retell equivalent: it drafts
+  simulation cases (scenario + criteria + tool mocks) from the agent's own
+  prompt and tool catalog. Test-case rows also carry `source`
+  (`manual` | `generated`), batches carry `agent_id`, and runs carry
+  `metric_results` (per-criterion verdicts behind `result_explanation`) — all
+  additive.
 - Auth additionally accepts Arhiteq dashboard session JWTs (Google Sign-In).
 - Not implemented (no consumer, dashboard-only in Retell): SIP-trunk
   self-serve endpoints, phone-number A/B tests, Retell billing endpoints.
 
-Enforced by `backend/tests/contract/` (111 tests, 89% line coverage, CI gate
+Enforced by `backend/tests/contract/` (189 tests, 90% line coverage, CI gate
 at 80%).

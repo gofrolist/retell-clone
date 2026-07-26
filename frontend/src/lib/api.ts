@@ -310,9 +310,89 @@ export interface RawLlm {
   [key: string]: unknown;
 }
 
+// ------------------------------------------------------------ simulation
+/** A tool's canned reply during a simulation, so no real integration is hit. */
+export interface ToolMock {
+  tool_name: string;
+  input_match_rule: { type: "any" } | { type: "partial_match"; args: Record<string, unknown> };
+  output: string;
+}
+
+export interface RawTestCase {
+  test_case_definition_id: string;
+  type: string;
+  name: string;
+  user_prompt: string;
+  metrics: string[];
+  dynamic_variables?: Record<string, string>;
+  tool_mocks?: ToolMock[];
+  llm_model?: string | null;
+  /** Arhiteq extra: `manual` when hand-written, `generated` when self-written. */
+  source?: "manual" | "generated";
+  creation_timestamp: number;
+  user_modified_timestamp: number;
+}
+
+export interface PagedTestCases {
+  items: RawTestCase[];
+  has_more: boolean;
+  pagination_key?: string | null;
+}
+
+/** The editable half of a test case (everything but ids and timestamps). */
+export interface TestCaseDraft {
+  name: string;
+  user_prompt: string;
+  metrics: string[];
+  tool_mocks?: ToolMock[];
+  dynamic_variables?: Record<string, string>;
+}
+
+function testCaseBody(draft: TestCaseDraft) {
+  return {
+    name: draft.name,
+    user_prompt: draft.user_prompt,
+    metrics: draft.metrics,
+    tool_mocks: draft.tool_mocks ?? [],
+    dynamic_variables: draft.dynamic_variables ?? {},
+  };
+}
+
+export type TestRunStatus = "pending" | "in_progress" | "pass" | "fail" | "error";
+
+export interface RawBatchTest {
+  test_case_batch_job_id: string;
+  status: "in_progress" | "complete";
+  pass_count: number;
+  fail_count: number;
+  error_count: number;
+  total_count: number;
+  agent_id?: string | null;
+  creation_timestamp: number;
+}
+
+export interface MetricResult {
+  metric: string;
+  passed: boolean;
+  explanation: string;
+}
+
+export interface RawTestRun {
+  test_case_job_id: string;
+  status: TestRunStatus;
+  test_case_batch_job_id: string;
+  test_case_definition_id: string;
+  test_case_definition_snapshot: Partial<RawTestCase>;
+  transcript_snapshot?: { messages?: RawTranscriptItem[] } | null;
+  result_explanation?: string | null;
+  metric_results?: MetricResult[];
+  creation_timestamp: number;
+}
+
 /** Item of transcript_object / transcript_with_tool_calls as served by the
- *  API (worker-recorded). time_ms / tool_call_id exist only on calls recorded
- *  after the worker started stamping them. */
+ *  API (worker-recorded), and of a simulation run's transcript_snapshot.
+ *  time_ms / tool_call_id exist only on calls recorded after the worker
+ *  started stamping them. */
 export interface RawTranscriptItem {
   role: string;
   content?: string;
@@ -489,11 +569,9 @@ const UI_TRANSCRIPT_ROLES: Record<string, TranscriptItem["role"]> = {
   tool_call_result: "tool_result",
 };
 
-function transcriptFromRaw(c: RawCall): TranscriptItem[] {
-  // Prefer the tool-bearing stream; old calls only have transcript_object.
-  const source = c.transcript_with_tool_calls?.length
-    ? c.transcript_with_tool_calls
-    : (c.transcript_object ?? []);
+/** Wire transcript items → the shape the Transcript component renders.
+ *  Shared by call detail and simulation runs, which record the same roles. */
+export function uiTranscriptFromRaw(source: RawTranscriptItem[]): TranscriptItem[] {
   return source.map((t) => {
     const time_ms = typeof t.time_ms === "number" ? t.time_ms : undefined;
     return {
@@ -507,6 +585,15 @@ function transcriptFromRaw(c: RawCall): TranscriptItem[] {
       time: time_ms !== undefined ? formatDuration(time_ms) : "",
     };
   });
+}
+
+function transcriptFromRaw(c: RawCall): TranscriptItem[] {
+  // Prefer the tool-bearing stream; old calls only have transcript_object.
+  return uiTranscriptFromRaw(
+    c.transcript_with_tool_calls?.length
+      ? c.transcript_with_tool_calls
+      : (c.transcript_object ?? []),
+  );
 }
 
 export function uiCallFromRaw(c: RawCall): Call {
@@ -990,6 +1077,57 @@ export const api = {
     ),
 
   deleteWorkspace: () => request<void>("/workspace", del),
+
+  // -------------------------------------------------------- simulation
+  listTestCases: (llmId: string) =>
+    request<PagedTestCases>(
+      `/v2/list-test-case-definitions?type=retell-llm&llm_id=${encodeURIComponent(llmId)}&limit=200`,
+    ),
+
+  createTestCase: (body: TestCaseDraft & { llm_id: string }) =>
+    request<RawTestCase>(
+      "/create-test-case-definition",
+      post({ ...testCaseBody(body), response_engine: { type: "retell-llm", llm_id: body.llm_id } }),
+    ),
+
+  updateTestCase: (id: string, body: TestCaseDraft) =>
+    request<RawTestCase>(`/update-test-case-definition/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(testCaseBody(body)),
+    }),
+
+  deleteTestCase: (id: string) =>
+    request<void>(`/delete-test-case-definition/${encodeURIComponent(id)}`, del),
+
+  /** Draft cases from the agent's own prompt + tools ("the agent tests itself"). */
+  generateTestCases: (body: { agent_id: string; count?: number }) =>
+    request<{ items: RawTestCase[]; saved: boolean }>(
+      "/generate-test-case-definitions",
+      post({ ...body, save: true }),
+    ),
+
+  createBatchTest: (body: { llm_id: string; agent_id?: string; test_case_definition_ids: string[] }) =>
+    request<RawBatchTest>(
+      "/create-batch-test",
+      post({
+        test_case_definition_ids: body.test_case_definition_ids,
+        response_engine: { type: "retell-llm", llm_id: body.llm_id },
+        agent_id: body.agent_id,
+      }),
+    ),
+
+  getBatchTest: (id: string) =>
+    request<RawBatchTest>(`/get-batch-test/${encodeURIComponent(id)}`),
+
+  listBatchTests: (llmId: string) =>
+    request<{ items: RawBatchTest[]; has_more: boolean }>(
+      `/v2/list-batch-tests?type=retell-llm&llm_id=${encodeURIComponent(llmId)}&limit=20`,
+    ),
+
+  listTestRuns: (batchId: string) =>
+    request<{ items: RawTestRun[]; has_more: boolean }>(
+      `/v2/list-test-runs/${encodeURIComponent(batchId)}?limit=200`,
+    ),
 
   listMembers: () => request<WorkspaceMember[]>("/list-members"),
   listInvites: () => request<WorkspaceInvite[]>("/list-invites"),

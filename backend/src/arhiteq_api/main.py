@@ -9,6 +9,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import inspect, text
 
 from .api import (
+    agent_tests,
     agents,
     auth_google,
     batch_calls,
@@ -32,6 +33,7 @@ from .security import (
     SecurityHeadersMiddleware,
     UnhandledErrorMiddleware,
 )
+from .services import simulation
 
 logging.basicConfig(level=logging.INFO)
 
@@ -102,6 +104,9 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_apply_column_backfills)
     yield
+    # Simulation batches run detached from any request; cancel them before the
+    # engine goes away so a run can't fault on a disposed connection pool.
+    await simulation.shutdown()
     await engine.dispose()
 
 
@@ -135,6 +140,7 @@ app.include_router(conversation_flows.router)
 app.include_router(chats.router)
 app.include_router(chat_agents.router)
 app.include_router(dashboard.router)
+app.include_router(agent_tests.router)
 
 # Public, read-only assets (voice preview mp3s). No auth: previews must be
 # playable from a bare <audio> tag in the dashboard.

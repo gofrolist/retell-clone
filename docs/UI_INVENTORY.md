@@ -47,11 +47,12 @@ FOOTER:   plan pill ("Pay As You Go"), account email row, Help | Updates
    ("English (US)"), "Agent Handbook"; big prompt textarea with `{{var}}`
    chips; Welcome Message (AI speaks first / Custom message /
    `{{bm_greeting}}`, "Pause Before Speaking: 0.6s").
-   Middle: accordions — Functions, Knowledge Base, Speech Settings, Realtime
+   Right: accordions — Functions, Knowledge Base, Speech Settings, Realtime
    Transcription Settings, Call Settings, Post-Call Data Extraction,
    Security & Fallback Settings, Webhook Settings, MCPs.
-   Right: test panel, tabs Test Audio | Test LLM, `{}` dynamic-vars button,
-   mic illustration, "Run Test".
+   Arhiteq deviation: the test panel (Test Audio | Test LLM, `{}`
+   dynamic-vars button, mic illustration, "Run Test") sits on the Simulation
+   tab, not beside the prompt — manual and automated testing in one place.
    Accordion contents:
    - **Functions**: chips with edit/trash (end_call, transfer_call built-ins;
      custom: cancel_subscription, save_conversation_note, mark_dnc,
@@ -83,6 +84,16 @@ FOOTER:   plan pill ("Pay As You Go"), account email row, Help | Updates
      "Set Up".
    - **Webhook Settings**: Agent Level Webhook URL (+ Test); Webhook Timeout
      slider 5s; Webhook Events "Set Up".
+   **Simulation tab** — left: "Test cases" header ("Last run: N/M passed"
+   badge, "Generate tests" ✨, "+ New", "Run all" / "Run N"), unsaved-edits
+   warning strip, table (select checkbox, Name + `auto` badge on generated
+   cases, Scenario, Criteria count, Last result badge, per-row run/edit/trash).
+   Clicking a name opens the run drawer: verdict badge + run id, Scenario,
+   Success criteria (per-criterion ✓/✗ + why), Simulated call transcript
+   (same component as call detail, so tool invocations/results expand).
+   "+ New" / edit opens the test-case modal: Name, Scenario, Success criteria
+   rows, Function mocks (tool dropdown + JSON output). Right: the test panel
+   (Test Audio | Test LLM), moved here from the Create tab.
 4. **Knowledge Base** — list panel (KB names, "+") + detail: title, "ID:
    know…" copy, "Uploaded by: <date>" green check, Edit/trash. Document rows:
    type icon (MD/PDF), name, size, download.

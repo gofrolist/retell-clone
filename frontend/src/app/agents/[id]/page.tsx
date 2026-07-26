@@ -4,7 +4,6 @@ import EditorHeader from "@/components/editor/EditorHeader";
 import MetaRow from "@/components/editor/MetaRow";
 import PromptEditor from "@/components/editor/PromptEditor";
 import SelectorRow from "@/components/editor/SelectorRow";
-import TestPanel from "@/components/editor/TestPanel";
 import WelcomeMessage from "@/components/editor/WelcomeMessage";
 import CallSettingsSection from "@/components/editor/sections/CallSettingsSection";
 import FunctionsSection from "@/components/editor/sections/FunctionsSection";
@@ -15,6 +14,7 @@ import SecuritySection from "@/components/editor/sections/SecuritySection";
 import SpeechSettingsSection from "@/components/editor/sections/SpeechSettingsSection";
 import TranscriptionSection from "@/components/editor/sections/TranscriptionSection";
 import WebhookSection from "@/components/editor/sections/WebhookSection";
+import SimulationTab from "@/components/simulation/SimulationTab";
 import Accordion from "@/components/ui/Accordion";
 import { api, type RawAgent, type RawLlm } from "@/lib/api";
 import type { Voice } from "@/lib/types";
@@ -56,6 +56,8 @@ export default function AgentEditorPage({
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // "create" edits the agent; "simulation" runs test cases and manual tests.
+  const [tab, setTab] = useState("create");
 
   useEffect(() => {
     let cancelled = false;
@@ -150,6 +152,8 @@ export default function AgentEditorPage({
         onName={(v) => setAgentField("agent_name", v)}
         agent={agent}
         llm={llm}
+        tab={tab}
+        onTab={setTab}
         dirty={dirty}
         saving={saving}
         onSave={handleSave}
@@ -158,6 +162,10 @@ export default function AgentEditorPage({
         error={actionError}
       />
       <div className="flex min-h-0 grow gap-2 overflow-x-auto p-2">
+        {tab === "simulation" ? (
+          <SimulationTab agentId={agent.agent_id} llm={llm} dirty={dirty} />
+        ) : (
+          <>
         {/* left: prompt column */}
         <div className="flex min-w-[420px] flex-[2] flex-col overflow-y-auto rounded-xl border border-line bg-card p-4">
           <MetaRow agentId={agent.agent_id} llm={llmView} />
@@ -199,8 +207,8 @@ export default function AgentEditorPage({
           )}
         </div>
 
-        {/* middle: settings accordions */}
-        <div className="min-w-[320px] flex-[0.8] overflow-y-auto rounded-xl border border-line bg-card">
+        {/* right: settings accordions */}
+        <div className="min-w-[320px] flex-1 overflow-y-auto rounded-xl border border-line bg-card">
           <Accordion icon={LayoutGrid} title="Functions">
             {llmView ? (
               <FunctionsSection
@@ -316,11 +324,8 @@ export default function AgentEditorPage({
             )}
           </Accordion>
         </div>
-
-        {/* right: test panel */}
-        <div className="min-w-[340px] flex-1 overflow-hidden rounded-xl border border-line bg-card">
-          <TestPanel agentId={agent.agent_id} />
-        </div>
+          </>
+        )}
       </div>
     </div>
   );
