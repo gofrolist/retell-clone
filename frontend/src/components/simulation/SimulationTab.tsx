@@ -1,6 +1,7 @@
 "use client";
 
 import TestPanel from "@/components/editor/TestPanel";
+import { SIDE_PANEL_WIDTH } from "@/components/editor/panelLayout";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import EmptyState from "@/components/ui/EmptyState";
@@ -253,7 +254,7 @@ export default function SimulationTab({
 
   return (
     <>
-      <div className="flex min-w-[520px] flex-[2] flex-col overflow-hidden rounded-xl border border-line bg-card">
+      <div className="flex min-w-[520px] flex-1 flex-col overflow-hidden rounded-xl border border-line bg-card">
         <div className="flex items-center gap-2 border-b border-line px-4 py-3">
           <h2 className="text-[15px] font-semibold">Test cases</h2>
           {batch && batch.status === "complete" && (
@@ -430,8 +431,11 @@ export default function SimulationTab({
         </div>
       </div>
 
-      {/* Manual testing lives beside the automated suite. */}
-      <div className="min-w-[340px] flex-1 overflow-hidden rounded-xl border border-line bg-card">
+      {/* Manual testing lives beside the automated suite, in the same slot the
+          Create tab's settings occupy so switching tabs doesn't shift things. */}
+      <div
+        className={`${SIDE_PANEL_WIDTH} overflow-hidden rounded-xl border border-line bg-card`}
+      >
         <TestPanel agentId={agentId} />
       </div>
 

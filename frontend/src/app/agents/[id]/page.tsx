@@ -5,6 +5,7 @@ import MetaRow from "@/components/editor/MetaRow";
 import PromptEditor from "@/components/editor/PromptEditor";
 import SelectorRow from "@/components/editor/SelectorRow";
 import WelcomeMessage from "@/components/editor/WelcomeMessage";
+import { SIDE_PANEL_WIDTH } from "@/components/editor/panelLayout";
 import CallSettingsSection from "@/components/editor/sections/CallSettingsSection";
 import FunctionsSection from "@/components/editor/sections/FunctionsSection";
 import KnowledgeBaseSection from "@/components/editor/sections/KnowledgeBaseSection";
@@ -166,8 +167,8 @@ export default function AgentEditorPage({
           <SimulationTab agentId={agent.agent_id} llm={llm} dirty={dirty} />
         ) : (
           <>
-        {/* left: prompt column */}
-        <div className="flex min-w-[420px] flex-[2] flex-col overflow-y-auto rounded-xl border border-line bg-card p-4">
+        {/* left: prompt column — takes whatever the fixed panel leaves */}
+        <div className="flex min-w-[420px] flex-1 flex-col overflow-y-auto rounded-xl border border-line bg-card p-4">
           <MetaRow agentId={agent.agent_id} llm={llmView} />
           <div className="mt-3">
             <SelectorRow
@@ -208,7 +209,9 @@ export default function AgentEditorPage({
         </div>
 
         {/* right: settings accordions */}
-        <div className="min-w-[320px] flex-1 overflow-y-auto rounded-xl border border-line bg-card">
+        <div
+          className={`${SIDE_PANEL_WIDTH} overflow-y-auto rounded-xl border border-line bg-card`}
+        >
           <Accordion icon={LayoutGrid} title="Functions">
             {llmView ? (
               <FunctionsSection
