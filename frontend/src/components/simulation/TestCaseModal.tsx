@@ -1,5 +1,6 @@
 "use client";
 
+import { PairRows, fromPairs, toPairs, type Pair } from "@/components/editor/PairRows";
 import Button from "@/components/ui/Button";
 import { Field, TextInput, Textarea } from "@/components/ui/Field";
 import Modal from "@/components/ui/Modal";
@@ -14,6 +15,8 @@ export default function TestCaseModal({
   open,
   initial,
   toolNames,
+  promptVariableNames,
+  agentDefaultVariables,
   onClose,
   onSave,
 }: {
@@ -21,10 +24,15 @@ export default function TestCaseModal({
   initial: RawTestCase | null;
   /** Function names the agent actually has — mocks may only target these. */
   toolNames: string[];
+  /** Placeholders the agent's prompt reads, offered as one-click rows. */
+  promptVariableNames: string[];
+  /** The agent's fallback values — these need no per-case entry. */
+  agentDefaultVariables: Record<string, string>;
   onClose: () => void;
   onSave: (draft: TestCaseDraft) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<TestCaseDraft>(EMPTY);
+  const [variables, setVariables] = useState<Pair[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,6 +40,7 @@ export default function TestCaseModal({
   useEffect(() => {
     if (!open) return;
     setError(null);
+    setVariables(toPairs(initial?.dynamic_variables));
     setDraft(
       initial
         ? {
@@ -39,13 +48,16 @@ export default function TestCaseModal({
             user_prompt: initial.user_prompt,
             metrics: initial.metrics.length ? initial.metrics : [""],
             tool_mocks: initial.tool_mocks ?? [],
-            // Carried through untouched: the form doesn't edit them, and
-            // dropping them here would delete variables set via the API.
-            dynamic_variables: initial.dynamic_variables,
           }
         : EMPTY,
     );
   }, [open, initial]);
+
+  // Names the prompt reads that this case leaves to the agent defaults — or,
+  // when there is no default, to nothing at all. Offered as one-click rows so
+  // a gated branch isn't unreachable just because a flag was never discovered.
+  const setNames = new Set(variables.map((p) => p.key.trim()));
+  const unset = promptVariableNames.filter((n) => !setNames.has(n));
 
   const setMetric = (i: number, value: string) =>
     setDraft((d) => ({ ...d, metrics: d.metrics.map((m, j) => (j === i ? value : m)) }));
@@ -73,6 +85,10 @@ export default function TestCaseModal({
         ...draft,
         name: draft.name.trim() || "Untitled test",
         metrics,
+        // `?? {}` and not `undefined`: the form owns these now, so clearing
+        // every row has to reach the server as "no variables" rather than
+        // being omitted and leaving the old set in place.
+        dynamic_variables: fromPairs(variables) ?? {},
         tool_mocks: (draft.tool_mocks ?? []).filter((m) => m.tool_name),
       });
       onClose();
@@ -156,6 +172,42 @@ export default function TestCaseModal({
               </div>
             ))}
           </div>
+        </Field>
+
+        <Field
+          label="Dynamic variables"
+          hint="The state the agent runs in for this scenario. An unset variable stays literal, so a branch the prompt gates on one never fires."
+        >
+          <PairRows
+            addLabel="Add variable"
+            pairs={variables}
+            onChange={setVariables}
+            keyPlaceholder="is_last_day_of_trial"
+            valuePlaceholder="true"
+          />
+          {unset.length > 0 && (
+            <p className="mt-2 text-xs text-sub">
+              Read by the prompt, not set here:{" "}
+              {unset.map((name, i) => (
+                <span key={name}>
+                  {i > 0 && ", "}
+                  <button
+                    onClick={() => setVariables([...variables, { key: name, value: "" }])}
+                    title={
+                      name in agentDefaultVariables
+                        ? `Falls back to the agent default: ${agentDefaultVariables[name]}`
+                        : "No value anywhere — stays literal at run time"
+                    }
+                    className={`font-mono cursor-pointer hover:underline ${
+                      name in agentDefaultVariables ? "text-sub" : "text-accent-deep"
+                    }`}
+                  >
+                    {name}
+                  </button>
+                </span>
+              ))}
+            </p>
+          )}
         </Field>
 
         <Field

@@ -596,6 +596,7 @@ async def generate_test_case_definitions(
             name=d["name"],
             user_prompt=d["user_prompt"],
             metrics=d["metrics"],
+            dynamic_variables=coerce_dynamic_variables(d["dynamic_variables"]),
             tool_mocks=d["tool_mocks"],
             source="generated",
         )

@@ -63,6 +63,28 @@ def resolve_template(text: str, variables: Mapping[str, Any]) -> str:
     return _PLACEHOLDER.sub(_sub, text)
 
 
+def prompt_variables(text: str) -> list[str]:
+    """The placeholder names *text* reads, in first-appearance order.
+
+    Backend-only (no worker mirror): this exists so callers that have to fill a
+    prompt in — test-case generation, the dashboard's variable hints — can see
+    which names matter. Since an unset placeholder stays literal, a branch the
+    prompt gates on one is unreachable until that name has a value.
+
+    A nested placeholder reports the inner name, not the composed key:
+    ``{{current_time_{{user_timezone}}}}`` resolves through ``user_timezone``,
+    so that is the name worth setting.
+    """
+    names: list[str] = []
+    for match in _PLACEHOLDER.finditer(text or ""):
+        key = match.group(1).strip()
+        found = [m.group(1).strip() for m in _INNER.finditer(key)] if "{{" in key else [key]
+        for name in found:
+            if name and name not in names:
+                names.append(name)
+    return names
+
+
 def _utcnow() -> datetime:
     return datetime.now(UTC)
 

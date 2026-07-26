@@ -486,3 +486,100 @@ async def test_generate_raises_when_nothing_usable_comes_back(monkeypatch):
     monkeypatch.setattr(simulation, "genai_credentials_available", lambda _s: True)
     with pytest.raises(RuntimeError, match="no usable test cases"):
         await simulation.generate_test_cases(_llm_with_tools(), 2)
+
+
+# ------------------------------------------------- generation: variable setup
+
+
+def _gated_llm():
+    """An agent whose interesting branch is gated on a dynamic variable."""
+    return RetellLLM(
+        llm_id="llm_gate",
+        workspace_id="ws",
+        general_prompt=(
+            'If {{is_last_day_of_trial}} = "true", say the free week is ending.\n'
+            "Call log_mood(phone={{phone}}).\n"
+            "The time is {{current_time_{{user_timezone}}}}."
+        ),
+        begin_message="Good morning {{first_name}}!",
+        default_dynamic_variables={"first_name": "friend"},
+        general_tools=[{"type": "custom", "name": "log_mood", "description": "Log"}],
+    )
+
+
+async def test_generate_tells_the_model_which_variables_the_prompt_reads(monkeypatch):
+    client, model = fake_client(
+        [
+            {
+                "test_cases": [
+                    {
+                        "name": "Last day",
+                        "user_prompt": "You are on the last day of your trial.",
+                        "metrics": ["The agent says the trial is ending"],
+                        "dynamic_variables": {"is_last_day_of_trial": "true", "phone": "+15551234"},
+                    }
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr(simulation, "build_genai_client", lambda _s: client)
+    monkeypatch.setattr(simulation, "genai_credentials_available", lambda _s: True)
+
+    cases = await simulation.generate_test_cases(_gated_llm(), 1)
+
+    sent = model.prompts[0]
+    # Every name the prompt reads is offered, including the greeting's and the
+    # inner name of the nested time key — not the composed key itself.
+    assert "- {{is_last_day_of_trial}}" in sent
+    assert "- {{phone}}" in sent
+    assert "- {{user_timezone}}" in sent
+    assert "{{current_time_{{user_timezone}}}}" not in sent.split("Dynamic variables")[1]
+    # A name with an agent default is shown as already having a value.
+    assert '- {{first_name}} (agent default: "friend")' in sent
+    assert cases[0]["dynamic_variables"] == {"is_last_day_of_trial": "true", "phone": "+15551234"}
+
+
+@pytest.mark.parametrize("returned", [None, [], "true", {}])
+async def test_generate_defaults_variables_to_an_empty_set(monkeypatch, returned):
+    """A draft that names no variables is still usable — just unparameterized."""
+    client, _ = fake_client(
+        [
+            {
+                "test_cases": [
+                    {
+                        "name": "Plain",
+                        "user_prompt": "You want a callback.",
+                        "metrics": ["Agent books it"],
+                        "dynamic_variables": returned,
+                    }
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr(simulation, "build_genai_client", lambda _s: client)
+    monkeypatch.setattr(simulation, "genai_credentials_available", lambda _s: True)
+    cases = await simulation.generate_test_cases(_gated_llm(), 1)
+    assert cases[0]["dynamic_variables"] == {}
+
+
+async def test_generate_coerces_variable_values_to_strings(monkeypatch):
+    """`resolve_template` substitutes strings; a bare `true` must not break it."""
+    client, _ = fake_client(
+        [
+            {
+                "test_cases": [
+                    {
+                        "name": "Typed",
+                        "user_prompt": "You want a callback.",
+                        "metrics": ["Agent books it"],
+                        "dynamic_variables": {"is_last_day_of_trial": True, "  ": "x", "n": 7},
+                    }
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr(simulation, "build_genai_client", lambda _s: client)
+    monkeypatch.setattr(simulation, "genai_credentials_available", lambda _s: True)
+    cases = await simulation.generate_test_cases(_gated_llm(), 1)
+    # The blank key is dropped; everything else becomes a string.
+    assert cases[0]["dynamic_variables"] == {"is_last_day_of_trial": "True", "n": "7"}
