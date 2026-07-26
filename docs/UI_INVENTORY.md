@@ -44,7 +44,8 @@ FOOTER:   plan pill ("Pay As You Go"), account email row, Help | Updates
    share, version "V83" + history, "Create new version", "Conductor".
    Left: meta row (Cost $/min · Latency ms · Tokens), ID copy; selector row:
    LLM model ("Gemini 3.1 Flash Lite" + gear), voice ("Katie"), language
-   ("English (US)"), "Agent Handbook"; big prompt textarea with `{{var}}`
+   ("English (US)"), "Agent Handbook", clock button → "Current Time
+   Awareness" (agent timezone popover); big prompt textarea with `{{var}}`
    chips; Welcome Message (AI speaks first / Custom message /
    `{{bm_greeting}}`, "Pause Before Speaking: 0.6s").
    Right: accordions — Functions, Knowledge Base, Speech Settings, Realtime

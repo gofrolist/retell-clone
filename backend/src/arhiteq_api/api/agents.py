@@ -1,3 +1,6 @@
+from collections.abc import Mapping
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +22,7 @@ from ..schemas import (
     CreateAgentRequest,
     TestWebhookRequest,
     agent_to_dict,
+    normalize_timezone,
     normalize_webhook_events,
 )
 from ..services import webhooks
@@ -81,9 +85,33 @@ _MUTABLE_FIELDS = {
     "opt_in_signed_url",
     "ivr_option",
     "call_screening_option",
+    "timezone",
     "response_engine",
     "folder_id",
 }
+
+
+def _require_object_body(payload: Any) -> None:
+    """Reject a non-object PATCH body before the field validators index it.
+
+    apply_patch makes the same check, but the validators below run first and
+    would raise a TypeError (opaque 500) on a JSON array or string body.
+    """
+    if not isinstance(payload, Mapping):
+        raise HTTPException(422, detail="Request body must be a JSON object")
+
+
+def _validate_timezone_patch(payload: dict) -> None:
+    """Validate + normalize the agent timezone on PATCH, in place."""
+    if "timezone" not in payload:
+        return
+    value = payload["timezone"]
+    if value is not None and not isinstance(value, str):
+        raise HTTPException(422, detail="timezone must be an IANA timezone name or null")
+    try:
+        payload["timezone"] = normalize_timezone(value)
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc)) from None
 
 
 def _validate_webhook_patch(payload: dict) -> None:
@@ -188,7 +216,9 @@ async def update_agent(
 ):
     agent = await _get_voice_agent(session, agent_id, api_key.workspace_id)
     payload = await request.json()
+    _require_object_body(payload)
     _validate_webhook_patch(payload)
+    _validate_timezone_patch(payload)
     if "folder_id" in payload:
         await _validate_folder_id(session, payload["folder_id"], api_key.workspace_id)
     # A folder move is a dashboard-only regrouping, not a config change: it

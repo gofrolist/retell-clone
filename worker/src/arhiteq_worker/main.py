@@ -839,6 +839,9 @@ async def entrypoint(ctx: JobContext) -> None:
             logger.warning("agent swap rejected: agent %s has no LLM config", agent_id)
             return json.dumps({"error": "destination agent has no LLM configuration"})
         swap_cfg = CallConfig.from_dict({**cfg.raw, **swap_raw})
+        # The destination agent's own "Current Time Awareness" takes over for
+        # the rest of the call (the prompt below is resolved against it).
+        variables.set_default_timezone(swap_cfg.agent.timezone)
         new_instructions = resolve_template(swap_cfg.llm.general_prompt, variables)
         new_tools = build_tools(
             swap_cfg.llm.general_tools,

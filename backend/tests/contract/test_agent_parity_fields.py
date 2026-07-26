@@ -51,6 +51,58 @@ async def test_agent_parity_field_defaults(client):
     assert got["opt_in_signed_url"] is False
 
 
+async def test_agent_timezone_round_trip_and_validation(client):
+    # "Current Time Awareness": the zone un-suffixed time variables resolve in.
+    assert (await client.get(f"/get-agent/{AGENT_ID}", headers=AUTH_HEADERS)).json()[
+        "timezone"
+    ] is None
+
+    resp = await client.patch(
+        f"/update-agent/{AGENT_ID}", headers=AUTH_HEADERS, json={"timezone": "America/New_York"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["timezone"] == "America/New_York"
+    got = (await client.get(f"/get-agent/{AGENT_ID}", headers=AUTH_HEADERS)).json()
+    assert got["timezone"] == "America/New_York"
+
+    # A typo'd zone is rejected, not stored (it would silently fall back).
+    bad = await client.patch(
+        f"/update-agent/{AGENT_ID}", headers=AUTH_HEADERS, json={"timezone": "Mars/Olympus"}
+    )
+    assert bad.status_code == 422
+
+    # "" is the dashboard's "No timezone set"; null clears it too.
+    cleared = await client.patch(
+        f"/update-agent/{AGENT_ID}", headers=AUTH_HEADERS, json={"timezone": ""}
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["timezone"] is None
+
+
+async def test_non_object_patch_body_is_rejected(client):
+    # The PATCH field validators index the raw body; a JSON array must 422
+    # (apply_patch's own guard) rather than TypeError into a 500.
+    resp = await client.patch(f"/update-agent/{AGENT_ID}", headers=AUTH_HEADERS, json=["timezone"])
+    assert resp.status_code == 422
+
+
+async def test_create_agent_validates_timezone(client):
+    body = {
+        "response_engine": {"type": "retell-llm", "llm_id": LLM_ID},
+        "voice_id": "11labs-Cimo",
+    }
+    ok = await client.post(
+        "/create-agent", headers=AUTH_HEADERS, json={**body, "timezone": "Europe/Berlin"}
+    )
+    assert ok.status_code == 201
+    assert ok.json()["timezone"] == "Europe/Berlin"
+
+    bad = await client.post(
+        "/create-agent", headers=AUTH_HEADERS, json={**body, "timezone": "Mars/Olympus"}
+    )
+    assert bad.status_code == 422
+
+
 async def test_llm_mcps_round_trip(client):
     resp = await client.patch(
         f"/update-retell-llm/{LLM_ID}", headers=AUTH_HEADERS, json={"mcps": MCPS}

@@ -51,6 +51,18 @@ def test_chat_prompt_resolves_system_and_user_variables():
     assert "1 minute 3" in resolved  # ~90s elapsed, tolerant of test runtime
 
 
+def test_chat_prompt_uses_agent_timezone():
+    from arhiteq_api.api.chats import _resolve_chat_prompt
+    from arhiteq_api.models import Agent, Chat
+
+    chat = Chat(chat_id="chat_abc123")
+    agent = Agent(agent_id=AGENT_ID, response_engine={}, timezone="Asia/Tokyo")
+    # Agent "Current Time Awareness" applies on the chat channel too.
+    assert "JST" in _resolve_chat_prompt("{{current_time}}", chat, agent)
+    # Unset (and unknown) zones keep Retell's America/Los_Angeles default.
+    assert "JST" not in _resolve_chat_prompt("{{current_time}}", chat, Agent(response_engine={}))
+
+
 async def test_chat_completion_uses_vertex_client_when_configured(client, monkeypatch):
     # In Vertex mode the reply must go through genai.Client(vertexai=True) (ADC),
     # not the Developer API — mirrors the analysis path so the two can't drift.
