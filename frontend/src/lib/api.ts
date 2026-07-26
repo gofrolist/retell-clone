@@ -877,11 +877,21 @@ export const api = {
   getChat: (chatId: string) => request<RawChat>(`/get-chat/${encodeURIComponent(chatId)}`),
 
   // --------------------------------------------------- Test Audio (web call)
-  createWebCall: (agentId: string, dynamicVariables?: Record<string, string>) =>
+  /**
+   * `agentVersion` dials a specific version. The editor passes the one being
+   * edited so a draft can be voice-tested; omitting it resolves the published
+   * version, which is what an API caller wants.
+   */
+  createWebCall: (
+    agentId: string,
+    dynamicVariables?: Record<string, string>,
+    agentVersion?: number,
+  ) =>
     request<RawWebCall>(
       "/v2/create-web-call",
       post({
         agent_id: agentId,
+        ...(agentVersion === undefined ? {} : { agent_version: agentVersion }),
         ...(dynamicVariables && Object.keys(dynamicVariables).length
           ? { retell_llm_dynamic_variables: dynamicVariables }
           : {}),

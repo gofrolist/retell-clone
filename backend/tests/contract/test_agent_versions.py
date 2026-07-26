@@ -6,7 +6,14 @@ live call. See docs/AGENT_VERSIONING.md.
 
 import arhiteq_api.db as db_module
 from arhiteq_api.models import Agent, Call
-from tests.conftest import AGENT_ID, AUTH_HEADERS, FROM_NUMBER, LLM_ID, WORKSPACE_ID
+from tests.conftest import (
+    AGENT_ID,
+    AUTH_HEADERS,
+    COMPANION_AGENT_ID,
+    FROM_NUMBER,
+    LLM_ID,
+    WORKSPACE_ID,
+)
 
 
 async def _versions(client, agent_id=AGENT_ID):
@@ -267,6 +274,150 @@ async def test_discarding_a_branched_draft_falls_back_to_the_newest_version(clie
 async def test_published_versions_cannot_be_deleted(client):
     resp = await client.delete(f"/delete-agent-version/{AGENT_ID}/0", headers=AUTH_HEADERS)
     assert resp.status_code == 422
+
+
+async def test_restore_does_not_rewrite_an_llm_the_draft_repointed(client):
+    # A draft that swapped response engines must not have the restored prompt
+    # written into the engine it swapped *to* — that LLM belongs to no version.
+    other = await client.post(
+        "/create-retell-llm", headers=AUTH_HEADERS, json={"general_prompt": "OTHER LLM"}
+    )
+    other_id = other.json()["llm_id"]
+    await client.patch(
+        f"/update-agent/{AGENT_ID}",
+        headers=AUTH_HEADERS,
+        json={"response_engine": {"type": "retell-llm", "llm_id": other_id}},
+    )
+    resp = await client.delete(f"/delete-agent-version/{AGENT_ID}/1", headers=AUTH_HEADERS)
+    assert resp.status_code == 204
+
+    # The agent is back on its original engine...
+    assert (await _agent(client))["response_engine"]["llm_id"] == LLM_ID
+    # ...and the engine it briefly pointed at is untouched.
+    other_now = await client.get(f"/get-retell-llm/{other_id}", headers=AUTH_HEADERS)
+    assert other_now.json()["general_prompt"] == "OTHER LLM"
+
+
+async def test_restore_forks_an_llm_shared_with_another_agent(client):
+    # AGENT_ID and COMPANION_AGENT_ID share LLM_ID in the fixture. Restoring
+    # one agent must not rewrite the other's prompt.
+    await client.patch(
+        f"/update-retell-llm/{LLM_ID}", headers=AUTH_HEADERS, json={"general_prompt": "shared v2"}
+    )
+    await client.post(f"/publish-agent/{COMPANION_AGENT_ID}", headers=AUTH_HEADERS, json={})
+    await client.post(f"/publish-agent/{AGENT_ID}", headers=AUTH_HEADERS, json={})
+
+    resp = await client.post(
+        f"/create-agent-version/{AGENT_ID}", headers=AUTH_HEADERS, json={"base_version": 0}
+    )
+    assert resp.status_code == 201
+
+    companion = await _agent(client, COMPANION_AGENT_ID)
+    assert companion["response_engine"]["llm_id"] == LLM_ID
+    shared = await client.get(f"/get-retell-llm/{LLM_ID}", headers=AUTH_HEADERS)
+    assert shared.json()["general_prompt"] == "shared v2"
+    # The restoring agent got a private copy carrying the old prompt.
+    forked_id = (await _agent(client))["response_engine"]["llm_id"]
+    assert forked_id != LLM_ID
+    forked = await client.get(f"/get-retell-llm/{forked_id}", headers=AUTH_HEADERS)
+    assert forked.json()["general_prompt"].startswith("You are Clara")
+
+
+# ------------------------------------------------------- published immutability
+
+
+async def test_rollback_does_not_rewrite_the_target_versions_changelog(client):
+    await client.patch(f"/update-agent/{AGENT_ID}", headers=AUTH_HEADERS, json={"agent_name": "V1"})
+    await client.post(
+        f"/publish-agent/{AGENT_ID}", headers=AUTH_HEADERS, json={"version_title": "one"}
+    )
+    await client.post(
+        f"/publish-agent-version/{AGENT_ID}",
+        headers=AUTH_HEADERS,
+        json={"version": 0, "version_title": "rollback", "version_description": "reverted"},
+    )
+    v0 = next(v for v in await _versions(client) if v["version"] == 0)
+    assert v0["version_title"] is None
+    assert v0["version_description"] == "Imported from live configuration"
+
+
+async def test_version_label_patch_does_not_touch_a_published_version(client):
+    resp = await client.patch(
+        f"/update-agent/{AGENT_ID}",
+        headers=AUTH_HEADERS,
+        json={"version_description": "rewriting history"},
+    )
+    assert resp.status_code == 200
+    versions = await _versions(client)
+    assert [v["version"] for v in versions] == [0]
+    assert versions[0]["version_description"] == "Imported from live configuration"
+
+
+# ------------------------------------------------------- pinned-version safety
+
+
+async def test_call_pinned_to_a_vanished_version_still_gets_config(client):
+    # Calls stamped by the pre-versioning counter reference versions that were
+    # never snapshotted. The worker's config fetch must degrade, not 404 — a
+    # raise there kills a live call.
+    resp = await client.post(
+        "/v2/register-phone-call",
+        headers=AUTH_HEADERS,
+        json={"agent_id": AGENT_ID, "from_number": "+15551230000", "to_number": "+15559990000"},
+    )
+    call_id = resp.json()["call_id"]
+    async with db_module.session_factory()() as session:
+        call = await session.get(Call, call_id)
+        call.agent_version = 7  # a version that has no row
+        await session.commit()
+
+    config = await client.get(
+        f"/internal/calls/{call_id}/config", headers={"X-Internal-Token": "test-internal-token"}
+    )
+    assert config.status_code == 200
+    assert config.json()["llm"]["general_prompt"].startswith("You are Clara")
+
+
+async def test_call_pinned_to_a_discarded_draft_still_gets_config(client):
+    await client.patch(
+        f"/update-retell-llm/{LLM_ID}", headers=AUTH_HEADERS, json={"general_prompt": "draft"}
+    )
+    resp = await client.post(
+        "/v2/register-phone-call",
+        headers=AUTH_HEADERS,
+        json={
+            "agent_id": AGENT_ID,
+            "agent_version": 1,
+            "from_number": "+15551230000",
+            "to_number": "+15559990000",
+        },
+    )
+    call_id = resp.json()["call_id"]
+    assert resp.json()["agent_version"] == 1
+    assert (
+        await client.delete(f"/delete-agent-version/{AGENT_ID}/1", headers=AUTH_HEADERS)
+    ).status_code == 204
+
+    config = await client.get(
+        f"/internal/calls/{call_id}/config", headers={"X-Internal-Token": "test-internal-token"}
+    )
+    assert config.status_code == 200
+    assert config.json()["agent"]["agent_id"] == AGENT_ID
+
+
+async def test_explicit_unknown_version_still_404s(client):
+    # The graceful fallback is only for versions pinned on an existing call;
+    # a caller naming a bad version must still be told.
+    resp = await client.post(
+        "/v2/create-phone-call",
+        headers=AUTH_HEADERS,
+        json={
+            "from_number": FROM_NUMBER,
+            "to_number": "+15557654321",
+            "override_agent_version": 42,
+        },
+    )
+    assert resp.status_code == 404
 
 
 # ------------------------------------------------- calls resolve the publish

@@ -40,7 +40,7 @@ async def _call_config(call: Call, session: AsyncSession) -> dict[str, Any]:
     # Serve the version pinned when the call was created, not the live rows:
     # editing (or publishing) mid-call must not swap config under a running
     # session, and the worker re-fetches config on reconnects.
-    agent, llm, _ = await versions.resolve(session, live, call.agent_version)
+    agent, llm, _ = await versions.resolve(session, live, call.agent_version, strict=False)
     dyn: dict[str, str] = {}
     if llm is not None and llm.default_dynamic_variables:
         dyn.update(coerce_dynamic_variables(llm.default_dynamic_variables))

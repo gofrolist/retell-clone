@@ -61,9 +61,14 @@ reimplement it.
 - That stamp then **pins the call**: `GET /internal/calls/{id}/config` serves the
   pinned version, so publishing mid-call can't swap config under a running
   session (the worker refetches config on reconnects).
+- A pinned version whose row is *gone* — a call stamped by the pre-versioning
+  counter, or one pinned to a since-discarded draft — degrades to the published
+  version rather than 404ing (`resolve(..., strict=False)`). A raise there would
+  kill a live call. An explicitly requested unknown version still 404s.
 - `override_agent_version` (phone calls) and `agent_version` (web/register calls)
-  override the default. The dashboard's test call passes the version being
-  edited, so a draft can still be tried out.
+  override the default. The editor's Test Audio button passes the version being
+  edited (`TestPanel` → `api.createWebCall`), so a draft can be voice-tested
+  before it is published.
 - `agent_swap` (`GET /internal/agents/{id}/config`) lands on the destination
   agent's published version.
 - `GET /get-agent/{id}` still defaults to the **latest** version — what the
@@ -93,3 +98,24 @@ the only commit.
 - `is_live` on a version entry is an Arhiteq extra: publishing an older version
   re-points production without minting a new version, so "published" and "live"
   are not the same thing.
+- **Calls with no `agent_version` resolve the published version, not the latest.**
+  This is the point of the feature, but it is a behaviour change for any
+  integration that PATCHes an agent and expects the next call to pick the edit
+  up — such a caller now has to publish. (Arhiteq's own consumer only creates
+  calls; it never updates agents. See `docs/RETELL_INTEGRATION_MAP.md`.)
+
+## Sharing one LLM between agents
+
+`response_engine.llm_id` can point several agents at one `retell_llms` row. That
+row is a single config for all of them — editing the prompt for one agent has
+always changed the others, before versioning and after.
+
+Restore and discard-draft would make that worse, because they write a whole
+snapshot back. So `_restore_config` forks a **private copy** of the LLM for the
+restoring agent (repointing its `response_engine`) whenever the write would
+actually change a row another agent uses. A restore that wouldn't change the
+config writes nothing and forks nothing.
+
+Ordinary prompt edits are untouched by this and still propagate to every agent
+on that LLM. The dashboard gives each agent its own LLM (including on
+"Duplicate agent"), so sharing only arises through direct API use.

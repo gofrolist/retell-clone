@@ -225,11 +225,14 @@ async def publish(
         row.is_published = True
         row.published_timestamp = now_ms()
         agent.is_published = True
-    if title is not None:
-        row.version_title = title
-    if description is not None:
-        row.version_description = description
-    row.last_modification_timestamp = now_ms()
+        # Labels are part of a published version and freeze with it. On the
+        # rollback path (`row` already published) they are ignored rather than
+        # rewriting an existing entry's changelog.
+        if title is not None:
+            row.version_title = title
+        if description is not None:
+            row.version_description = description
+        row.last_modification_timestamp = now_ms()
     agent.published_version = version
     agent.last_modification_timestamp = now_ms()
     return row
@@ -253,10 +256,7 @@ async def branch(session: AsyncSession, agent: Agent, base_version: int) -> Agen
     base = await _get(session, agent.agent_id, base_version)
     if base is None:
         raise HTTPException(404, detail=f"Agent version {base_version} not found")
-    llm = await _load_llm(session, agent)
-    _restore(agent, base.agent_snapshot, _AGENT_EXCLUDED)
-    if llm is not None:
-        _restore(llm, base.llm_snapshot, _LLM_EXCLUDED)
+    await _restore_config(session, agent, base)
     agent.version = (await _max_version(session, agent.agent_id)) + 1
     agent.is_published = False
     draft = AgentVersion(
@@ -289,10 +289,46 @@ async def discard(session: AsyncSession, agent: Agent, version: int) -> None:
     agent.is_published = True
     remaining = await _get(session, agent.agent_id, agent.version)
     if remaining is not None:
-        llm = await _load_llm(session, agent)
-        _restore(agent, remaining.agent_snapshot, _AGENT_EXCLUDED)
-        if llm is not None:
-            _restore(llm, remaining.llm_snapshot, _LLM_EXCLUDED)
+        await _restore_config(session, agent, remaining)
+
+
+async def _restore_config(session: AsyncSession, agent: Agent, version: AgentVersion) -> None:
+    """Write a version's snapshot back onto the live agent + LLM rows.
+
+    Order matters: the agent snapshot carries `response_engine`, so it has to
+    land *before* the LLM is loaded. Loading first would fetch whatever engine
+    the outgoing draft pointed at and then write the restored version's prompt
+    into that unrelated LLM.
+    """
+    _restore(agent, version.agent_snapshot, _AGENT_EXCLUDED)
+    llm = await _load_llm(session, agent)
+    if llm is None:
+        return
+    snapshot = version.llm_snapshot or {}
+    if all(getattr(llm, field, None) == value for field, value in snapshot.items()):
+        return  # already the restored config — nothing to write, nothing to fork
+    # An LLM shared by several agents is one config for all of them (that is
+    # already true of ordinary prompt edits), so restoring would rewrite the
+    # other agents' prompt. Fork a private copy instead of corrupting theirs.
+    sharers = [
+        a
+        for a in await agents_using_llm(session, agent.workspace_id, llm.llm_id)
+        if a.agent_id != agent.agent_id
+    ]
+    if sharers:
+        copy = RetellLLM(
+            workspace_id=agent.workspace_id,
+            **{
+                c.name: getattr(llm, c.name)
+                for c in llm.__table__.columns
+                if c.name not in _LLM_EXCLUDED
+            },
+        )
+        session.add(copy)
+        await session.flush()
+        agent.response_engine = {**(agent.response_engine or {}), "llm_id": copy.llm_id}
+        llm = copy
+    _restore(llm, version.llm_snapshot, _LLM_EXCLUDED)
 
 
 async def _max_version(session: AsyncSession, agent_id: str) -> int:
@@ -330,12 +366,20 @@ async def resolve(
     session: AsyncSession,
     agent: Agent,
     ref: int | str | None = LATEST_PUBLISHED,
+    *,
+    strict: bool = True,
 ) -> tuple[Agent, RetellLLM | None, int]:
     """Config an agent runs under `ref`, as (agent, llm, version_number).
 
     Returns the live rows when `ref` names the latest version (a draft has no
     snapshot — it *is* the live rows) or when the agent has no history yet, so
     every caller works before the lazy seed has run.
+
+    `strict` controls what an unknown version number does. Callers passing a
+    user-supplied version want the 404; callers resolving a version *pinned on
+    an existing call* must not, because the row can legitimately be gone (a
+    call stamped by the pre-versioning counter, or a draft since discarded) and
+    a raise there would kill a live call.
     """
     llm = await _load_llm(session, agent)
     if ref == LATEST:
@@ -346,7 +390,12 @@ async def resolve(
     row = await _get(session, agent.agent_id, target)
     if row is None:
         if isinstance(ref, int):
-            raise HTTPException(404, detail=f"Agent version {target} not found")
+            if strict:
+                raise HTTPException(404, detail=f"Agent version {target} not found")
+            if target != agent.published_version:
+                # Degrade to what the agent is serving now, not to the live
+                # rows, which may hold an unpublished draft.
+                return await resolve(session, agent, LATEST_PUBLISHED, strict=False)
         return agent, llm, agent.version
     if row.agent_snapshot is None:  # an out-of-band draft; nothing pinned to serve
         return agent, llm, agent.version

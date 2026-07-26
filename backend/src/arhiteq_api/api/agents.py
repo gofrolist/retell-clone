@@ -263,7 +263,9 @@ async def update_agent(
     if "version_title" in payload or "version_description" in payload:
         if current is None:
             current = await versions.current_row(session, agent)
-        if current is not None:
+        # Only a draft's label is editable — rewriting a published version's
+        # changelog would break the immutability the whole model rests on.
+        if current is not None and not current.is_published:
             if "version_title" in payload:
                 current.version_title = payload["version_title"]
             if "version_description" in payload:
