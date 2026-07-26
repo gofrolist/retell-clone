@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.14.0](https://github.com/gofrolist/retell-clone/compare/v0.13.0...v0.14.0) (2026-07-26)
+
+
+### Features
+
+* **agents:** add Current Time Awareness timezone setting ([#162](https://github.com/gofrolist/retell-clone/issues/162)) ([9648c26](https://github.com/gofrolist/retell-clone/commit/9648c26cc7a45f1b071cc5d6940e2621372e4608))
+* **agents:** add simulation testing tab with self-generated test cases ([#161](https://github.com/gofrolist/retell-clone/issues/161)) ([89b18cd](https://github.com/gofrolist/retell-clone/commit/89b18cdc8329296d3c0b0830833ee4ff62af190d))
+* **agents:** real version history with drafts and published snapshots ([#163](https://github.com/gofrolist/retell-clone/issues/163)) ([cc300d0](https://github.com/gofrolist/retell-clone/commit/cc300d047c84febf17e3ed0228caddf884fbf66e))
+
+
+### Bug Fixes
+
+* **api:** require owner/admin role to create or revoke API keys ([#139](https://github.com/gofrolist/retell-clone/issues/139)) ([20c00df](https://github.com/gofrolist/retell-clone/commit/20c00df9cdafb2102755b7a19f2ca86803e110ea))
+
 ## [0.13.0](https://github.com/gofrolist/retell-clone/compare/v0.12.0...v0.13.0) (2026-07-24)
 
 
