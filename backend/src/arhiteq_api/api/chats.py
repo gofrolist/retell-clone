@@ -46,14 +46,16 @@ def _message(role: str, content: str) -> dict[str, Any]:
     }
 
 
-def _resolve_chat_prompt(general_prompt: str, chat: Chat) -> str:
+def _resolve_chat_prompt(general_prompt: str, chat: Chat, agent: Agent | None = None) -> str:
     # Retell chat system variables (chat_id, session_type, session_duration,
     # the current_time family) resolve underneath user-supplied dynamic
-    # variables, with the same template semantics as voice calls.
+    # variables, with the same template semantics as voice calls — including
+    # the agent's "Current Time Awareness" timezone.
     variables = ChatVariables(
         coerce_dynamic_variables(chat.retell_llm_dynamic_variables),
         chat_id=chat.chat_id,
         start_timestamp_ms=chat.start_timestamp,
+        default_timezone=agent.timezone if agent else None,
     )
     return resolve_template(general_prompt, variables)
 
@@ -79,7 +81,7 @@ async def _agent_reply(chat: Chat, session: AsyncSession) -> tuple[str, bool]:
         llm = await session.get(RetellLLM, llm_id)
         if llm:
             if llm.general_prompt:
-                general_prompt = _resolve_chat_prompt(llm.general_prompt, chat)
+                general_prompt = _resolve_chat_prompt(llm.general_prompt, chat, agent)
             if llm.model and not is_live_model(llm.model):
                 model = llm.model
 

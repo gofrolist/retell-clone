@@ -76,6 +76,8 @@ class AgentConfig:
     enable_voicemail_detection: bool = False
     voicemail_option: dict[str, Any] | None = None
     boosted_keywords: list[str] = field(default_factory=list)
+    # "Current Time Awareness": IANA zone for un-suffixed time variables.
+    timezone: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -95,6 +97,7 @@ class AgentConfig:
             if isinstance(d.get("voicemail_option"), dict)
             else None,
             boosted_keywords=list(d.get("boosted_keywords") or []),
+            timezone=_str(d.get("timezone"), "") or None,
             raw=d,
         )
 
@@ -167,7 +170,8 @@ class CallConfig:
         facts about the call, so they win over same-named user variables.
         Retell default system variables ({{current_time}}, {{direction}},
         {{session_duration}}, …) resolve lazily underneath user variables —
-        see ResolutionVariables.
+        see ResolutionVariables. Un-suffixed time variables use the agent's
+        configured timezone ("Current Time Awareness").
         """
         return ResolutionVariables(
             {
@@ -183,6 +187,7 @@ class CallConfig:
             to_number=self.to_number,
             call_type=self.call_type,
             answered_at_ms=answered_at_ms,
+            default_timezone=self.agent.timezone,
         )
 
     def tool_call_object(self) -> dict[str, Any]:

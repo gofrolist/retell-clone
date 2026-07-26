@@ -172,7 +172,6 @@ export default function AgentEditorPage({
           <MetaRow agentId={agent.agent_id} llm={llmView} />
           <div className="mt-3">
             <SelectorRow
-              agentId={agent.agent_id}
               model={llmView?.model ?? ""}
               onModel={llm ? (v) => setLlmField("model", v) : undefined}
               temperature={num(llmView?.model_temperature, 0)}
@@ -181,6 +180,8 @@ export default function AgentEditorPage({
               onVoice={(v) => setAgentField("voice_id", v)}
               language={view.language}
               onLanguage={(v) => setAgentField("language", v)}
+              timezone={view.timezone ?? ""}
+              onTimezone={(v) => setAgentField("timezone", v || null)}
               voices={voices}
             />
           </div>

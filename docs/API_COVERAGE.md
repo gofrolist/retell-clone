@@ -41,7 +41,10 @@ gates enforce these), `DELETE /workspace` (owner-gated full cascade).
 Retell parity fields stored + served on agents (worker execution tracked per
 field): `pii_config`, `fallback_voice_ids`, `allow_user_dtmf`,
 `allow_dtmf_interruption`, `user_dtmf_options`, `opt_in_signed_url`,
-`ivr_option`, `call_screening_option`; on Retell LLMs: `mcps` (persist-only —
+`ivr_option`, `call_screening_option`, `timezone` (dashboard "Current Time
+Awareness" — the zone un-suffixed `{{current_time}}`/`{{current_hour}}`/
+`{{current_calendar}}` resolve in, on calls and chats alike; null keeps
+Retell's `America/Los_Angeles`); on Retell LLMs: `mcps` (persist-only —
 worker MCP execution pending, same status as the `mcp` tool type). Batch calls
 dial within the workspace's outbound concurrency budget minus the batch's
 `reserved_concurrency` (overflow tasks are paced by a background drainer as

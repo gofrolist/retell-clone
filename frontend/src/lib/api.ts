@@ -205,6 +205,8 @@ export interface RawAgent {
   opt_in_signed_url?: boolean;
   ivr_option?: { action: { type: string; text?: string } } | null;
   call_screening_option?: { action: { type: string; text?: string } } | null;
+  /** IANA zone for the agent's un-suffixed time variables; null = unset. */
+  timezone?: string | null;
   last_modification_timestamp: number;
   folder_id?: string | null;
   [key: string]: unknown;

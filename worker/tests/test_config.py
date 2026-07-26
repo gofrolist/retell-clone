@@ -64,6 +64,18 @@ def test_call_scoped_keys_win_over_user_variables() -> None:
     assert cfg.resolution_variables()["call.call_id"] == "call_abc123"
 
 
+def test_agent_timezone_reaches_resolution_variables() -> None:
+    # The control plane ships the agent's "Current Time Awareness" zone in the
+    # agent config; un-suffixed time variables must resolve in it.
+    cfg = CallConfig.from_dict({**CONFIG_DICT, "agent": {"timezone": "Asia/Tokyo"}})
+    assert cfg.agent.timezone == "Asia/Tokyo"
+    assert "JST" in cfg.resolution_variables()["current_time"]
+    # Unset (older control plane or "No timezone set") keeps Retell's default.
+    unset = CallConfig.from_dict(CONFIG_DICT)
+    assert unset.agent.timezone is None
+    assert "JST" not in unset.resolution_variables()["current_time"]
+
+
 def test_tool_call_object_shape() -> None:
     cfg = CallConfig.from_dict(CONFIG_DICT)
     call = cfg.tool_call_object()

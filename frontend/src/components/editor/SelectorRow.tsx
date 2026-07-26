@@ -1,16 +1,16 @@
 "use client";
 
 import { VoiceAvatar } from "@/components/agents/AgentsTable";
+import CurrentTimeAwareness from "@/components/editor/CurrentTimeAwareness";
 import LlmModelSelect from "@/components/editor/LlmModelSelect";
 import ModelSettingsPopover from "@/components/editor/ModelSettingsPopover";
-import VersionHistory from "@/components/editor/VersionHistory";
 import Select from "@/components/ui/Select";
 import SelectVoiceModal from "@/components/voices/SelectVoiceModal";
 import { voiceNameFromId } from "@/lib/api";
 import { isLiveModel } from "@/lib/models";
 import type { Voice } from "@/lib/types";
 import { withValue } from "@/lib/utils";
-import { BookOpen, ChevronDown, Clock4 } from "lucide-react";
+import { BookOpen, ChevronDown } from "lucide-react";
 import { useState } from "react";
 
 const LANGUAGES: { value: string; label: string; flag: string }[] = [
@@ -22,7 +22,6 @@ const LANGUAGES: { value: string; label: string; flag: string }[] = [
 ];
 
 export default function SelectorRow({
-  agentId,
   model,
   onModel,
   temperature,
@@ -31,9 +30,10 @@ export default function SelectorRow({
   onVoice,
   language,
   onLanguage,
+  timezone,
+  onTimezone,
   voices,
 }: {
-  agentId: string;
   model: string;
   onModel?: (v: string) => void;
   temperature?: number;
@@ -42,6 +42,9 @@ export default function SelectorRow({
   onVoice: (v: string) => void;
   language: string;
   onLanguage: (v: string) => void;
+  /** IANA zone for the agent's time variables; "" = no timezone set. */
+  timezone: string;
+  onTimezone: (v: string) => void;
   voices: Voice[];
 }) {
   const [voiceModalOpen, setVoiceModalOpen] = useState(false);
@@ -103,19 +106,7 @@ export default function SelectorRow({
           <BookOpen className="size-4 text-sub" />
           Agent Handbook
         </button>
-        <VersionHistory
-          agentId={agentId}
-          trigger={(open) => (
-            <button
-              onClick={open}
-              title="Version history"
-              className="flex size-9 items-center justify-center rounded-lg border border-line bg-white text-sub transition-colors hover:bg-app cursor-pointer"
-              aria-label="Version history"
-            >
-              <Clock4 className="size-4" />
-            </button>
-          )}
-        />
+        <CurrentTimeAwareness timezone={timezone} onTimezone={onTimezone} />
       </div>
     </div>
   );

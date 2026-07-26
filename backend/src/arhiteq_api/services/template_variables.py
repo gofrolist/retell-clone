@@ -25,7 +25,8 @@ _PLACEHOLDER = re.compile(r"\{\{\s*((?:[^{}]|\{\{[^{}]+?\}\})+?)\s*\}\}")
 _INNER = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 _MISSING = object()
 
-# Retell resolves un-suffixed time variables in America/Los_Angeles.
+# Retell resolves un-suffixed time variables in America/Los_Angeles unless the
+# agent sets one ("Current Time Awareness").
 DEFAULT_TIMEZONE = "America/Los_Angeles"
 _CALENDAR_DAYS = 14
 
@@ -64,6 +65,17 @@ def resolve_template(text: str, variables: Mapping[str, Any]) -> str:
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def _known_zone(name: str | None) -> str | None:
+    """*name* if it is a loadable IANA zone, else None."""
+    if not name:
+        return None
+    try:
+        ZoneInfo(name)
+    except KeyError, ValueError, OSError:
+        return None
+    return name
 
 
 def _format_current_time(dt: datetime) -> str:
@@ -121,10 +133,14 @@ class ChatVariables(dict):
         *,
         chat_id: str = "",
         start_timestamp_ms: int | None = None,
+        default_timezone: str | None = None,
     ) -> None:
         super().__init__(base)
         self._chat_id = chat_id
         self._start_timestamp_ms = start_timestamp_ms
+        # Agent "Current Time Awareness"; an unknown name falls back to the
+        # platform default rather than making every {{current_time}} literal.
+        self._default_timezone = _known_zone(default_timezone) or DEFAULT_TIMEZONE
 
     def _system_value(self, key: str) -> str | None:
         if key == "chat_id" and self._chat_id:
@@ -137,7 +153,7 @@ class ChatVariables(dict):
             elapsed = _utcnow().timestamp() - self._start_timestamp_ms / 1000.0
             return _format_duration(elapsed)
         formatter = _TIME_FORMATTERS.get(key)
-        zone_name = DEFAULT_TIMEZONE
+        zone_name = self._default_timezone
         if formatter is None:
             for name, fmt in _TIME_FORMATTERS.items():
                 if key.startswith(name + "_"):

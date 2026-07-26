@@ -52,6 +52,7 @@ _COLUMN_BACKFILLS: tuple[tuple[str, str, str], ...] = (
     ("agents", "opt_in_signed_url", "BOOLEAN DEFAULT FALSE"),
     ("agents", "ivr_option", "JSON"),
     ("agents", "call_screening_option", "JSON"),
+    ("agents", "timezone", "VARCHAR(64)"),
     ("retell_llms", "mcps", "JSON"),
     ("calls", "collected_dynamic_variables", "JSON"),
     ("contacts", "timezone", "VARCHAR(64)"),

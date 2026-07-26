@@ -80,7 +80,8 @@ LiveKit Agents worker; one job per call.
 - Retell **default system variables** resolve underneath user variables
   (worker `variables.ResolutionVariables`, computed at lookup time so tools
   see fresh values mid-call): `{{current_time}}` / `{{current_hour}}` /
-  `{{current_calendar}}` in `America/Los_Angeles` plus
+  `{{current_calendar}}` in the agent's `timezone` (Retell "Current Time
+  Awareness"; unset or unknown falls back to `America/Los_Angeles`) plus
   `{{current_time_<IANA tz>}}`-style suffixed variants; `{{session_type}}`,
   `{{session_duration}}` (after answer); phone-call-only `{{direction}}`,
   `{{user_number}}`, `{{agent_number}}`; and `{{call_id}}`, `{{call_type}}`.

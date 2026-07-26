@@ -292,6 +292,10 @@ class Agent(Base):
     # Same {"action": {...}} shape as voicemail_option (Retell parity).
     ivr_option: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     call_screening_option: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    # Retell "Current Time Awareness": IANA name, e.g. "America/New_York".
+    # The zone un-suffixed time variables ({{current_time}}, {{current_hour}},
+    # {{current_calendar}}) resolve in; null keeps Retell's America/Los_Angeles.
+    timezone: Mapped[str | None] = mapped_column(String(64))
     last_modification_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
     # Publishing model: single live version; publish-agent flips this on.
     is_published: Mapped[bool] = mapped_column(Boolean, default=True)

@@ -20,6 +20,7 @@ the call started.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -32,7 +33,10 @@ _PLACEHOLDER = re.compile(r"\{\{\s*((?:[^{}]|\{\{[^{}]+?\}\})+?)\s*\}\}")
 _INNER = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 _MISSING = object()
 
-# Retell resolves un-suffixed time variables in America/Los_Angeles.
+logger = logging.getLogger("arhiteq-worker.variables")
+
+# Retell resolves un-suffixed time variables in America/Los_Angeles unless the
+# agent sets one ("Current Time Awareness").
 DEFAULT_TIMEZONE = "America/Los_Angeles"
 _CALENDAR_DAYS = 14
 
@@ -94,6 +98,18 @@ def resolve_deep(value: Any, variables: Mapping[str, Any]) -> Any:
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def _known_zone(name: str | None) -> str | None:
+    """*name* if it is a loadable IANA zone, else None."""
+    if not name:
+        return None
+    try:
+        ZoneInfo(name)
+    except KeyError, ValueError, OSError:
+        logger.warning("ignoring unknown agent timezone %r", name)
+        return None
+    return name
 
 
 def _format_current_time(dt: datetime) -> str:
@@ -159,8 +175,13 @@ class ResolutionVariables(dict):
         to_number: str = "",
         call_type: str = "",
         answered_at_ms: int | None = None,
+        default_timezone: str | None = None,
     ) -> None:
         super().__init__(base)
+        # Agent "Current Time Awareness": the zone un-suffixed time variables
+        # resolve in. An unknown name is ignored rather than left to make every
+        # {{current_time}} literal mid-call.
+        self._default_timezone = _known_zone(default_timezone) or DEFAULT_TIMEZONE
         inbound = direction == "inbound"
         phone_call = call_type == "phone_call"
         self._facts: dict[str, str] = {}
@@ -189,7 +210,7 @@ class ResolutionVariables(dict):
                 return None
             return _format_duration(_utcnow().timestamp() - self._answered_at_ms / 1000.0)
         formatter = _TIME_FORMATTERS.get(key)
-        zone_name = DEFAULT_TIMEZONE
+        zone_name = self._default_timezone
         if formatter is None:
             for name, fmt in _TIME_FORMATTERS.items():
                 if key.startswith(name + "_"):

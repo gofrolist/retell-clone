@@ -7,6 +7,7 @@ fields we don't process, and rejecting them would break drop-in compatibility.
 
 from collections.abc import Mapping
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -31,6 +32,25 @@ def coerce_dynamic_variables(raw: Mapping[str, Any] | None) -> dict[str, str]:
     """Dynamic variables are stored verbatim: arbitrary string keys, values
     coerced to strings (contract: don't rename, don't drop)."""
     return {str(k): str(v) for k, v in (raw or {}).items()}
+
+
+def normalize_timezone(v: str | None) -> str | None:
+    """Agent timezone: a known IANA name, or null for "no timezone set".
+
+    Empty/whitespace means unset (the dashboard's "No timezone set" option
+    posts ""), and an unknown name is rejected rather than stored — a typo'd
+    zone would silently fall back to the platform default mid-call.
+    """
+    if v is None:
+        return None
+    name = v.strip()
+    if not name:
+        return None
+    try:
+        ZoneInfo(name)
+    except KeyError, ValueError, OSError:
+        raise ValueError(f"unknown timezone: {v}") from None
+    return name
 
 
 def normalize_webhook_events(v: list[str] | None) -> list[str] | None:
@@ -137,6 +157,9 @@ class CreateAgentRequest(CompatModel):
     opt_in_signed_url: bool | None = None
     ivr_option: dict[str, Any] | None = None
     call_screening_option: dict[str, Any] | None = None
+    # Retell "Current Time Awareness" (dashboard clock popover): IANA zone the
+    # un-suffixed {{current_time}} family resolves in.
+    timezone: str | None = None
     # Arhiteq extra (dashboard folders); absent from Retell's public API.
     folder_id: str | None = None
 
@@ -144,6 +167,11 @@ class CreateAgentRequest(CompatModel):
     @classmethod
     def _known_events(cls, v: list[str] | None) -> list[str] | None:
         return normalize_webhook_events(v)
+
+    @field_validator("timezone")
+    @classmethod
+    def _known_timezone(cls, v: str | None) -> str | None:
+        return normalize_timezone(v)
 
 
 class TestWebhookRequest(CompatModel):
@@ -316,6 +344,7 @@ def agent_to_dict(agent: Agent) -> dict[str, Any]:
         "opt_in_signed_url": agent.opt_in_signed_url,
         "ivr_option": agent.ivr_option,
         "call_screening_option": agent.call_screening_option,
+        "timezone": agent.timezone,
         "last_modification_timestamp": agent.last_modification_timestamp,
         # Arhiteq extra (dashboard folders); additive, not in Retell's shape.
         "folder_id": agent.folder_id,
