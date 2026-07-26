@@ -373,10 +373,10 @@ function testCaseBody(draft: TestCaseDraft) {
     user_prompt: draft.user_prompt,
     metrics: draft.metrics,
     tool_mocks: draft.tool_mocks ?? [],
-    // Omitted when the draft carries none: update treats any present value as
-    // an assignment, so sending `{}` would wipe variables set through the API
-    // the first time someone saves the form (which never edits them).
-    ...(draft.dynamic_variables ? { dynamic_variables: draft.dynamic_variables } : {}),
+    // Always sent, including as `{}`: the edit form owns these, so an empty
+    // set means "this case sets no variables" and must overwrite, not be
+    // skipped. Callers that don't edit them pass the current set straight back.
+    dynamic_variables: draft.dynamic_variables ?? {},
   };
 }
 

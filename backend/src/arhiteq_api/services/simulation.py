@@ -38,7 +38,7 @@ from ..models import (
     now_ms,
 )
 from .gemini import build_genai_client, genai_credentials_available, is_live_model
-from .template_variables import resolve_template
+from .template_variables import prompt_variables, resolve_template
 
 log = logging.getLogger(__name__)
 
@@ -139,6 +139,15 @@ Who speaks first: {start_speaker}
 Tools the agent can call:
 {tools}
 
+Dynamic variables the prompt reads:
+{variables}
+
+A variable you leave unset stays the literal text `{{{{name}}}}` when the case
+runs, exactly as an unset variable would on a real call. Any branch the prompt
+gates on that variable is then unreachable, so a criterion about that branch
+fails no matter how well the agent behaves. Give every scenario the variables
+its branch needs.
+
 Write {count} DISTINCT test cases that together cover this agent's real risk
 surface: the happy path, each tool the agent has (including the conditions that
 should trigger it), and the awkward cases this specific prompt invites —
@@ -153,7 +162,13 @@ For each case produce:
   they should push back on). 2-5 sentences. Never mention testing or the judge.
 * "metrics": 2-4 criteria, each a single verifiable statement about what the
   agent must do in THIS scenario (e.g. "The agent calls check_availability_cal
-  before offering a time"). Prefer observable behaviour over tone.
+  before offering a time"). Prefer observable behaviour over tone. Only assert
+  behaviour the variables you set actually put in reach.
+* "dynamic_variables": {{"<name>": "<value>"}} over the names listed above —
+  a concrete string value for every variable this scenario depends on, chosen
+  to put the agent in the state the scenario describes (the flags gating the
+  branch under test, plus anything the prompt uses in tool arguments or the
+  greeting). Values must be strings. Use {{}} only if the prompt reads none.
 * "tool_mocks": for each tool this scenario should reach, an entry
   {{"tool_name": "<name>", "input_match_rule": {{"type": "any"}},
   "output": "<JSON string the tool would return>"}} — pick outputs that force
@@ -179,6 +194,22 @@ def _json_object(raw: str | None) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise TypeError("model reply was not a JSON object")
     return data
+
+
+def _variable_value(value: Any) -> str:
+    """A model-written variable as the string a live call would carry.
+
+    The generate prompt asks for strings, but models routinely answer a
+    true/false flag with a JSON boolean. Plain ``str()`` would store that as
+    Python's ``"True"``, so a prompt branching on ``= "true"`` still would not
+    fire — the exact failure these variables exist to prevent. Booleans and
+    null therefore render JSON-style; everything else stringifies normally.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    return str(value)
 
 
 def _metric_key(metric: str) -> str:
@@ -690,6 +721,11 @@ async def generate_test_cases(llm: RetellLLM, count: int) -> list[dict[str, Any]
     greeting and the tool schemas goes in, and drafted cases come back for the
     operator to keep or edit. Raises on failure — the caller surfaces it,
     because a silent empty list reads as "your agent needs no tests".
+
+    Each draft carries the `dynamic_variables` its scenario needs. Without them
+    a prompt that gates a branch on `{{is_last_day_of_trial}}` would generate a
+    case about that branch and then run it with the flag unset — the branch
+    never fires and the case fails on its own missing setup, not on the agent.
     """
     settings = get_settings()
     if not genai_credentials_available(settings):
@@ -706,6 +742,21 @@ async def generate_test_cases(llm: RetellLLM, count: int) -> list[dict[str, Any]
         )
         or "(none — this agent can only talk)"
     )
+    # The prompt's own placeholders, so the model writes variables that exist
+    # rather than inventing names the prompt never reads. Defaults are shown as
+    # such: they already have a value, so a case only needs to override them.
+    defaults = llm.default_dynamic_variables or {}
+    names = dict.fromkeys(
+        prompt_variables(llm.general_prompt or "") + prompt_variables(llm.begin_message or "")
+    )
+    variables = (
+        "\n".join(
+            f"- {{{{{name}}}}}"
+            + (f' (agent default: "{str(defaults[name])[:60]}")' if name in defaults else "")
+            for name in names
+        )
+        or "(none — this prompt reads no dynamic variables)"
+    )
     client = build_genai_client(settings)
     resp = await client.aio.models.generate_content(
         model=settings.analysis_model,
@@ -714,6 +765,7 @@ async def generate_test_cases(llm: RetellLLM, count: int) -> list[dict[str, Any]
             begin_message=llm.begin_message or "(none)",
             start_speaker=llm.start_speaker or "agent",
             tools=tools,
+            variables=variables,
             count=count,
         ),
         config={"response_mime_type": "application/json", "temperature": 0.9},
@@ -741,11 +793,21 @@ async def generate_test_cases(llm: RetellLLM, count: int) -> list[dict[str, Any]
         for mock in mocks:
             mock.setdefault("input_match_rule", {"type": "any"})
             mock["output"] = str(mock.get("output") or "{}")
+        # Kept as written rather than filtered to `names`: a prompt can reach a
+        # variable the regex never sees (a nested time key resolves to
+        # `current_time_<zone>`), and an unused key costs nothing at run time.
+        raw_variables = raw.get("dynamic_variables")
+        case_variables = (
+            {str(k).strip(): _variable_value(v) for k, v in raw_variables.items() if str(k).strip()}
+            if isinstance(raw_variables, dict)
+            else {}
+        )
         cases.append(
             {
                 "name": str(raw.get("name") or "Generated test").strip()[:255],
                 "user_prompt": user_prompt,
                 "metrics": metrics,
+                "dynamic_variables": case_variables,
                 "tool_mocks": mocks,
             }
         )

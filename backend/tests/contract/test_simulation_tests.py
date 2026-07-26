@@ -409,6 +409,7 @@ async def test_generate_saves_drafted_cases(client, monkeypatch):
                 "name": f"Generated {i}",
                 "user_prompt": "You are a caller who wants a callback.",
                 "metrics": ["The agent schedules the callback"],
+                "dynamic_variables": {"first_name": f"Caller {i}"},
                 "tool_mocks": [],
             }
             for i in range(count)
@@ -424,6 +425,12 @@ async def test_generate_saves_drafted_cases(client, monkeypatch):
     body = res.json()
     assert body["saved"] is True
     assert [i["source"] for i in body["items"]] == ["generated", "generated"]
+    # The variables a draft depends on are persisted with it: a saved case that
+    # dropped them would run with its branch gated shut.
+    assert [i["dynamic_variables"] for i in body["items"]] == [
+        {"first_name": "Caller 0"},
+        {"first_name": "Caller 1"},
+    ]
 
     listed = await client.get(
         "/v2/list-test-case-definitions",

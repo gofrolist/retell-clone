@@ -14,6 +14,7 @@ import {
   type RawTestRun,
   type TestCaseDraft,
 } from "@/lib/api";
+import { promptVariables } from "@/lib/promptVariables";
 import {
   FlaskConical,
   Loader2,
@@ -72,6 +73,16 @@ export default function SimulationTab({
   const toolNames = (llm?.general_tools ?? [])
     .map((t) => (typeof t?.name === "string" ? t.name : (t?.type as string | undefined)))
     .filter((n): n is string => Boolean(n));
+
+  // The greeting counts too: it is resolved with the same variables, and a
+  // {{first_name}} left unset is why a run opens with "Good morning friend".
+  const promptVariableNames = [
+    ...new Set([
+      ...promptVariables(llm?.general_prompt),
+      ...promptVariables(llm?.begin_message),
+    ]),
+  ];
+  const agentDefaultVariables = llm?.default_dynamic_variables ?? {};
 
   /** Fold runs into the per-case results, newest run per case winning.
    *  Merging (rather than replacing) is what lets the table show a verdict for
@@ -447,6 +458,8 @@ export default function SimulationTab({
         open={modalOpen}
         initial={editing}
         toolNames={toolNames}
+        promptVariableNames={promptVariableNames}
+        agentDefaultVariables={agentDefaultVariables}
         onClose={() => setModalOpen(false)}
         onSave={saveCase}
       />
