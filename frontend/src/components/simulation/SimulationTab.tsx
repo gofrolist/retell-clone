@@ -30,6 +30,9 @@ import { RunStatusBadge } from "./runStatus";
 
 /** How often a running batch is re-polled for verdicts. */
 const POLL_MS = 2500;
+/** How long to keep polling before treating a batch as stalled. Generous —
+ *  a 1000-case batch is legitimately slow — but finite. */
+const POLL_DEADLINE_MS = 30 * 60 * 1000;
 /** Cases one "Generate tests" click drafts. */
 const GENERATE_COUNT = 4;
 /** Past batches read on open, to show a last result for cases the newest run
@@ -91,7 +94,10 @@ export default function SimulationTab({
     // Backfill from the recent batches so a reopened editor still reports the
     // verdicts you got yesterday — a case only ever ran in one of them, and
     // the newest run per case wins when several did.
-    Promise.all([api.listTestCases(llmId), api.listBatchTests(llmId).catch(() => null)])
+    Promise.all([
+      api.listTestCases(llmId),
+      api.listBatchTests(llmId, agentId).catch(() => null),
+    ])
       .then(async ([caseList, batchList]) => {
         if (cancelled) return;
         setCases(caseList.items);
@@ -109,17 +115,30 @@ export default function SimulationTab({
     return () => {
       cancelled = true;
     };
-  }, [llmId, adoptRuns]);
+  }, [llmId, agentId, adoptRuns]);
 
   // Poll while a batch is running. Keyed on the batch id + status so it stops
   // as soon as the backend reports `complete`.
   const batchId = batch?.test_case_batch_job_id;
   const running = batch?.status === "in_progress";
+  const [stalled, setStalled] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     if (!batchId || !running) return;
     let cancelled = false;
+    // A batch orphaned by an API restart never reaches `complete`, so give up
+    // rather than poll the same row until the tab is closed.
+    const deadline = Date.now() + POLL_DEADLINE_MS;
+    const stop = () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = null;
+    };
     const tick = async () => {
+      if (Date.now() > deadline) {
+        stop();
+        setStalled(true);
+        return;
+      }
       try {
         const [head, runList] = await Promise.all([
           api.getBatchTest(batchId),
@@ -132,11 +151,12 @@ export default function SimulationTab({
         // A transient poll failure is not worth surfacing; the next tick retries.
       }
     };
+    setStalled(false);
     pollRef.current = setInterval(() => void tick(), POLL_MS);
     void tick();
     return () => {
       cancelled = true;
-      if (pollRef.current) clearInterval(pollRef.current);
+      stop();
     };
   }, [batchId, running, adoptRuns]);
 
@@ -279,6 +299,12 @@ export default function SimulationTab({
           <p className="flex items-center gap-1.5 border-b border-line bg-amber-50 px-4 py-2 text-xs text-amber-700">
             <TriangleAlert className="size-3.5 shrink-0" />
             Runs use the last saved prompt — save the agent to test your current edits.
+          </p>
+        )}
+        {stalled && (
+          <p className="flex items-center gap-1.5 border-b border-line bg-amber-50 px-4 py-2 text-xs text-amber-700">
+            <TriangleAlert className="size-3.5 shrink-0" />
+            This run stopped reporting progress — reload the page, or run the cases again.
           </p>
         )}
         {error && (

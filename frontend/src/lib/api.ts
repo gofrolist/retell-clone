@@ -354,7 +354,10 @@ function testCaseBody(draft: TestCaseDraft) {
     user_prompt: draft.user_prompt,
     metrics: draft.metrics,
     tool_mocks: draft.tool_mocks ?? [],
-    dynamic_variables: draft.dynamic_variables ?? {},
+    // Omitted when the draft carries none: update treats any present value as
+    // an assignment, so sending `{}` would wipe variables set through the API
+    // the first time someone saves the form (which never edits them).
+    ...(draft.dynamic_variables ? { dynamic_variables: draft.dynamic_variables } : {}),
   };
 }
 
@@ -1119,9 +1122,11 @@ export const api = {
   getBatchTest: (id: string) =>
     request<RawBatchTest>(`/get-batch-test/${encodeURIComponent(id)}`),
 
-  listBatchTests: (llmId: string) =>
+  /** Batches for this agent only — several agents can share one LLM. */
+  listBatchTests: (llmId: string, agentId: string) =>
     request<{ items: RawBatchTest[]; has_more: boolean }>(
-      `/v2/list-batch-tests?type=retell-llm&llm_id=${encodeURIComponent(llmId)}&limit=20`,
+      `/v2/list-batch-tests?type=retell-llm&llm_id=${encodeURIComponent(llmId)}` +
+        `&agent_id=${encodeURIComponent(agentId)}&limit=20`,
     ),
 
   listTestRuns: (batchId: string) =>

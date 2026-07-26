@@ -42,6 +42,9 @@ from ..models import (
     PhoneNumber,
     QaCohort,
     RetellLLM,
+    TestCaseBatchJob,
+    TestCaseDefinition,
+    TestCaseJob,
     WebhookDelivery,
     Workspace,
     WorkspaceInvite,
@@ -58,6 +61,33 @@ from .auth_google import _email_allowed
 from .concurrency import BASE_CONCURRENCY, CONCURRENCY_PURCHASE_LIMIT
 
 router = APIRouter(tags=["dashboard"])
+
+# Everything a workspace owns, ordered children-first so DELETE /workspace holds
+# FK constraints without relying on database-level cascades. Every model with a
+# workspace_id FK belongs here — a missing one makes the workspace undeletable
+# on Postgres (SQLite won't notice), which
+# test_every_workspace_scoped_table_is_deleted guards against.
+WORKSPACE_CHILD_MODELS: tuple[type[Any], ...] = (
+    PhoneNumber,  # references agents — must go before Agent
+    Call,
+    Chat,
+    BatchCall,
+    TestCaseJob,  # references batch jobs — must go before TestCaseBatchJob
+    TestCaseBatchJob,
+    TestCaseDefinition,
+    KnowledgeBaseFile,
+    KnowledgeBase,
+    ConversationFlow,
+    Agent,
+    RetellLLM,
+    AgentFolder,
+    Contact,
+    Alert,
+    QaCohort,
+    WorkspaceInvite,
+    WorkspaceMember,
+    ApiKey,
+)
 
 DAY_MS = 86_400_000
 
@@ -1518,24 +1548,7 @@ async def delete_workspace(
     await session.execute(
         WebhookDelivery.__table__.delete().where(WebhookDelivery.call_id.in_(call_ids))
     )
-    for model in (
-        PhoneNumber,  # references agents — must go before Agent
-        Call,
-        Chat,
-        BatchCall,
-        KnowledgeBaseFile,
-        KnowledgeBase,
-        ConversationFlow,
-        Agent,
-        RetellLLM,
-        AgentFolder,
-        Contact,
-        Alert,
-        QaCohort,
-        WorkspaceInvite,
-        WorkspaceMember,
-        ApiKey,
-    ):
+    for model in WORKSPACE_CHILD_MODELS:
         await session.execute(
             model.__table__.delete().where(model.__table__.c.workspace_id == workspace_id)
         )

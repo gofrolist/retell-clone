@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import require_api_key
@@ -39,6 +39,10 @@ router = APIRouter(tags=["tests"])
 
 # Retell caps a batch at 1000 cases.
 MAX_BATCH_TEST_CASES = 1000
+# Batches a workspace may have running at once. Each case is dozens of model
+# round-trips, so without this one client could queue an unbounded amount of
+# background LLM work that no request-level rate limit ever sees.
+MAX_IN_FLIGHT_BATCHES = 3
 # Cases one generate call may draft. Kept modest: each is a full LLM-written
 # scenario and the operator has to read every one of them.
 MAX_GENERATED_CASES = 10
@@ -346,6 +350,25 @@ async def create_batch_test(
         raise HTTPException(422, detail="test_case_definition_ids must not be empty")
     if len(body.test_case_definition_ids) > MAX_BATCH_TEST_CASES:
         raise HTTPException(422, detail=f"At most {MAX_BATCH_TEST_CASES} test cases per batch")
+    # Only recent batches count toward the cap: one orphaned by a hard restart
+    # stays `in_progress` in the table, and must not lock the workspace out.
+    in_flight = await session.scalar(
+        select(func.count())
+        .select_from(TestCaseBatchJob)
+        .where(
+            TestCaseBatchJob.workspace_id == api_key.workspace_id,
+            TestCaseBatchJob.status == "in_progress",
+            TestCaseBatchJob.creation_timestamp > now_ms() - simulation.STALE_BATCH_MS,
+        )
+    )
+    if (in_flight or 0) >= MAX_IN_FLIGHT_BATCHES:
+        raise HTTPException(
+            429,
+            detail=(
+                f"{MAX_IN_FLIGHT_BATCHES} batch tests are already running; wait for one to finish"
+            ),
+        )
+
     engine = await _resolve_engine(session, body.response_engine, api_key.workspace_id)
     if body.agent_id:
         await get_owned(
@@ -421,6 +444,7 @@ async def list_batch_tests(
     type: Literal["retell-llm", "conversation-flow"] = Query("retell-llm"),
     llm_id: str | None = None,
     conversation_flow_id: str | None = None,
+    agent_id: str | None = None,
     limit: int = Query(50, ge=1, le=1000),
     pagination_key: str | None = None,
     api_key: ApiKey = Depends(require_api_key),
@@ -433,6 +457,10 @@ async def list_batch_tests(
         llm_id,
         conversation_flow_id,
     )
+    # Arhiteq-extra filter: several agents can share one LLM, and each one's
+    # Simulation tab should report its own runs rather than a sibling's.
+    if agent_id:
+        query = query.where(TestCaseBatchJob.agent_id == agent_id)
     query = await apply_keyset_page(
         session,
         query,

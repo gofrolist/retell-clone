@@ -26,7 +26,7 @@ from .api import (
     voices,
 )
 from .config import get_settings
-from .db import get_engine
+from .db import get_engine, session_factory
 from .models import Base
 from .security import (
     RateLimitMiddleware,
@@ -104,9 +104,10 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_apply_column_backfills)
     yield
-    # Simulation batches run detached from any request; cancel them before the
-    # engine goes away so a run can't fault on a disposed connection pool.
-    await simulation.shutdown()
+    # Simulation batches run detached from any request; cancel them (and mark
+    # their rows finished, so the dashboard stops polling) before the engine
+    # goes away and a run faults on a disposed connection pool.
+    await simulation.shutdown(session_factory())
     await engine.dispose()
 
 

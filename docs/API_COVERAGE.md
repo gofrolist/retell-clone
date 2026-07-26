@@ -57,12 +57,16 @@ Known intentional deviations (all additive or dashboard-only):
 - `POST /generate-test-case-definitions` has no Retell equivalent: it drafts
   simulation cases (scenario + criteria + tool mocks) from the agent's own
   prompt and tool catalog. Test-case rows also carry `source`
-  (`manual` | `generated`), batches carry `agent_id`, and runs carry
-  `metric_results` (per-criterion verdicts behind `result_explanation`) — all
-  additive.
+  (`manual` | `generated`), batches carry `agent_id` (and
+  `/v2/list-batch-tests` takes an optional `agent_id` filter, since several
+  agents can share one LLM), and runs carry `metric_results` (per-criterion
+  verdicts behind `result_explanation`) — all additive. `create-batch-test`
+  additionally 429s past 3 batches running concurrently per workspace: the
+  background work is many model round-trips per case and request-level rate
+  limiting never sees it.
 - Auth additionally accepts Arhiteq dashboard session JWTs (Google Sign-In).
 - Not implemented (no consumer, dashboard-only in Retell): SIP-trunk
   self-serve endpoints, phone-number A/B tests, Retell billing endpoints.
 
-Enforced by `backend/tests/contract/` (189 tests, 90% line coverage, CI gate
+Enforced by `backend/tests/contract/` (194 tests, 90% line coverage, CI gate
 at 80%).

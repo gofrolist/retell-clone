@@ -21,11 +21,15 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import secrets
 from typing import Any
 
+from sqlalchemy import select
+
 from ..config import Settings, get_settings
 from ..models import (
+    TEST_RUN_TERMINAL_STATUSES,
     Agent,
     RetellLLM,
     TestCaseBatchJob,
@@ -44,8 +48,13 @@ MAX_TURNS = 16
 # Consecutive tool calls the agent may make inside one turn before the harness
 # forces it to speak — guards against a tool-call loop.
 MAX_TOOL_CALLS_PER_TURN = 4
-# How many runs of a batch execute at once.
-BATCH_CONCURRENCY = 4
+# How many simulated calls run at once across the whole process. A batch may
+# hold up to 1000 cases and each case is dozens of model round-trips, so this
+# is what stops one POST — or ten — from saturating the Gemini quota.
+RUN_CONCURRENCY = 4
+# A batch still `in_progress` after this long was orphaned by a restart the
+# graceful-shutdown path didn't get to run. Readers treat it as finished.
+STALE_BATCH_MS = 60 * 60 * 1000
 
 # Tool types that hang up when called: reaching one ends the simulated call.
 _TERMINAL_TOOL_TYPES = ("end_call", "transfer_call", "agent_swap")
@@ -170,6 +179,16 @@ def _json_object(raw: str | None) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise TypeError("model reply was not a JSON object")
     return data
+
+
+def _metric_key(metric: str) -> str:
+    """Normalize a criterion for matching a judge verdict back to its criterion.
+
+    Drops a leading list number (the judge prompt numbers them), collapses
+    whitespace, and folds case and trailing punctuation.
+    """
+    text = re.sub(r"^\s*\d+[.)]\s*", "", metric)
+    return re.sub(r"\s+", " ", text).strip().rstrip(".").casefold()
 
 
 def tool_catalog(llm: RetellLLM | None) -> list[dict[str, Any]]:
@@ -402,10 +421,15 @@ class _Simulator:
         return self.transcript
 
     async def judge(self) -> tuple[str, list[dict[str, Any]]]:
-        """Grade the transcript. Returns (status, per-metric results)."""
+        """Grade the transcript. Returns (status, per-metric results).
+
+        Raises when the case has no criteria: a run that graded nothing is not
+        a pass, and reporting it as one would put a green badge on an untested
+        agent.
+        """
         metrics = [str(m) for m in (self._definition.get("metrics") or []) if str(m).strip()]
         if not metrics:
-            return "pass", []
+            raise ValueError("This test case has no success criteria to grade.")
         data = await self._json_call(
             self._settings.analysis_model,
             _JUDGE_PROMPT.format(
@@ -415,11 +439,20 @@ class _Simulator:
             ),
             0.0,
         )
-        raw = data.get("results")
-        by_metric = {str(r.get("metric")): r for r in (raw or []) if isinstance(r, dict)}
+        raw = [r for r in (data.get("results") or []) if isinstance(r, dict)]
+        # Match on a normalized key: the prompt numbers the criteria, and models
+        # routinely echo the "1. " back or re-wrap the whitespace. Without this,
+        # a cosmetic difference would score every criterion "ungraded" and turn
+        # a clean run into a hard FAIL.
+        by_metric = {_metric_key(str(r.get("metric"))): r for r in raw}
         results: list[dict[str, Any]] = []
-        for metric in metrics:
-            entry = by_metric.get(metric)
+        for position, metric in enumerate(metrics):
+            entry = by_metric.get(_metric_key(metric))
+            # Last resort when the judge rewrote a criterion outright: trust the
+            # order it was asked to grade in, but only when it returned exactly
+            # as many verdicts as there were criteria.
+            if entry is None and len(raw) == len(metrics):
+                entry = raw[position]
             if entry is None:
                 # The judge dropped or reworded a criterion. An ungraded metric
                 # is a failure, not a silent pass.
@@ -444,7 +477,7 @@ class _Simulator:
 
 def _explain(status: str, results: list[dict[str, Any]]) -> str:
     if status == "pass":
-        return f"All {len(results)} criteria passed." if results else "No criteria to grade."
+        return f"All {len(results)} criteria passed."
     failed = [r for r in results if not r["passed"]]
     head = f"{len(failed)} of {len(results)} criteria failed."
     return "\n".join([head, *(f"- {r['metric']}: {r['explanation']}" for r in failed)])
@@ -479,9 +512,18 @@ async def _run_one(factory: Any, job_id: str) -> str:
         llm = await session.get(RetellLLM, batch.llm_id) if batch and batch.llm_id else None
         agent = await session.get(Agent, batch.agent_id) if batch and batch.agent_id else None
 
-    status, results, transcript = "error", [], []
+    status: str = "error"
+    results: list[dict[str, Any]] = []
     explanation = ""
+    # Held outside the try so a mid-call failure can still save the turns that
+    # did happen — how far the call got is the most useful thing about a
+    # failed run, and discarding it leaves the drawer blank.
+    simulator: _Simulator | None = None
     try:
+        # Checked before anything else: a case with nothing to grade can only
+        # ever end in `error`, so don't spend a whole simulated call finding out.
+        if not [m for m in (snapshot.get("metrics") or []) if str(m).strip()]:
+            raise RuntimeError("This test case has no success criteria to grade.")
         if not genai_credentials_available(settings):
             raise RuntimeError(
                 "No Gemini credentials configured; simulation runs need GOOGLE_API_KEY "
@@ -513,13 +555,13 @@ async def _run_one(factory: Any, job_id: str) -> str:
             begin_message=begin_message,
             start_speaker=str(llm.start_speaker or "agent"),
         )
-        transcript = await simulator.run()
+        await simulator.run()
         status, results = await simulator.judge()
         explanation = _explain(status, results)
     except Exception as exc:
         log.exception("simulation run %s failed", job_id)
         status, explanation = "error", f"{type(exc).__name__}: {exc}"
-        transcript = transcript or []
+    transcript = simulator.transcript if simulator is not None else []
 
     async with factory() as session:
         job = await session.get(TestCaseJob, job_id)
@@ -538,12 +580,32 @@ async def _run_one(factory: Any, job_id: str) -> str:
     return status
 
 
+_run_slots: asyncio.Semaphore | None = None
+_run_slots_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _slots() -> asyncio.Semaphore:
+    """The process-wide run limiter, created against the running loop.
+
+    A per-batch semaphore would multiply — ten concurrent batches at four each
+    is forty live conversations — so every batch shares this one. It is rebuilt
+    when the loop changes, since tests run each case on a fresh loop and a
+    semaphore with waiters parked on a dead loop would never release.
+    """
+    global _run_slots, _run_slots_loop
+    loop = asyncio.get_running_loop()
+    if _run_slots is None or _run_slots_loop is not loop:
+        _run_slots = asyncio.Semaphore(RUN_CONCURRENCY)
+        _run_slots_loop = loop
+    return _run_slots
+
+
 async def run_batch(factory: Any, batch_job_id: str, job_ids: list[str]) -> None:
     """Run every job of a batch, then roll the counts up onto the batch row."""
-    semaphore = asyncio.Semaphore(BATCH_CONCURRENCY)
+    slots = _slots()
 
     async def guarded(job_id: str) -> str:
-        async with semaphore:
+        async with slots:
             try:
                 return await _run_one(factory, job_id)
             except Exception:  # a crashed run must not cancel its siblings
@@ -563,23 +625,62 @@ async def run_batch(factory: Any, batch_job_id: str, job_ids: list[str]) -> None
         await session.commit()
 
 
-# Strong references to in-flight batches so they aren't garbage-collected.
-_batch_tasks: set[asyncio.Task] = set()
+# In-flight batches, kept as strong references so they aren't garbage-collected
+# — and so shutdown knows which rows to close out.
+_batch_tasks: dict[asyncio.Task, str] = {}
 
 
 def spawn_batch(factory: Any, batch_job_id: str, job_ids: list[str]) -> None:
     """Start a batch in the background (create-batch-test returns immediately)."""
     task = asyncio.create_task(run_batch(factory, batch_job_id, job_ids))
-    _batch_tasks.add(task)
-    task.add_done_callback(_batch_tasks.discard)
+    _batch_tasks[task] = batch_job_id
+    task.add_done_callback(_batch_tasks.pop)
 
 
-async def shutdown() -> None:
-    """Cancel in-flight batches on app shutdown so the loop can close cleanly."""
-    for task in list(_batch_tasks):
+async def _abandon_batch(factory: Any, batch_job_id: str) -> None:
+    """Close out a batch whose runs were cancelled, so it can't poll forever.
+
+    Unfinished runs become `error` with a reason; the batch reaches `complete`
+    with what it did manage to grade. Without this a restart would leave the
+    row `in_progress` for good and the dashboard would poll it indefinitely.
+    """
+    async with factory() as session:
+        batch = await session.get(TestCaseBatchJob, batch_job_id)
+        if batch is None or batch.status == "complete":
+            return
+        jobs = (
+            await session.scalars(
+                select(TestCaseJob).where(TestCaseJob.test_case_batch_job_id == batch_job_id)
+            )
+        ).all()
+        for job in jobs:
+            if job.status in TEST_RUN_TERMINAL_STATUSES:
+                continue
+            job.status = "error"
+            job.result_explanation = "The API restarted while this run was in progress."
+            job.user_modified_timestamp = now_ms()
+        batch.pass_count = sum(j.status == "pass" for j in jobs)
+        batch.fail_count = sum(j.status == "fail" for j in jobs)
+        batch.error_count = sum(j.status not in ("pass", "fail") for j in jobs)
+        batch.status = "complete"
+        batch.user_modified_timestamp = now_ms()
+        await session.commit()
+
+
+async def shutdown(factory: Any = None) -> None:
+    """Cancel in-flight batches on app shutdown and close out their rows."""
+    pending = dict(_batch_tasks)
+    for task in pending:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
+    if factory is None:
+        return
+    for batch_job_id in set(pending.values()):
+        try:
+            await _abandon_batch(factory, batch_job_id)
+        except Exception:  # shutdown must not raise past the lifespan
+            log.exception("could not close out abandoned batch %s", batch_job_id)
 
 
 async def generate_test_cases(llm: RetellLLM, count: int) -> list[dict[str, Any]]:
@@ -624,9 +725,12 @@ async def generate_test_cases(llm: RetellLLM, count: int) -> list[dict[str, Any]
         if not isinstance(raw, dict):
             continue
         user_prompt = str(raw.get("user_prompt") or "").strip()
-        if not user_prompt:
-            continue
         metrics = [str(m).strip() for m in (raw.get("metrics") or []) if str(m).strip()]
+        # A case with no scenario has nothing to act out, and one with no
+        # criteria can never be graded — keeping either would put an
+        # unrunnable row in the operator's suite.
+        if not user_prompt or not metrics:
+            continue
         # Drop mocks for tools the agent doesn't have: they'd never match, and
         # they'd mislead an operator reading the generated case.
         mocks = [

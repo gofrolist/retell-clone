@@ -269,6 +269,27 @@ async def test_tool_call_loop_is_broken_after_the_cap(monkeypatch):
     assert "kept calling tools" in transcript[-1]["content"]
 
 
+async def test_a_mid_call_failure_keeps_the_turns_that_happened(monkeypatch):
+    """How far the call got is the most useful thing about a failed run."""
+    sim, _ = make_simulator(
+        monkeypatch,
+        [
+            {"action": "speak", "content": "I'd like a callback."},
+            {"action": "speak", "content": "Of course — when?"},
+            "not json at all",  # the model falls over on the next user turn
+        ],
+    )
+    with pytest.raises((ValueError, TypeError)):
+        await sim.run()
+    # The simulator still holds everything said before the failure, which is
+    # what _run_one persists.
+    assert [t["content"] for t in sim.transcript] == [
+        "Hi, this is Clara.",
+        "I'd like a callback.",
+        "Of course — when?",
+    ]
+
+
 async def test_run_stops_at_the_turn_cap(monkeypatch):
     chatter = [
         {"action": "speak", "content": "and another thing"},
@@ -322,10 +343,70 @@ async def test_judge_counts_an_ungraded_metric_as_a_failure(monkeypatch):
     }
 
 
-async def test_judge_skips_the_model_when_there_are_no_metrics(monkeypatch):
+async def test_judge_refuses_to_pass_a_case_with_no_criteria(monkeypatch):
+    """A run that graded nothing must not show a green badge."""
     sim, model = make_simulator(monkeypatch, [])
-    assert await sim.judge() == ("pass", [])
+    with pytest.raises(ValueError, match="no success criteria"):
+        await sim.judge()
     assert model.prompts == []
+
+
+@pytest.mark.parametrize(
+    "returned",
+    [
+        "1. Agent books the callback",  # judge echoed the list number
+        "  Agent   books the callback  ",  # re-wrapped whitespace
+        "agent books the callback.",  # re-cased, trailing period
+    ],
+)
+async def test_judge_matches_verdicts_despite_cosmetic_rewording(monkeypatch, returned):
+    """A reworded criterion must not turn a clean run into a hard FAIL."""
+    definition = {"user_prompt": "…", "metrics": ["Agent books the callback"]}
+    sim, _ = make_simulator(
+        monkeypatch,
+        [{"results": [{"metric": returned, "passed": True, "explanation": "it did"}]}],
+        definition=definition,
+    )
+    status, results = await sim.judge()
+    assert status == "pass"
+    # The criterion is reported as the operator wrote it, not as echoed back.
+    assert results[0]["metric"] == "Agent books the callback"
+
+
+async def test_judge_falls_back_to_order_when_criteria_are_rewritten(monkeypatch):
+    definition = {"user_prompt": "…", "metrics": ["Books the callback", "Confirms the time"]}
+    sim, _ = make_simulator(
+        monkeypatch,
+        [
+            {
+                "results": [
+                    {"metric": "It scheduled a call back", "passed": True, "explanation": "a"},
+                    {"metric": "It repeated the slot", "passed": False, "explanation": "b"},
+                ]
+            }
+        ],
+        definition=definition,
+    )
+    status, results = await sim.judge()
+    assert status == "fail"
+    assert [(r["metric"], r["passed"]) for r in results] == [
+        ("Books the callback", True),
+        ("Confirms the time", False),
+    ]
+
+
+async def test_judge_does_not_guess_when_the_verdict_count_differs(monkeypatch):
+    """Positional fallback is only safe when the counts line up."""
+    definition = {"user_prompt": "…", "metrics": ["Books the callback", "Confirms the time"]}
+    sim, _ = make_simulator(
+        monkeypatch,
+        [{"results": [{"metric": "something else", "passed": True, "explanation": ""}]}],
+        definition=definition,
+    )
+    status, results = await sim.judge()
+    assert status == "fail"
+    assert all(not r["passed"] for r in results)
+    assert "no verdict" in results[0]["explanation"]
 
 
 # --------------------------------------------------------------- generation
@@ -375,6 +456,28 @@ async def test_generate_requires_credentials(monkeypatch):
     monkeypatch.setattr(simulation, "genai_credentials_available", lambda _s: False)
     with pytest.raises(RuntimeError, match="credentials"):
         await simulation.generate_test_cases(_llm_with_tools(), 2)
+
+
+async def test_generate_drops_drafts_with_no_criteria(monkeypatch):
+    """An ungradeable case must never reach the operator's suite."""
+    client, _ = fake_client(
+        [
+            {
+                "test_cases": [
+                    {"name": "No criteria", "user_prompt": "You want a callback.", "metrics": []},
+                    {
+                        "name": "Usable",
+                        "user_prompt": "You want a callback.",
+                        "metrics": ["Agent books it"],
+                    },
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr(simulation, "build_genai_client", lambda _s: client)
+    monkeypatch.setattr(simulation, "genai_credentials_available", lambda _s: True)
+    cases = await simulation.generate_test_cases(_llm_with_tools(), 4)
+    assert [c["name"] for c in cases] == ["Usable"]
 
 
 async def test_generate_raises_when_nothing_usable_comes_back(monkeypatch):

@@ -8,8 +8,15 @@ import asyncio
 
 import pytest
 
+import arhiteq_api.db as db_module
 from arhiteq_api.services import simulation
-from tests.conftest import AUTH_HEADERS, LLM_ID, OTHER_AUTH_HEADERS
+from tests.conftest import (
+    AGENT_ID,
+    AUTH_HEADERS,
+    COMPANION_AGENT_ID,
+    LLM_ID,
+    OTHER_AUTH_HEADERS,
+)
 
 ENGINE = {"type": "retell-llm", "llm_id": LLM_ID}
 
@@ -268,6 +275,130 @@ async def test_list_batch_tests_filters_by_engine(client, monkeypatch):
         headers=AUTH_HEADERS,
     )
     assert other.json()["items"] == []
+
+
+async def test_batch_tests_are_capped_per_workspace(client, monkeypatch):
+    """Background LLM work is invisible to request rate limiting, so the number
+    of batches a workspace can have running at once is bounded."""
+    case = await _create_case(client)
+    started = asyncio.Event()
+
+    async def hang(_factory, _job_id):
+        await started.wait()
+        return "pass"
+
+    monkeypatch.setattr(simulation, "_run_one", hang)
+    body = {
+        "test_case_definition_ids": [case["test_case_definition_id"]],
+        "response_engine": ENGINE,
+    }
+    for _ in range(3):
+        assert (
+            await client.post("/create-batch-test", json=body, headers=AUTH_HEADERS)
+        ).status_code == 201
+    refused = await client.post("/create-batch-test", json=body, headers=AUTH_HEADERS)
+    assert refused.status_code == 429
+    assert "already running" in refused.json()["detail"]
+
+    started.set()
+    await _drain_batches()
+    # Once they finish, the workspace can start another.
+    assert (
+        await client.post("/create-batch-test", json=body, headers=AUTH_HEADERS)
+    ).status_code == 201
+    started.set()
+    await _drain_batches()
+
+
+async def test_list_batch_tests_can_scope_to_one_agent(client, monkeypatch):
+    """Several agents can share an LLM; each tab must show only its own runs."""
+
+    async def fake_run(_factory, _job_id):
+        return "pass"
+
+    monkeypatch.setattr(simulation, "_run_one", fake_run)
+    case = await _create_case(client)
+    body = {
+        "test_case_definition_ids": [case["test_case_definition_id"]],
+        "response_engine": ENGINE,
+    }
+    mine = await client.post(
+        "/create-batch-test", json={**body, "agent_id": AGENT_ID}, headers=AUTH_HEADERS
+    )
+    await client.post(
+        "/create-batch-test",
+        json={**body, "agent_id": COMPANION_AGENT_ID},
+        headers=AUTH_HEADERS,
+    )
+    await _drain_batches()
+
+    scoped = await client.get(
+        "/v2/list-batch-tests",
+        params={"type": "retell-llm", "llm_id": LLM_ID, "agent_id": AGENT_ID},
+        headers=AUTH_HEADERS,
+    )
+    items = scoped.json()["items"]
+    assert [i["test_case_batch_job_id"] for i in items] == [mine.json()["test_case_batch_job_id"]]
+    # Unfiltered still returns both, as Retell's engine-only filter does.
+    both = await client.get(
+        "/v2/list-batch-tests",
+        params={"type": "retell-llm", "llm_id": LLM_ID},
+        headers=AUTH_HEADERS,
+    )
+    assert len(both.json()["items"]) == 2
+
+
+async def test_a_case_without_criteria_errors_instead_of_passing(client):
+    """Grading nothing is not a pass — it must not show a green badge."""
+    case = await _create_case(client, metrics=[])
+    res = await client.post(
+        "/create-batch-test",
+        json={
+            "test_case_definition_ids": [case["test_case_definition_id"]],
+            "response_engine": ENGINE,
+        },
+        headers=AUTH_HEADERS,
+    )
+    batch_id = res.json()["test_case_batch_job_id"]
+    await _drain_batches()
+    run = (await client.get(f"/v2/list-test-runs/{batch_id}", headers=AUTH_HEADERS)).json()[
+        "items"
+    ][0]
+    assert run["status"] == "error"
+    assert "no success criteria" in run["result_explanation"]
+
+
+async def test_abandoned_batches_are_closed_out_on_shutdown(client, monkeypatch):
+    """A restart must not leave a batch `in_progress` for the dashboard to poll
+    forever."""
+    case = await _create_case(client)
+    forever = asyncio.Event()
+
+    async def hang(_factory, _job_id):
+        await forever.wait()
+        return "pass"
+
+    monkeypatch.setattr(simulation, "_run_one", hang)
+    res = await client.post(
+        "/create-batch-test",
+        json={
+            "test_case_definition_ids": [case["test_case_definition_id"]],
+            "response_engine": ENGINE,
+        },
+        headers=AUTH_HEADERS,
+    )
+    batch_id = res.json()["test_case_batch_job_id"]
+
+    await simulation.shutdown(db_module.session_factory())
+
+    batch = (await client.get(f"/get-batch-test/{batch_id}", headers=AUTH_HEADERS)).json()
+    assert batch["status"] == "complete"
+    assert batch["error_count"] == 1
+    run = (await client.get(f"/v2/list-test-runs/{batch_id}", headers=AUTH_HEADERS)).json()[
+        "items"
+    ][0]
+    assert run["status"] == "error"
+    assert "restarted" in run["result_explanation"]
 
 
 async def test_generate_saves_drafted_cases(client, monkeypatch):

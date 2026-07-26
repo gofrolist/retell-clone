@@ -39,6 +39,9 @@ export default function TestCaseModal({
             user_prompt: initial.user_prompt,
             metrics: initial.metrics.length ? initial.metrics : [""],
             tool_mocks: initial.tool_mocks ?? [],
+            // Carried through untouched: the form doesn't edit them, and
+            // dropping them here would delete variables set via the API.
+            dynamic_variables: initial.dynamic_variables,
           }
         : EMPTY,
     );
