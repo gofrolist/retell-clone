@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/gofrolist/retell-clone/compare/v0.14.0...v0.15.0) (2026-07-26)
+
+
+### Features
+
+* **simulation:** set dynamic variables on generated and edited test cases ([#164](https://github.com/gofrolist/retell-clone/issues/164)) ([a502286](https://github.com/gofrolist/retell-clone/commit/a502286276b64e423c7db1a303beb2208c572d9d))
+
 ## [0.14.0](https://github.com/gofrolist/retell-clone/compare/v0.13.0...v0.14.0) (2026-07-26)
 
 
