@@ -157,6 +157,31 @@ async def test_delete_workspace_removes_everything(client):
     assert resp.status_code == 401
 
 
+def test_every_workspace_scoped_table_is_deleted():
+    """A new workspace-scoped table must join the delete order.
+
+    Postgres enforces the FK and would 500 the danger-zone delete, leaving the
+    workspace undeletable; SQLite doesn't enforce FKs, so the behavioural test
+    above can't catch it. Checked structurally instead.
+    """
+    from arhiteq_api.api.dashboard import WORKSPACE_CHILD_MODELS
+    from arhiteq_api.models import Base
+
+    covered = {m.__tablename__ for m in WORKSPACE_CHILD_MODELS}
+    referencing = {
+        mapper.class_.__tablename__
+        for mapper in Base.registry.mappers
+        if any(
+            fk.column.table.name == "workspaces"
+            for column in mapper.local_table.columns
+            for fk in column.foreign_keys
+        )
+    }
+    assert referencing - covered == set(), (
+        f"tables reference workspaces but are never deleted: {sorted(referencing - covered)}"
+    )
+
+
 async def test_reserving_the_full_limit_is_rejected(client):
     # Allowing reserved == limit would silently zero the outbound budget.
     resp = await client.patch(

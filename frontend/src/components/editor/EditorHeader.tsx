@@ -26,6 +26,8 @@ export default function EditorHeader({
   onName,
   agent,
   llm,
+  tab,
+  onTab,
   dirty,
   saving,
   onSave,
@@ -37,6 +39,9 @@ export default function EditorHeader({
   onName: (v: string) => void;
   agent: RawAgent;
   llm: RawLlm | null;
+  /** "create" (prompt + settings) or "simulation" (tests + manual testing). */
+  tab: string;
+  onTab: (key: string) => void;
   dirty: boolean;
   saving: boolean;
   onSave: () => void;
@@ -45,7 +50,6 @@ export default function EditorHeader({
   error?: string | null;
 }) {
   const router = useRouter();
-  const [tab, setTab] = useState("create");
   const [shared, setShared] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -136,11 +140,13 @@ export default function EditorHeader({
       </span>
 
       <div className="mx-auto">
-        {/* Simulation has no backend yet; only the Create view exists. */}
         <PillTabs
-          tabs={[{ key: "create", label: "Create" }]}
+          tabs={[
+            { key: "create", label: "Create" },
+            { key: "simulation", label: "Simulation" },
+          ]}
           active={tab}
-          onChange={setTab}
+          onChange={onTab}
         />
       </div>
 

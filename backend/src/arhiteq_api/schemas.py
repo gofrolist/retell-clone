@@ -84,6 +84,7 @@ class CreateLLMRequest(CompatModel):
 class ResponseEngine(CompatModel):
     type: str = "retell-llm"
     llm_id: str | None = None
+    conversation_flow_id: str | None = None
     version: int | None = None
 
 

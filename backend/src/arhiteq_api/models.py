@@ -32,6 +32,9 @@ from .ids import (
     new_knowledge_base_id,
     new_llm_id,
     new_phone_number_id,
+    new_test_case_batch_job_id,
+    new_test_case_definition_id,
+    new_test_case_job_id,
     new_workspace_id,
 )
 
@@ -532,3 +535,98 @@ class Chat(Base):
     start_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
     end_timestamp: Mapped[int | None] = mapped_column(BigInteger)
     created_at_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms, index=True)
+
+
+# Terminal statuses of a single simulation run. `pending`/`in_progress` precede
+# them; the batch job is `complete` once no run is in either.
+TEST_RUN_TERMINAL_STATUSES = ("pass", "fail", "error")
+
+
+class TestCaseDefinition(Base):
+    """A simulation test case: the persona/scenario the simulated user plays,
+    plus the metrics a run of it is graded against (Retell `/…-test-case-definition`).
+
+    A case belongs to a response engine (an LLM or a conversation flow), not to
+    an agent — same as Retell, so cases survive agents being duplicated off the
+    same LLM.
+    """
+
+    __tablename__ = "test_case_definitions"
+
+    test_case_definition_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=new_test_case_definition_id
+    )
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    # Exactly one of llm_id / conversation_flow_id is set, matching engine_type.
+    engine_type: Mapped[str] = mapped_column(String(32), default="retell-llm")
+    llm_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    conversation_flow_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    engine_version: Mapped[int | None] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(255), default="Untitled test")
+    user_prompt: Mapped[str] = mapped_column(Text, default="")
+    # Free-text success criteria, one per entry, graded independently.
+    metrics: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    dynamic_variables: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    # [{"tool_name", "input_match_rule": {...}, "output", "result"?}, ...]
+    tool_mocks: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    llm_model: Mapped[str | None] = mapped_column(String(64))
+    # Arhiteq extra: `manual` or `generated` (auto-written from the prompt +
+    # tools), so the dashboard can badge self-generated cases.
+    source: Mapped[str] = mapped_column(String(16), default="manual")
+    creation_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms, index=True)
+    user_modified_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+
+
+class TestCaseBatchJob(Base):
+    """One "run these cases" job: the parent of a set of TestCaseJob runs."""
+
+    __tablename__ = "test_case_batch_jobs"
+
+    test_case_batch_job_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=new_test_case_batch_job_id
+    )
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    engine_type: Mapped[str] = mapped_column(String(32), default="retell-llm")
+    llm_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    conversation_flow_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    engine_version: Mapped[int | None] = mapped_column(Integer)
+    # Arhiteq extra: which agent the dashboard launched the batch from, so the
+    # Simulation tab can list only this agent's runs.
+    agent_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(24), default="in_progress")  # in_progress | complete
+    pass_count: Mapped[int] = mapped_column(Integer, default=0)
+    fail_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_count: Mapped[int] = mapped_column(Integer, default=0)
+    total_count: Mapped[int] = mapped_column(Integer, default=0)
+    creation_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms, index=True)
+    user_modified_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+
+
+class TestCaseJob(Base):
+    """One simulated conversation: a single case executed against one engine."""
+
+    __tablename__ = "test_case_jobs"
+
+    test_case_job_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=new_test_case_job_id
+    )
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    test_case_batch_job_id: Mapped[str] = mapped_column(
+        ForeignKey("test_case_batch_jobs.test_case_batch_job_id"), index=True
+    )
+    # Not a FK: the definition may be deleted while its runs stay readable.
+    test_case_definition_id: Mapped[str] = mapped_column(String(64), index=True)
+    # The definition as it was when the run started — edits to the case must not
+    # rewrite the history of what was actually tested.
+    test_case_definition_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    # pending | in_progress | pass | fail | error
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    # {"type": "retell-llm", "messages": [{"role", "content", ...}, ...]} — the
+    # message roles match Call.transcript_object so the dashboard renders both
+    # with the same component.
+    transcript_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    result_explanation: Mapped[str | None] = mapped_column(Text)
+    # Arhiteq extra: per-metric verdicts [{"metric", "passed", "explanation"}].
+    metric_results: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    creation_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms, index=True)
+    user_modified_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)

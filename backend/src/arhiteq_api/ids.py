@@ -76,5 +76,17 @@ def new_invite_id() -> str:
     return f"invite_{_hex(24)}"
 
 
+def new_test_case_definition_id() -> str:
+    return f"test_case_def_{_hex(24)}"
+
+
+def new_test_case_batch_job_id() -> str:
+    return f"test_case_batch_job_{_hex(24)}"
+
+
+def new_test_case_job_id() -> str:
+    return f"test_case_job_{_hex(24)}"
+
+
 def new_invite_token() -> str:
     return secrets.token_urlsafe(32)
