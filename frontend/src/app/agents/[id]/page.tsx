@@ -1,7 +1,8 @@
 "use client";
 
-import EditorHeader from "@/components/editor/EditorHeader";
+import EditorHeader, { type SaveState } from "@/components/editor/EditorHeader";
 import MetaRow from "@/components/editor/MetaRow";
+import VersionsPanel from "@/components/editor/VersionsPanel";
 import PromptEditor from "@/components/editor/PromptEditor";
 import SelectorRow from "@/components/editor/SelectorRow";
 import WelcomeMessage from "@/components/editor/WelcomeMessage";
@@ -17,7 +18,7 @@ import TranscriptionSection from "@/components/editor/sections/TranscriptionSect
 import WebhookSection from "@/components/editor/sections/WebhookSection";
 import SimulationTab from "@/components/simulation/SimulationTab";
 import Accordion from "@/components/ui/Accordion";
-import { api, type RawAgent, type RawLlm } from "@/lib/api";
+import { api, type RawAgent, type RawAgentVersion, type RawLlm } from "@/lib/api";
 import type { Voice } from "@/lib/types";
 import { DEFAULT_POST_CALL_ANALYSIS_MODEL } from "@/lib/models";
 import {
@@ -32,7 +33,10 @@ import {
   Webhook,
 } from "lucide-react";
 import Link from "next/link";
-import { use, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useRef, useState } from "react";
+
+/** How long editing pauses before the draft is saved. */
+const AUTOSAVE_MS = 800;
 
 const num = (v: unknown, fallback: number): number =>
   typeof v === "number" ? v : fallback;
@@ -50,15 +54,38 @@ export default function AgentEditorPage({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [voices, setVoices] = useState<Voice[]>([]);
 
-  // Dirty state: fields the user changed but hasn't saved yet. Displayed
-  // values are `{...server, ...draft}`; Save PATCHes only the drafts.
+  // Edits the user has made but that haven't reached the draft yet. Displayed
+  // values are `{...server, ...draft}`; the autosave timer PATCHes the drafts.
   const [agentDraft, setAgentDraft] = useState<Partial<RawAgent>>({});
   const [llmDraft, setLlmDraft] = useState<Partial<RawLlm>>({});
-  const [saving, setSaving] = useState(false);
+  const [saveState, setSaveState] = useState<SaveState>("idle");
   const [publishing, setPublishing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   // "create" edits the agent; "simulation" runs test cases and manual tests.
   const [tab, setTab] = useState("create");
+
+  const [versions, setVersions] = useState<RawAgentVersion[] | null>(null);
+  const [versionsError, setVersionsError] = useState<string | null>(null);
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [versionBusy, setVersionBusy] = useState(false);
+
+  // The newest version is the working copy; every older one is frozen, so
+  // viewing one puts the editor in read-only mode. Strictly `<`, never `!==`:
+  // `versions` is refreshed asynchronously after a save, so between the PATCH
+  // response (agent already on the new draft) and that refetch the agent is
+  // *ahead* of the list — treating that as read-only would lock the editor
+  // and drop keystrokes mid-typing.
+  const latestVersion = versions?.[0]?.version ?? agent?.version ?? 0;
+  const readOnly = agent != null && agent.version < latestVersion;
+
+  const loadVersions = useCallback(async () => {
+    try {
+      setVersions(await api.getAgentVersions(id));
+      setVersionsError(null);
+    } catch (e) {
+      setVersionsError(e instanceof Error ? e.message : "Failed to load versions");
+    }
+  }, [id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -78,48 +105,184 @@ export default function AgentEditorPage({
       .listVoices()
       .then((v) => !cancelled && setVoices(v))
       .catch(() => {}); // voice list failure degrades to showing the raw id
+    void loadVersions();
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, loadVersions]);
+
+  // --------------------------------------------------------------- autosave
+  // Refs mirror the pending edits so the debounce timer and the unmount flush
+  // read current values without re-arming on every keystroke.
+  const agentDraftRef = useRef(agentDraft);
+  const llmDraftRef = useRef(llmDraft);
+  const llmIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    agentDraftRef.current = agentDraft;
+    llmDraftRef.current = llmDraft;
+    llmIdRef.current = llm?.llm_id ?? null;
+  });
+
+  /** Save pending edits; returns the agent as the server now has it. */
+  const flush = useCallback(async (): Promise<RawAgent | null> => {
+    const pendingAgent = agentDraftRef.current;
+    const pendingLlm = llmDraftRef.current;
+    const llmId = llmIdRef.current;
+    if (!Object.keys(pendingAgent).length && !Object.keys(pendingLlm).length) return null;
+    setSaveState("saving");
+    setActionError(null);
+    let saved: RawAgent | null = null;
+    try {
+      if (Object.keys(pendingAgent).length) {
+        saved = await api.updateAgent(id, pendingAgent);
+        setAgent(saved);
+        // Only clear what we sent: edits made while the request was in flight
+        // must survive for the next flush.
+        setAgentDraft((prev) => omitSent(prev, pendingAgent));
+      }
+      if (llmId && Object.keys(pendingLlm).length) {
+        setLlm(await api.updateLlm(llmId, pendingLlm));
+        setLlmDraft((prev) => omitSent(prev, pendingLlm));
+        // A prompt edit forks the agent's draft server-side, so the agent's
+        // version moved even though we didn't PATCH it. Without this refresh
+        // the editor still thinks it is on the published version and locks
+        // itself read-only.
+        if (!Object.keys(pendingAgent).length) {
+          saved = await api.getAgent(id);
+          setAgent(saved);
+        }
+      }
+      setSaveState("saved");
+      // The first edit after a publish opens a draft — reflect that in the panel.
+      void loadVersions();
+    } catch (e) {
+      setSaveState("error");
+      setActionError(e instanceof Error ? e.message : "Save failed");
+    }
+    return saved;
+  }, [id, loadVersions]);
+
+  const dirty = Object.keys(agentDraft).length > 0 || Object.keys(llmDraft).length > 0;
+
+  useEffect(() => {
+    if (!dirty) return;
+    setSaveState("pending");
+    const timer = setTimeout(() => void flush(), AUTOSAVE_MS);
+    return () => clearTimeout(timer);
+  }, [agentDraft, llmDraft, dirty, flush]);
+
+  // A reload mid-debounce would drop the pending edit silently.
+  useEffect(() => {
+    const warn = (e: BeforeUnloadEvent) => {
+      if (Object.keys(agentDraftRef.current).length || Object.keys(llmDraftRef.current).length) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => {
+      window.removeEventListener("beforeunload", warn);
+      void flush(); // leaving the page: save what's pending
+    };
+  }, [flush]);
 
   const setAgentField = <K extends keyof RawAgent & string>(field: K, value: RawAgent[K]) =>
     setAgentDraft((prev) => ({ ...prev, [field]: value }));
   const setLlmField = <K extends keyof RawLlm & string>(field: K, value: RawLlm[K]) =>
     setLlmDraft((prev) => ({ ...prev, [field]: value }));
 
-  const dirty = Object.keys(agentDraft).length > 0 || Object.keys(llmDraft).length > 0;
+  // ----------------------------------------------------------- version moves
 
-  const handleSave = async () => {
-    if (!agent || saving) return;
-    setSaving(true);
+  /** Load a version into the editor: the latest is editable, older ones aren't. */
+  const selectVersion = async (version: number) => {
+    if (!agent || version === agent.version) return;
+    setVersionBusy(true);
     setActionError(null);
     try {
-      if (Object.keys(agentDraft).length > 0) {
-        setAgent(await api.updateAgent(agent.agent_id, agentDraft));
-        setAgentDraft({});
+      await flush();
+      if (version === latestVersion) {
+        const detail = await api.getAgentDetail(id);
+        setAgent(detail.agent);
+        setLlm(detail.llm);
+      } else {
+        const pinned = await api.getAgentVersion(id, version);
+        setAgent(pinned);
+        setLlm(pinned.response_engine_config);
       }
-      if (llm && Object.keys(llmDraft).length > 0) {
-        setLlm(await api.updateLlm(llm.llm_id, llmDraft));
-        setLlmDraft({});
-      }
+      setAgentDraft({});
+      setLlmDraft({});
+      setSaveState("idle");
     } catch (e) {
-      setActionError(e instanceof Error ? e.message : "Save failed");
+      setActionError(e instanceof Error ? e.message : "Failed to load version");
     } finally {
-      setSaving(false);
+      setVersionBusy(false);
     }
   };
 
-  const handlePublish = async () => {
+  /** Reload the editor from the server after a version-level change. */
+  const reload = async () => {
+    const detail = await api.getAgentDetail(id);
+    setAgent(detail.agent);
+    setLlm(detail.llm);
+    setAgentDraft({});
+    setLlmDraft({});
+    setSaveState("idle");
+    await loadVersions();
+  };
+
+  /**
+   * `version` names a specific history entry (the panel's "Make live"); pass
+   * undefined to publish whatever the editor is working on. It cannot be
+   * captured up front, because the flush below may fork a *new* draft — a
+   * captured number would publish an older version and drop the on-screen edit.
+   */
+  const handlePublish = async (
+    version: number | undefined,
+    meta: { version_title?: string; version_description?: string } = {},
+  ) => {
     if (!agent || publishing) return;
     setPublishing(true);
     setActionError(null);
     try {
-      setAgent(await api.publishAgent(agent.agent_id));
+      const saved = await flush(); // publish what's on screen, not the last debounce tick
+      const target = version ?? saved?.version ?? agent.version;
+      await api.publishAgentVersion(id, target, meta);
+      await reload();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Publish failed");
     } finally {
       setPublishing(false);
+    }
+  };
+
+  const handleRestore = async (version: number) => {
+    if (versionBusy) return;
+    setVersionBusy(true);
+    setActionError(null);
+    try {
+      await flush();
+      await api.createAgentVersion(id, version);
+      await reload();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Failed to open a draft");
+    } finally {
+      setVersionBusy(false);
+    }
+  };
+
+  const handleDiscard = async (version: number) => {
+    if (versionBusy) return;
+    setVersionBusy(true);
+    setActionError(null);
+    // Pending edits belong to the draft being thrown away.
+    setAgentDraft({});
+    setLlmDraft({});
+    try {
+      await api.deleteAgentVersion(id, version);
+      await reload();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Failed to discard draft");
+    } finally {
+      setVersionBusy(false);
     }
   };
 
@@ -155,20 +318,39 @@ export default function AgentEditorPage({
         llm={llm}
         tab={tab}
         onTab={setTab}
-        dirty={dirty}
-        saving={saving}
-        onSave={handleSave}
+        saveState={saveState}
         publishing={publishing}
-        onPublish={handlePublish}
+        onPublish={(meta) => void handlePublish(undefined, meta)}
+        viewingVersion={agent.version}
+        readOnly={readOnly}
+        onBranch={() => void handleRestore(agent.version)}
+        panelOpen={panelOpen}
+        onTogglePanel={() => setPanelOpen((v) => !v)}
         error={actionError}
       />
+      {readOnly && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-line bg-amber-50 px-4 py-1.5 text-[12px] text-amber-900">
+          Viewing V{agent.version} — published versions are immutable. Use{" "}
+          <span className="font-medium">Edit as new draft</span> to change it.
+        </div>
+      )}
       <div className="flex min-h-0 grow gap-2 overflow-x-auto p-2">
         {tab === "simulation" ? (
-          <SimulationTab agentId={agent.agent_id} llm={llm} dirty={dirty} />
+          <SimulationTab
+            agentId={agent.agent_id}
+            agentVersion={agent.version}
+            llm={llm}
+            dirty={dirty}
+          />
         ) : (
           <>
-        {/* left: prompt column — takes whatever the fixed panel leaves */}
-        <div className="flex min-w-[420px] flex-1 flex-col overflow-y-auto rounded-xl border border-line bg-card p-4">
+        {/* left: prompt column — takes whatever the fixed panel leaves.
+            `fieldset disabled` freezes a published version without threading a
+            readOnly prop through every settings section. */}
+        <fieldset
+          disabled={readOnly}
+          className="flex min-w-[420px] flex-1 flex-col overflow-y-auto rounded-xl border border-line bg-card p-4"
+        >
           <MetaRow agentId={agent.agent_id} llm={llmView} />
           <div className="mt-3">
             <SelectorRow
@@ -207,10 +389,11 @@ export default function AgentEditorPage({
               This agent uses a conversation flow; prompt editing is not available yet.
             </p>
           )}
-        </div>
+        </fieldset>
 
         {/* right: settings accordions */}
-        <div
+        <fieldset
+          disabled={readOnly}
           className={`${SIDE_PANEL_WIDTH} overflow-y-auto rounded-xl border border-line bg-card`}
         >
           <Accordion icon={LayoutGrid} title="Functions">
@@ -327,10 +510,37 @@ export default function AgentEditorPage({
               <p className="text-[13px] text-sub">Not available for conversation-flow agents.</p>
             )}
           </Accordion>
-        </div>
+        </fieldset>
+
+        {panelOpen && (
+          <VersionsPanel
+            versions={versions}
+            loading={versions === null && versionsError === null}
+            error={versionsError}
+            selected={agent.version}
+            onSelect={(v) => void selectVersion(v)}
+            onClose={() => setPanelOpen(false)}
+            onRestore={(v) => void handleRestore(v)}
+            onDiscard={(v) => void handleDiscard(v)}
+            onPublish={(v) => void handlePublish(v === agent.version ? undefined : v)}
+            busy={versionBusy || publishing}
+          />
+        )}
           </>
         )}
       </div>
     </div>
   );
+}
+
+/**
+ * Drop the fields we just PATCHed, keeping any edit made while the request was
+ * in flight — clearing the whole draft would lose those keystrokes.
+ */
+function omitSent<T extends object>(prev: T, sent: Partial<T>): T {
+  const next = { ...prev };
+  for (const key of Object.keys(sent) as (keyof T)[]) {
+    if (Object.is(next[key], sent[key])) delete next[key];
+  }
+  return next;
 }

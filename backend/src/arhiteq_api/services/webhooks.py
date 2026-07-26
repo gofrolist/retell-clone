@@ -162,7 +162,11 @@ def sample_call(workspace_id: str, agent: Agent | None = None) -> Call:
         call_id="call_test_webhook",
         workspace_id=workspace_id,
         agent_id=agent.agent_id if agent is not None else "agent_test_webhook",
-        agent_version=agent.version if agent is not None else 0,
+        agent_version=(
+            (agent.published_version if agent.published_version is not None else agent.version)
+            if agent is not None
+            else 0
+        ),
         agent_name=agent.agent_name if agent is not None else "Test agent",
         call_type="web_call",
         call_status="ended",

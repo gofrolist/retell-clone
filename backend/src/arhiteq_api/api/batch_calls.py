@@ -10,7 +10,7 @@ from ..ids import new_batch_call_id, new_call_id
 from ..models import Agent, ApiKey, BatchCall, Call, PhoneNumber, now_ms
 from ..schemas import coerce_dynamic_variables
 from ..schemas_extra import CreateBatchCallRequest
-from ..services import telephony
+from ..services import telephony, versions
 from . import concurrency
 from ._deps import get_owned
 
@@ -110,6 +110,10 @@ async def create_batch_call(
         detail=f"agent {number.outbound_agent_id} not found",
         status=422,
     )
+    # Every call in the batch pins the version published when it was created,
+    # so a publish mid-batch doesn't split it across two configs.
+    await versions.ensure_seeded(session, agent)
+    pinned, _, agent_version = await versions.resolve(session, agent)
 
     scheduled = body.trigger_timestamp is not None
     batch = BatchCall(
@@ -132,8 +136,8 @@ async def create_batch_call(
             call_id=new_call_id(),
             workspace_id=api_key.workspace_id,
             agent_id=agent.agent_id,
-            agent_version=agent.version,
-            agent_name=agent.agent_name,
+            agent_version=agent_version,
+            agent_name=pinned.agent_name,
             direction="outbound",
             call_status="registered",
             from_number=body.from_number,

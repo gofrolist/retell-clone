@@ -11,6 +11,7 @@ from ..models import (
     DEFAULT_WEBHOOK_TIMEOUT_MS,
     Agent,
     AgentFolder,
+    AgentVersion,
     ApiKey,
     PhoneNumber,
     Workspace,
@@ -20,12 +21,16 @@ from ..schemas import (
     WEBHOOK_TIMEOUT_MS_MAX,
     WEBHOOK_TIMEOUT_MS_MIN,
     CreateAgentRequest,
+    CreateAgentVersionRequest,
+    PublishAgentRequest,
+    PublishAgentVersionRequest,
     TestWebhookRequest,
     agent_to_dict,
+    llm_to_dict,
     normalize_timezone,
     normalize_webhook_events,
 )
-from ..services import webhooks
+from ..services import versions, webhooks
 from ._deps import apply_patch, get_owned
 from .chat_agents import CHAT_VOICE_ID
 
@@ -175,6 +180,8 @@ async def create_agent(
             raise HTTPException(409, detail="agent_id already exists")
         agent.agent_id = body.agent_id
     session.add(agent)
+    await session.flush()
+    await versions.record_initial(session, agent)
     await session.commit()
     return agent_to_dict(agent)
 
@@ -182,11 +189,21 @@ async def create_agent(
 @router.get("/get-agent/{agent_id}")
 async def get_agent(
     agent_id: str,
+    version: str | None = None,
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
+    """Fetch an agent, optionally pinned to a version.
+
+    `version` accepts a number, "latest" (the default — today's behaviour, and
+    the version the editor shows) or "latest_published" (what live calls run).
+    """
     agent = await _get_voice_agent(session, agent_id, api_key.workspace_id)
-    return agent_to_dict(agent)
+    ref = versions.parse_ref(version)
+    if ref is None:
+        return agent_to_dict(agent)
+    pinned, _, _ = await versions.resolve(session, agent, ref)
+    return agent_to_dict(pinned)
 
 
 @router.get("/list-agents")
@@ -211,9 +228,16 @@ async def list_agents(
 async def update_agent(
     agent_id: str,
     request: Request,
+    version: str | None = None,
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
+    """Edit an agent's draft, opening one from the published version if needed.
+
+    Published versions are immutable, so the first config change after a
+    publish forks a draft and `version` in the response names that draft. Live
+    calls keep resolving the published version until it is published in turn.
+    """
     agent = await _get_voice_agent(session, agent_id, api_key.workspace_id)
     payload = await request.json()
     _require_object_body(payload)
@@ -221,10 +245,31 @@ async def update_agent(
     _validate_timezone_patch(payload)
     if "folder_id" in payload:
         await _validate_folder_id(session, payload["folder_id"], api_key.workspace_id)
+    await versions.ensure_seeded(session, agent)
+    ref = versions.parse_ref(version)
+    if isinstance(ref, int) and ref != agent.version:
+        raise HTTPException(
+            422,
+            detail=(
+                f"Version {ref} is not editable. Only the latest version "
+                f"(V{agent.version}) can be edited; branch from V{ref} first."
+            ),
+        )
     # A folder move is a dashboard-only regrouping, not a config change: it
-    # must not mint a new agent version (call records stamp agent_version).
+    # must not open a draft (call records stamp agent_version).
     config_change = bool((set(payload) & _MUTABLE_FIELDS) - {"folder_id"})
-    apply_patch(agent, payload, _MUTABLE_FIELDS, bump_version=config_change, touch=config_change)
+    apply_patch(agent, payload, _MUTABLE_FIELDS, touch=config_change)
+    current = await versions.touch(session, agent) if config_change else None
+    if "version_title" in payload or "version_description" in payload:
+        if current is None:
+            current = await versions.current_row(session, agent)
+        # Only a draft's label is editable — rewriting a published version's
+        # changelog would break the immutability the whole model rests on.
+        if current is not None and not current.is_published:
+            if "version_title" in payload:
+                current.version_title = payload["version_title"]
+            if "version_description" in payload:
+                current.version_description = payload["version_description"]
     await session.commit()
     return agent_to_dict(agent)
 
@@ -235,20 +280,119 @@ async def get_agent_versions(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
-    # Single live version per agent (no version history table yet), so the
-    # version list is the current agent object alone.
+    """Full version history, newest first.
+
+    Each entry is the agent shape as of that version plus its lineage
+    (`base_version`), label (`version_title` / `version_description`) and
+    whether it is the one live calls resolve to (`is_live`).
+    """
     agent = await _get_voice_agent(session, agent_id, api_key.workspace_id)
-    return [agent_to_dict(agent)]
+    await versions.ensure_seeded(session, agent)
+    await session.commit()
+    rows = await versions.history(session, agent_id)
+    out = []
+    for row in rows:
+        pinned, _, _ = await versions.resolve(session, agent, row.version)
+        out.append(
+            versions.to_dict(row, agent_to_dict(pinned), live_version=agent.published_version)
+        )
+    return out
+
+
+@router.get("/get-agent-version/{agent_id}/{version}")
+async def get_agent_version(
+    agent_id: str,
+    version: int,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    """One version, with its response-engine config attached.
+
+    The list endpoint stays light (prompts live on the LLM, not the agent);
+    the dashboard fetches the full config only for the version being viewed.
+    """
+    agent = await _get_voice_agent(session, agent_id, api_key.workspace_id)
+    await versions.ensure_seeded(session, agent)
+    await session.commit()
+    row = await versions.current_row(session, agent) if version == agent.version else None
+    if row is None:
+        row = await versions.get_row(session, agent_id, version)
+    if row is None:
+        raise HTTPException(404, detail=f"Agent version {version} not found")
+    pinned, llm, _ = await versions.resolve(session, agent, version)
+    return {
+        **versions.to_dict(row, agent_to_dict(pinned), live_version=agent.published_version),
+        # Arhiteq extra: the prompt/tools this version runs, so the editor can
+        # show an older version without a second version-aware LLM endpoint.
+        "response_engine_config": llm_to_dict(llm) if llm is not None else None,
+    }
+
+
+@router.post("/create-agent-version/{agent_id}", status_code=201)
+async def create_agent_version(
+    agent_id: str,
+    body: CreateAgentVersionRequest,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    """Open a draft carrying `base_version`'s config (the rollback path)."""
+    agent = await _get_voice_agent(session, agent_id, api_key.workspace_id)
+    draft = await versions.branch(session, agent, body.base_version)
+    await session.commit()
+    return versions.to_dict(draft, agent_to_dict(agent), live_version=agent.published_version)
+
+
+@router.delete("/delete-agent-version/{agent_id}/{version}", status_code=204)
+async def delete_agent_version(
+    agent_id: str,
+    version: int,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    """Discard a draft, putting the live config back where it branched from."""
+    agent = await _get_voice_agent(session, agent_id, api_key.workspace_id)
+    await versions.ensure_seeded(session, agent)
+    await versions.discard(session, agent, version)
+    await session.commit()
+
+
+@router.post("/publish-agent-version/{agent_id}")
+async def publish_agent_version(
+    agent_id: str,
+    body: PublishAgentVersionRequest,
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+):
+    """Publish a specific version — a draft, or an older one to roll back."""
+    agent = await _get_voice_agent(session, agent_id, api_key.workspace_id)
+    await versions.publish(
+        session,
+        agent,
+        body.version,
+        title=body.version_title,
+        description=body.version_description,
+    )
+    await session.commit()
+    return agent_to_dict(agent)
 
 
 @router.post("/publish-agent/{agent_id}")
 async def publish_agent(
     agent_id: str,
+    body: PublishAgentRequest | None = None,
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
+    """Publish the open draft (or re-affirm the current version if none)."""
     agent = await _get_voice_agent(session, agent_id, api_key.workspace_id)
-    agent.is_published = True
+    await versions.ensure_seeded(session, agent)
+    await versions.publish(
+        session,
+        agent,
+        agent.version,
+        title=body.version_title if body else None,
+        description=body.version_description if body else None,
+    )
     agent.last_modification_timestamp = now_ms()
     await session.commit()
     return agent_to_dict(agent)
@@ -313,5 +457,9 @@ async def delete_agent(
                 f"{', '.join(bound)}. Repoint or release them before deleting."
             ),
         )
+    # Explicit, not left to ON DELETE CASCADE: SQLite (dev/test) doesn't enforce
+    # FKs unless PRAGMA foreign_keys is on, so the cascade would only fire in
+    # production and orphaned versions would go unnoticed locally.
+    await session.execute(AgentVersion.__table__.delete().where(AgentVersion.agent_id == agent_id))
     await session.delete(agent)
     await session.commit()

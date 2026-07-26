@@ -9,7 +9,14 @@ import { DisconnectReason, Room, RoomEvent, Track } from "livekit-client";
 import { Braces, Info, Loader2, Mic, Phone, Play, RotateCcw, Send } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-export default function TestPanel({ agentId }: { agentId: string }) {
+export default function TestPanel({
+  agentId,
+  agentVersion,
+}: {
+  agentId: string;
+  /** Version to dial; omitted would fall back to the published one. */
+  agentVersion?: number;
+}) {
   const [tab, setTab] = useState("llm");
   // Test dynamic variables ({} button): sent with the next test chat/call so
   // `{{var}}` placeholders resolve like a real call.
@@ -82,7 +89,7 @@ export default function TestPanel({ agentId }: { agentId: string }) {
       {/* Both tabs stay mounted (toggled with `hidden`) so the LLM chat keeps
           its conversation when the user peeks at the Audio tab. */}
       <div className={tab === "audio" ? "flex min-h-0 grow flex-col" : "hidden"}>
-        <AudioTab agentId={agentId} dynamicVariables={testVars} />
+        <AudioTab agentId={agentId} agentVersion={agentVersion} dynamicVariables={testVars} />
       </div>
       <div className={tab === "llm" ? "flex min-h-0 grow flex-col" : "hidden"}>
         <LlmChat agentId={agentId} dynamicVariables={testVars} />
@@ -116,9 +123,11 @@ interface TranscriptSegment {
 /** Live web call against the agent (Retell "Test Audio"). */
 function AudioTab({
   agentId,
+  agentVersion,
   dynamicVariables,
 }: {
   agentId: string;
+  agentVersion?: number;
   dynamicVariables: Record<string, string>;
 }) {
   const [phase, setPhase] = useState<CallPhase>("idle");
@@ -275,7 +284,7 @@ function AudioTab({
           }
         })();
       });
-      const call = await api.createWebCall(agentId, dynamicVariables);
+      const call = await api.createWebCall(agentId, dynamicVariables, agentVersion);
       if (bailIfCancelled()) return;
       await room.connect(call.livekit_server_url, call.access_token);
       if (bailIfCancelled()) return;

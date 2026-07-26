@@ -42,10 +42,14 @@ const HISTORY_BATCHES = 5;
 
 export default function SimulationTab({
   agentId,
+  agentVersion,
   llm,
   dirty,
 }: {
   agentId: string;
+  /** Version open in the editor; the voice test dials this one, not the
+   *  published default, so a draft can be tried before publishing. */
+  agentVersion: number;
   llm: RawLlm | null;
   /** The editor has unsaved edits — runs would test the last saved prompt. */
   dirty: boolean;
@@ -436,7 +440,7 @@ export default function SimulationTab({
       <div
         className={`${SIDE_PANEL_WIDTH} overflow-hidden rounded-xl border border-line bg-card`}
       >
-        <TestPanel agentId={agentId} />
+        <TestPanel agentId={agentId} agentVersion={agentVersion} />
       </div>
 
       <TestCaseModal

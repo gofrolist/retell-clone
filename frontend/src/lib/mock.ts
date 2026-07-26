@@ -511,6 +511,33 @@ function rawAgent(a: Agent): Record<string, unknown> {
   };
 }
 
+/**
+ * Version history for the demo: the agent's current version plus the earlier
+ * ones it implies, newest first. Writes are disabled in demo mode, so this is
+ * a plausible read-only history rather than mutable state.
+ */
+function demoVersions(a: Agent): Record<string, unknown>[] {
+  const notes = [
+    "Initial version",
+    "Tightened the greeting",
+    "Added the callback tool",
+    "Reworked objection handling",
+    "Shortened the closing script",
+  ];
+  return Array.from({ length: a.version + 1 }, (_, i) => a.version - i).map((version) => ({
+    ...rawAgent(a),
+    version,
+    is_published: true,
+    is_live: version === a.version,
+    base_version: version === 0 ? null : version - 1,
+    version_title: null,
+    version_description: notes[version % notes.length],
+    created_timestamp: a.last_modification_timestamp - (a.version - version) * DAY,
+    published_timestamp: a.last_modification_timestamp - (a.version - version) * DAY,
+    last_modification_timestamp: a.last_modification_timestamp - (a.version - version) * DAY,
+  }));
+}
+
 function rawLlm(a: Agent): Record<string, unknown> {
   return {
     llm_id: demoLlmId(a),
@@ -590,6 +617,19 @@ export function demoResponse<T>(path: string, init?: RequestInit): T {
     const a = mockAgents.find((x) => x.agent_id === route.split("/").pop());
     if (!a) throw new Error("Agent not found");
     return rawAgent(a) as T;
+  }
+  if (route.startsWith("/get-agent-versions/")) {
+    const a = mockAgents.find((x) => x.agent_id === route.split("/").pop());
+    if (!a) throw new Error("Agent not found");
+    return demoVersions(a) as T;
+  }
+  if (route.startsWith("/get-agent-version/")) {
+    const [, , , agentId, version] = route.split("/");
+    const a = mockAgents.find((x) => x.agent_id === agentId);
+    if (!a) throw new Error("Agent not found");
+    const entry = demoVersions(a).find((v) => v.version === Number(version));
+    if (!entry) throw new Error("Agent version not found");
+    return { ...entry, response_engine_config: rawLlm(a) } as T;
   }
   if (route.startsWith("/get-retell-llm/")) {
     const id = route.split("/").pop();

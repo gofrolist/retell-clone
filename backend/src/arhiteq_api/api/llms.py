@@ -6,6 +6,7 @@ from ..auth import require_api_key
 from ..db import get_session
 from ..models import ApiKey, RetellLLM
 from ..schemas import CreateLLMRequest, llm_to_dict
+from ..services import versions
 from ._deps import apply_patch, get_owned
 
 router = APIRouter(tags=["retell-llm"])
@@ -74,7 +75,21 @@ async def update_llm(
         session, RetellLLM, llm_id, api_key.workspace_id, detail="Retell LLM not found"
     )
     payload = await request.json()
+    # The prompt is part of the agent's config, so a prompt edit opens the
+    # owning agent's draft too — otherwise it would land on the live rows with
+    # nothing in the version history to show for it. Seeding has to happen
+    # *before* the patch, or the agent's initial snapshot would capture the
+    # edit it is supposed to predate.
+    owners = (
+        await versions.agents_using_llm(session, api_key.workspace_id, llm_id)
+        if set(payload) & _MUTABLE_FIELDS
+        else []
+    )
+    for agent in owners:
+        await versions.ensure_seeded(session, agent)
     apply_patch(llm, payload, _MUTABLE_FIELDS, bump_version=True, touch=True)
+    for agent in owners:
+        await versions.touch(session, agent)
     await session.commit()
     return llm_to_dict(llm)
 
