@@ -213,15 +213,7 @@ character at all times and never reveal that this is a test.
 
 Your character, situation and goal:
 {user_prompt}
-
-That description is everything you know about yourself: do not invent a
-motive, a complaint or a request it does not give you, however plausible one
-would be for this sort of call. Asked about something it does not cover, give a
-brief, ordinary answer and leave it there. Raise what it tells you to raise —
-but a fact it frames as an answer ("when asked, …", "confirm that …") is yours
-to give when the agent asks for it, not before: volunteering it early turns the
-question the agent was about to ask into one it never has to.
-
+{scenario_note}
 Speak the way people actually speak on the phone: short turns, one idea at a
 time, and answer what you were asked. Hang up once your goal is met or is
 clearly unreachable — do not keep the call going out of politeness.
@@ -236,6 +228,24 @@ Reply with STRICT JSON (no markdown), exactly one of:
 
 Conversation so far:
 {history}"""
+
+# Said only to a caller who was given a part to play. A case may carry no
+# scenario at all (the field defaults to empty and only missing *criteria* stop
+# a run), and telling someone with a blank description that it is everything
+# they know — invent no motive, no request, hang up once the goal is out of
+# reach — talks them straight off the call. That leaves an empty transcript and
+# fails every criterion on the harness, which is the shape of bug this whole
+# paragraph is here to prevent. Without a scenario the caller improvises, as it
+# always did.
+_SCENARIO_NOTE = """
+That description is everything you know about yourself: do not invent a
+motive, a complaint or a request it does not give you, however plausible one
+would be for this sort of call. Asked about something it does not cover, give a
+brief, ordinary answer and leave it there. Raise what it tells you to raise —
+but a fact it frames as an answer ("when asked, …", "confirm that …") is yours
+to give when the agent asks for it, not before: volunteering it early turns the
+question the agent was about to ask into one it never has to.
+"""
 
 _JUDGE_PROMPT = """\
 You are grading a simulated phone call between an AI agent and a user. Lines
@@ -277,11 +287,13 @@ call is running on:
 Conversation so far:
 {history}
 
-Return what the scenario and the transcript already fix — the caller's name,
-what they told you last time, the state of their account — and invent only the
-details neither of them settles. Never contradict either, and never introduce a
-person, a topic or a record this call is not about: the agent will read this
-payload out to the caller as fact.
+Answer out of the state above: return what it fixes — the caller's name, what
+they told you last time, where their account stands — and invent only the
+details it leaves open. The scenario and what the caller says are not that
+state: they are the caller's own account of things, which a call may exist to
+contradict, so a claim of theirs the state does not back is not something to
+write in. Never introduce a person, a topic or a record this call is not about:
+the agent will read this payload out to the caller as fact.
 
 Return STRICT JSON (no markdown) — the payload only."""
 
@@ -542,9 +554,22 @@ class _Simulator:
         dotted `call.*` family is left out — a call id tells an invented payload
         nothing, and printing four empty keys only invites the model to fill
         them in.
+
+        The scenario goes in as the caller's account of things rather than as
+        record, because a case is often written to be wrong: generation is asked
+        for callers who "give contradictory or out-of-scope information", and a
+        scenario that says to insist last month's payment went through is one
+        the lookup has to be free to deny. Told to agree with it, the harness
+        would invent the payment, the agent would confirm it, and the criterion
+        about telling the caller no payment is on file would fail on the harness
+        — the failure this function exists to stop, pointing the other way.
         """
         scenario = str(self._definition.get("user_prompt") or "").strip()
-        lines = [f"The scenario the caller is playing: {scenario}"] if scenario else []
+        lines = (
+            [f"The part the caller is playing (their own account, not a record): {scenario}"]
+            if scenario
+            else []
+        )
         # Read through __getitem__ so a pinned clock renders the way the prompt
         # under test saw it rather than as the raw text the case was written in.
         facts = [
@@ -553,7 +578,7 @@ class _Simulator:
             if not name.startswith("call.") and (value := str(self._variables[name]).strip())
         ]
         if facts:
-            lines.append("What the systems behind this call hold about the caller:")
+            lines.append("What the systems behind this call actually hold — the record:")
             lines.extend(facts)
         return "\n".join(lines) if lines else "(nothing beyond the call so far)"
 
@@ -689,10 +714,12 @@ class _Simulator:
         is something the caller did, and only that one earns the agent a wrap-up
         turn.
         """
+        scenario = str(self._definition.get("user_prompt") or "").strip()
         action = await self._json_call(
             self._settings.analysis_model,
             _USER_PROMPT.format(
-                user_prompt=self._definition.get("user_prompt") or "",
+                user_prompt=scenario,
+                scenario_note=_SCENARIO_NOTE if scenario else "",
                 history=_history(self.transcript),
             ),
             0.7,

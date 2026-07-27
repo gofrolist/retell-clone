@@ -320,14 +320,46 @@ async def test_a_synthesized_tool_result_is_told_what_the_call_is_about(monkeypa
     assert "- first_name: Jane" in synthesis
     assert "- prior_conversation: wanted to do some gardening" in synthesis
     # The call it is answering, and the turn that prompted it, are both context
-    # the payload has to agree with.
+    # the payload has to fit.
     assert "Tool call: schedule_callback" in synthesis
     assert "Did you see my note about the hydrangeas?" in synthesis
-    assert "Never contradict either" in synthesis
     # A call id tells an invented payload nothing; four empty dotted keys would
     # only invite the model to fill them in.
     assert "call.call_id" not in synthesis
     assert "call.from_number" not in synthesis
+
+
+async def test_a_synthesized_tool_result_may_deny_what_the_caller_claims(monkeypatch):
+    """Only the variables are the record; the scenario is the caller's account.
+
+    Generation is asked for callers who give contradictory information, so a
+    scenario that says to insist last month's payment went through is one the
+    lookup has to be free to deny. A harness told to agree with the scenario
+    would invent the payment, the agent would confirm it, and the criterion
+    about telling the caller no payment is on file would fail on the harness.
+    """
+    sim, model = make_simulator(
+        monkeypatch,
+        [
+            {"action": "speak", "content": "I definitely paid last month."},
+            {"action": "tool_call", "tool_name": "schedule_callback", "arguments": {}},
+            {"status": "queued"},
+            {"action": "speak", "content": "Let me take a look."},
+            {"action": "hangup", "reason": "done"},
+            {"action": "done"},
+        ],
+        definition={
+            "user_prompt": "You insist you already paid last month. You have no receipt.",
+            "metrics": [],
+        },
+        variables=CallVariables({"first_name": "James", "last_payment": "none on file"}),
+    )
+    await sim.run()
+    synthesis = _flat(model.prompts[2])
+    assert "The part the caller is playing (their own account, not a record):" in synthesis
+    assert "What the systems behind this call actually hold — the record:" in synthesis
+    assert "- last_payment: none on file" in synthesis
+    assert "a claim of theirs the state does not back is not something to write in" in synthesis
 
 
 async def test_a_synthesized_tool_result_survives_a_case_with_no_state(monkeypatch):
@@ -376,6 +408,29 @@ async def test_the_simulated_caller_is_held_to_the_scenario(monkeypatch):
     caller = _flat(model.prompts[0])
     assert "do not invent a motive, a complaint or a request it does not give you" in caller
     assert 'a fact it frames as an answer ("when asked, …", "confirm that …") is yours' in caller
+
+
+async def test_a_caller_with_no_scenario_is_not_told_to_invent_nothing(monkeypatch):
+    """A case may carry no scenario at all — only missing criteria stop a run.
+
+    Told a blank description is everything they know, and to hang up once the
+    goal it does not state is out of reach, the caller walks off the call: an
+    empty transcript fails every criterion on the harness.
+    """
+    sim, model = make_simulator(
+        monkeypatch,
+        [
+            {"action": "speak", "content": "Hi?"},
+            {"action": "speak", "content": "Hello!"},
+            {"action": "hangup", "reason": "done"},
+            {"action": "done"},
+        ],
+        definition={"user_prompt": "   ", "metrics": []},
+    )
+    await sim.run()
+    caller = _flat(model.prompts[0])
+    assert "do not invent a motive" not in caller
+    assert "You are role-playing a person on a phone call" in caller
 
 
 async def test_unknown_tool_is_reported_back_as_an_error(monkeypatch):
