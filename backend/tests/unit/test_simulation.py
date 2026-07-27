@@ -13,7 +13,7 @@ import pytest
 from arhiteq_api.config import get_settings
 from arhiteq_api.models import RetellLLM
 from arhiteq_api.services import simulation
-from arhiteq_api.services.template_variables import resolve_template
+from arhiteq_api.services.template_variables import CallVariables, resolve_template
 
 
 class FakeModel:
@@ -148,6 +148,7 @@ async def test_run_uses_the_begin_message_and_ends_on_user_hangup(monkeypatch):
             {"action": "speak", "content": "I'd like a callback."},
             {"action": "speak", "content": "Sure, when suits you?"},
             {"action": "hangup", "reason": "done"},
+            {"action": "done"},  # the wrap-up turn: nothing left to log
         ],
     )
     transcript = await sim.run()
@@ -157,7 +158,8 @@ async def test_run_uses_the_begin_message_and_ends_on_user_hangup(monkeypatch):
         ("agent", "Sure, when suits you?"),
     ]
     # The greeting was replayed verbatim, not generated.
-    assert len(model.prompts) == 3
+    assert len(model.prompts) == 4
+    assert sim.ending == "the caller hung up"
 
 
 async def test_run_feeds_the_mocked_output_back_without_calling_a_tool(monkeypatch):
@@ -179,6 +181,7 @@ async def test_run_feeds_the_mocked_output_back_without_calling_a_tool(monkeypat
             {"action": "tool_call", "tool_name": "schedule_callback", "arguments": {"hour": 9}},
             {"action": "speak", "content": "Booked — reference CB-42."},
             {"action": "hangup", "reason": "done"},
+            {"action": "done"},
         ],
         definition=definition,
     )
@@ -190,9 +193,9 @@ async def test_run_feeds_the_mocked_output_back_without_calling_a_tool(monkeypat
     assert result["content"] == '{"confirmation": "CB-42"}'
     assert invocation["tool_call_id"] == result["tool_call_id"]
     # A mocked tool must not cost an extra model call to invent a result.
-    assert len(model.prompts) == 4
+    assert len(model.prompts) == 5
     # The result is visible to the next turn's prompt.
-    assert "CB-42" in model.prompts[-1]
+    assert "CB-42" in model.prompts[3]
 
 
 async def test_unmocked_tool_result_is_synthesized(monkeypatch):
@@ -204,6 +207,7 @@ async def test_unmocked_tool_result_is_synthesized(monkeypatch):
             {"status": "queued"},  # the synthesized tool payload
             {"action": "speak", "content": "All set."},
             {"action": "hangup", "reason": "done"},
+            {"action": "done"},
         ],
     )
     transcript = await sim.run()
@@ -218,6 +222,7 @@ async def test_unknown_tool_is_reported_back_as_an_error(monkeypatch):
             {"action": "tool_call", "tool_name": "wire_money", "arguments": {}},
             {"action": "speak", "content": "Sorry, I can't do that."},
             {"action": "hangup", "reason": "done"},
+            {"action": "done"},
         ],
     )
     transcript = await sim.run()
@@ -245,6 +250,7 @@ async def test_start_speaker_user_lets_the_caller_open(monkeypatch):
             {"action": "speak", "content": "Hello? Is anyone there?"},
             {"action": "speak", "content": "Yes, hi!"},
             {"action": "hangup", "reason": "done"},
+            {"action": "done"},
         ],
         start_speaker="user",
     )
@@ -262,12 +268,97 @@ async def test_tool_call_loop_is_broken_after_the_cap(monkeypatch):
                 * simulation.MAX_TOOL_CALLS_PER_TURN
             ),
             {"action": "hangup", "reason": "gave up"},
+            {"action": "done"},
         ],
     )
     transcript = await sim.run()
     tool_calls = [t for t in transcript if t["role"] == "tool_call_invocation"]
     assert len(tool_calls) == simulation.MAX_TOOL_CALLS_PER_TURN
     assert "kept calling tools" in transcript[-1]["content"]
+
+
+async def test_a_hangup_still_lets_the_agent_finish_its_wrap_up_calls(monkeypatch):
+    """The bug this exists for: a prompt that says *speak, then log, then hang
+    up* could never satisfy "the agent logs the outcome". The agent's turn ends
+    when it speaks, and the caller hanging up on the goodbye used to end the
+    run — so whether the criterion passed depended on whether the simulated
+    user answered the goodbye or hung up on it."""
+    sim, model = make_simulator(
+        monkeypatch,
+        [
+            {"action": "speak", "content": "Please cancel my subscription."},
+            {"action": "speak", "content": "Of course. I'll stop the calls today. Take care."},
+            {"action": "hangup", "reason": "goal met"},
+            # Wrap-up: the disposition logging a live call does while hanging up.
+            {"action": "tool_call", "tool_name": "schedule_callback", "arguments": {}},
+            "{}",
+            {"action": "tool_call", "tool_name": "end_call", "arguments": {}},
+        ],
+    )
+    transcript = await sim.run()
+    assert [t["role"] for t in transcript[-4:]] == [
+        "tool_call_invocation",
+        "tool_call_result",
+        "tool_call_invocation",
+        "tool_call_result",
+    ]
+    assert transcript[-1]["name"] == "end_call"
+    # Nothing was spoken into a dead line, and the terminal tool stopped the turn.
+    assert transcript[2]["content"].endswith("Take care.")
+    assert "do NOT speak" in model.prompts[3]
+
+
+async def test_an_agent_that_hangs_up_itself_gets_no_wrap_up_turn(monkeypatch):
+    """It already ran what it meant to run — a second bite would let an agent
+    that forgot the disposition log look like one that remembered."""
+    sim, model = make_simulator(
+        monkeypatch,
+        [
+            {"action": "speak", "content": "That's all, bye."},
+            {"action": "tool_call", "tool_name": "end_call", "arguments": {}},
+        ],
+    )
+    await sim.run()
+    assert len(model.prompts) == 2
+    assert sim.ending == "the agent ended it"
+
+
+async def test_tool_arguments_resolve_the_call_scoped_placeholders(monkeypatch):
+    """A prompt that says to pass `retell_call_id={{call.call_id}}` must not put
+    the literal placeholder in the transcript — a live call resolves it."""
+    sim, _ = make_simulator(
+        monkeypatch,
+        [
+            {"action": "speak", "content": "Book it."},
+            {
+                "action": "tool_call",
+                "tool_name": "schedule_callback",
+                "arguments": {"retell_call_id": "{{call.call_id}}", "who": "{{first_name}}"},
+            },
+            "{}",
+            {"action": "speak", "content": "Done."},
+            {"action": "hangup", "reason": "done"},
+            {"action": "done"},
+        ],
+        variables=CallVariables({"first_name": "Alice"}, call_id="call_sim1"),
+    )
+    transcript = await sim.run()
+    assert json.loads(transcript[2]["arguments"]) == {
+        "retell_call_id": "call_sim1",
+        "who": "Alice",
+    }
+
+
+async def test_the_judge_is_told_how_the_call_ended(monkeypatch):
+    definition = {"user_prompt": "…", "metrics": ["Agent logs the outcome"]}
+    sim, model = make_simulator(
+        monkeypatch,
+        [{"results": [{"metric": "Agent logs the outcome", "passed": True, "explanation": "did"}]}],
+        definition=definition,
+    )
+    sim.ending = "the caller hung up"
+    await sim.judge()
+    assert "How the call ended: the caller hung up." in model.prompts[0]
 
 
 async def test_a_mid_call_failure_keeps_the_turns_that_happened(monkeypatch):
@@ -296,10 +387,13 @@ async def test_run_stops_at_the_turn_cap(monkeypatch):
         {"action": "speak", "content": "and another thing"},
         {"action": "speak", "content": "I see"},
     ] * simulation.MAX_TURNS
-    sim, _ = make_simulator(monkeypatch, chatter)
+    sim, _ = make_simulator(monkeypatch, [*chatter, {"action": "done"}])
     transcript = await sim.run()
-    # greeting + MAX_TURNS user/agent pairs, and no further model calls.
+    # greeting + MAX_TURNS user/agent pairs, and nothing said after the cap.
     assert len(transcript) == 1 + 2 * simulation.MAX_TURNS
+    # The judge is told, so a criterion the call never reached is not read as
+    # the agent declining to do it.
+    assert sim.ending == "the harness hit its turn limit before the call ended"
 
 
 # ------------------------------------------------------------------ judging
