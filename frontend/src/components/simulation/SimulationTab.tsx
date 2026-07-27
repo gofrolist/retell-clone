@@ -35,8 +35,11 @@ const POLL_MS = 2500;
 /** How long to keep polling before treating a batch as stalled. Generous —
  *  a 1000-case batch is legitimately slow — but finite. */
 const POLL_DEADLINE_MS = 30 * 60 * 1000;
-/** Cases one "Generate tests" click drafts. */
-const GENERATE_COUNT = 4;
+/** Cases one "Generate tests" click drafts. The API caps this at 10; asking
+ *  for the full ten in one call beats several smaller ones, because the model
+ *  sees every slot at once and spreads the scenarios instead of re-deriving
+ *  the same obvious ones (it is never shown the cases already saved). */
+const GENERATE_COUNT = 10;
 /** Past batches read on open, to show a last result for cases the newest run
  *  didn't include. */
 const HISTORY_BATCHES = 5;
@@ -107,27 +110,37 @@ export default function SimulationTab({
     }
     let cancelled = false;
     setLoading(true);
+    // The table needs the cases and nothing else, so the spinner waits on this
+    // one request. Run history is a backfill for the "last result" column and
+    // fills in behind it — gating the whole tab on it cost a round trip per
+    // batch before anything at all was drawn.
+    api
+      .listTestCases(llmId)
+      .then((caseList) => !cancelled && setCases(caseList.items))
+      .catch((e) => !cancelled && setError(e instanceof Error ? e.message : "Failed to load tests"))
+      .finally(() => !cancelled && setLoading(false));
+
     // Backfill from the recent batches so a reopened editor still reports the
     // verdicts you got yesterday — a case only ever ran in one of them, and
     // the newest run per case wins when several did.
-    Promise.all([
-      api.listTestCases(llmId),
-      api.listBatchTests(llmId, agentId).catch(() => null),
-    ])
-      .then(async ([caseList, batchList]) => {
-        if (cancelled) return;
-        setCases(caseList.items);
-        const recent = (batchList?.items ?? []).slice(0, HISTORY_BATCHES);
+    api
+      .listBatchTests(llmId, agentId)
+      .catch(() => null)
+      .then(async (batchList) => {
+        if (cancelled || !batchList) return;
+        const recent = batchList.items.slice(0, HISTORY_BATCHES);
         setBatch(recent[0] ?? null);
-        // Oldest first, so the newest batch's verdicts land last and win.
-        for (const b of [...recent].reverse()) {
-          const runList = await api.listTestRuns(b.test_case_batch_job_id);
-          if (cancelled) return;
-          adoptRuns(runList.items);
-        }
+        // Fetched together rather than one after the next: `adoptRuns` keeps
+        // the newest run per case whatever order they arrive in, and applying
+        // the responses oldest-first preserves how ties resolved when these
+        // were serial.
+        const lists = await Promise.all(
+          recent.map((b) => api.listTestRuns(b.test_case_batch_job_id)),
+        );
+        if (cancelled) return;
+        for (const runList of lists.reverse()) adoptRuns(runList.items);
       })
-      .catch((e) => !cancelled && setError(e instanceof Error ? e.message : "Failed to load tests"))
-      .finally(() => !cancelled && setLoading(false));
+      .catch((e) => !cancelled && setError(e instanceof Error ? e.message : "Failed to load tests"));
     return () => {
       cancelled = true;
     };
