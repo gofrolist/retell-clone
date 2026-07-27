@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/gofrolist/retell-clone/compare/v0.15.2...v0.16.0) (2026-07-27)
+
+
+### Features
+
+* **simulation:** let a test case pin the clock it runs on ([#170](https://github.com/gofrolist/retell-clone/issues/170)) ([51f5814](https://github.com/gofrolist/retell-clone/commit/51f581473f0ad5ed59678d4187128f8b853e675e))
+
 ## [0.15.2](https://github.com/gofrolist/retell-clone/compare/v0.15.1...v0.15.2) (2026-07-27)
 
 
