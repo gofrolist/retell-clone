@@ -104,12 +104,17 @@ worker:
   metricsPort: 9090
   # LiveKit agent name — must match the SIP dispatch rule.
   agentName: arhiteq-agent
+  # STT/TTS/LLM all run remotely (Cartesia + Gemini), so a worker is mostly
+  # waiting on the network — measured draw is single-digit millicores idle.
+  # Requests set the autoscaler's floor and the HPA's 100% mark; keeping them
+  # tight packs the voice pool and makes the CPU-target HPA fire sooner, while
+  # limits leave room for a call burst.
   resources:
     requests:
-      cpu: "2"
-      memory: 2Gi
+      cpu: 750m
+      memory: 1Gi
     limits:
-      cpu: "4"
+      cpu: "3"
       memory: 4Gi
   # Pin to the voice node pool (CPU-sensitive realtime audio).
   nodeSelector:

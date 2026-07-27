@@ -67,12 +67,17 @@ tolerations:
     value: voice
     effect: NoSchedule
 
+# Requests are the scheduling floor, not the ceiling — the cluster autoscaler
+# sizes the voice pool on requests alone, so oversized ones pin idle nodes.
+# An SFU relays packets; it does not transcode, and measured idle draw is a
+# couple of millicores. Keep requests near the real floor and let limits carry
+# the burst headroom for concurrent calls.
 resources:
   requests:
-    cpu: "4"
-    memory: 4Gi
+    cpu: "1"
+    memory: 1Gi
   limits:
-    cpu: "6"
+    cpu: "3"
     memory: 8Gi
 
 # Prometheus metrics (scraped by kube-prometheus-stack).

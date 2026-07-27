@@ -44,10 +44,13 @@ tolerations:
     value: voice
     effect: NoSchedule
 
+# See livekit-server-values.yaml: requests sized to the real idle floor so the
+# autoscaler can pack the pool; limits keep the burst headroom. The bridge
+# forwards RTP between the trunk and the SFU — no transcoding.
 resources:
   requests:
-    cpu: "2"
-    memory: 2Gi
+    cpu: 500m
+    memory: 512Mi
   limits:
-    cpu: "4"
+    cpu: "2"
     memory: 4Gi
