@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.17.0](https://github.com/gofrolist/retell-clone/compare/v0.16.0...v0.17.0) (2026-07-27)
+
+
+### Features
+
+* **simulation:** draft ten cases per click, unblock the test table ([#174](https://github.com/gofrolist/retell-clone/issues/174)) ([45acfbf](https://github.com/gofrolist/retell-clone/commit/45acfbfb9850a97f620f722d987c6560d377a055))
+
+
+### Bug Fixes
+
+* **simulation:** anchor a generated clock pin to today ([#172](https://github.com/gofrolist/retell-clone/issues/172)) ([190a1f4](https://github.com/gofrolist/retell-clone/commit/190a1f4a43ebe30a4f35f6047bda2246162e1145))
+
 ## [0.16.0](https://github.com/gofrolist/retell-clone/compare/v0.15.2...v0.16.0) (2026-07-27)
 
 
