@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1](https://github.com/gofrolist/retell-clone/compare/v0.15.0...v0.15.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* **simulation:** finish wrap-up calls and resolve call variables ([#166](https://github.com/gofrolist/retell-clone/issues/166)) ([fd2d067](https://github.com/gofrolist/retell-clone/commit/fd2d067f7f690a9c567557431e605164d5ae8488))
+
 ## [0.15.0](https://github.com/gofrolist/retell-clone/compare/v0.14.0...v0.15.0) (2026-07-26)
 
 
