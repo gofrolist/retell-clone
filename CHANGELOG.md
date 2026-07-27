@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.18.0](https://github.com/gofrolist/retell-clone/compare/v0.17.2...v0.18.0) (2026-07-27)
+
+
+### Features
+
+* **kb:** answer factual questions from the knowledge base ([#182](https://github.com/gofrolist/retell-clone/issues/182)) ([46960ce](https://github.com/gofrolist/retell-clone/commit/46960cee2cdd2ce832ab47aece89d7ad8a4e2be2))
+
+
+### Bug Fixes
+
+* **simulation:** keep a run alive when the model appends to its JSON ([#181](https://github.com/gofrolist/retell-clone/issues/181)) ([8a58b06](https://github.com/gofrolist/retell-clone/commit/8a58b06a4e5213cead74e4ea546cf769bdd29bd7))
+
+
+### Performance Improvements
+
+* **infra:** right-size the voice node pool ([#179](https://github.com/gofrolist/retell-clone/issues/179)) ([7a063ab](https://github.com/gofrolist/retell-clone/commit/7a063abe8c3d895163f1817dfc502fa99f310611))
+
 ## [0.17.2](https://github.com/gofrolist/retell-clone/compare/v0.17.1...v0.17.2) (2026-07-27)
 
 
