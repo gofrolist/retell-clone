@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/gofrolist/retell-clone/compare/v0.17.0...v0.17.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* **simulation:** stop generated cases failing on their own setup ([#175](https://github.com/gofrolist/retell-clone/issues/175)) ([7b3f714](https://github.com/gofrolist/retell-clone/commit/7b3f7144d280e3b81cb4f0d698ac805494e5eeb1))
+
 ## [0.17.0](https://github.com/gofrolist/retell-clone/compare/v0.16.0...v0.17.0) (2026-07-27)
 
 
