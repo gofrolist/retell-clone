@@ -227,6 +227,13 @@ For each case produce:
   in ("Lipitor at 08:00, Metformin at 19:00", not "Lipitor"), following any
   example the prompt gives. A criterion about a step the prompt only reaches
   when a value is in a particular shape needs that shape, or it cannot pass.
+  When the prompt gates a step on the time of day ("within 60 minutes of the
+  dose", "only after 14:00", a morning flow versus an evening one), also set
+  "current_time" to "<YYYY-MM-DDTHH:MM>" inside the window that step needs, and
+  write every other time this scenario depends on relative to it. Setting it
+  pins the clock the call runs on; leaving it out grades the case against
+  whatever time it happens to be run at, which puts the branch it is about out
+  of reach for most of the day.
   Use {{}} only if the prompt reads none.
 * "tool_mocks": for each tool this scenario should reach, an entry
   {{"tool_name": "<name>", "input_match_rule": {{"type": "any"}},
