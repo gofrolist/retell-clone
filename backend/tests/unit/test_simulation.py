@@ -756,37 +756,43 @@ async def test_generate_tells_the_model_which_variables_the_prompt_reads(monkeyp
     assert cases[0]["dynamic_variables"] == {"is_last_day_of_trial": "true", "phone": "+15551234"}
 
 
-@pytest.mark.parametrize(
-    ("begin_message", "start_speaker"),
-    [
-        # The callee talks first, so the greeting is never played at all.
-        ("Good morning {{first_name}}!", "user"),
-        # No greeting: the agent improvises its opener, which IS behaviour and
-        # is fair to grade.
-        ("", "agent"),
-        ("   ", "agent"),
-    ],
-)
+@pytest.mark.parametrize("start_speaker", ["agent", "user"])
+@pytest.mark.parametrize("begin_message", ["", "   "])
 def test_greeting_note_is_silent_when_the_agent_authors_its_own_opening(
     begin_message, start_speaker
 ):
+    """No greeting: the agent improvises its opener, which IS behaviour."""
     assert simulation._greeting_note(begin_message, start_speaker) == ""
 
 
 def test_greeting_note_names_the_variables_the_first_line_is_built_from():
-    """A variable-built greeting is settable, so the note asks for it to be set.
+    """A variable-built greeting is steerable, so the note asks for it to be set.
 
-    The scenario supplies it the way the live caller-context lookup would;
-    dropping the criterion is offered second, because a greeting that varies is
-    worth covering.
+    The scenario supplies the values the way the live caller-context lookup
+    would; dropping the criterion is offered second, because a greeting that
+    varies is worth covering.
     """
     # The note is wrapped to the prompt's width, so assert against it unwrapped
     # rather than pinning where the line breaks happen to land.
     note = _flat(simulation._greeting_note("Good {{time_of_day}} {{first_name}}!", "agent"))
 
     assert "spoken verbatim" in note
-    assert "It is built from {{time_of_day}}, {{first_name}}" in note
-    assert "set it to the words this scenario should open with" in note
+    assert "It reads {{time_of_day}}, {{first_name}}" in note
+    assert "give them values that make it open the way this scenario needs" in note
+
+
+def test_greeting_note_keeps_a_greeting_value_usable_everywhere_else():
+    """A placeholder in the greeting is usually not the whole greeting.
+
+    "Good morning {{first_name}}!" is the common shape, and `{{first_name}}` is
+    read by the rest of the prompt and by tool arguments too. Told plainly to
+    set the greeting, a model answers this shape by stuffing the whole line into
+    `first_name` — which then renders in every other sentence that reads it, a
+    fresh way for a case to fail on its own setup.
+    """
+    note = _flat(simulation._greeting_note("Good morning {{first_name}}!", "agent"))
+
+    assert "values that still read correctly everywhere else the prompt uses them" in note
 
 
 def test_greeting_note_forbids_grading_a_greeting_nothing_can_vary():
@@ -795,6 +801,31 @@ def test_greeting_note_forbids_grading_a_greeting_nothing_can_vary():
 
     assert "reads no variables" in note
     assert "Never write a criterion about the greeting" in note
+
+
+def test_greeting_note_marks_a_first_line_the_caller_talks_over():
+    """`start_speaker: "user"` never plays the greeting, but the prompt shows it.
+
+    Passing this case over in silence would leave the one line that is purely
+    dead text as the only one the model is shown and told nothing about.
+    """
+    note = _flat(simulation._greeting_note("Good morning {{first_name}}!", "user"))
+
+    assert "is never spoken" in note
+    assert "Do not write a criterion about the greeting" in note
+
+
+def test_greeting_note_never_splits_a_variable_name_across_lines():
+    """A name broken by the wrapper is one the model can copy back wrong.
+
+    Placeholder names may hold hyphens and are arbitrarily long, so `textwrap`'s
+    defaults would hyphen-break `{{subscription-tier-label}}` mid-name.
+    """
+    names = ["greeting-line", "caller-first-name", "subscription-tier-label", "x" * 70]
+    note = simulation._greeting_note(" ".join(f"{{{{{n}}}}}" for n in names), "agent")
+
+    for name in names:
+        assert f"{{{{{name}}}}}" in note
 
 
 async def test_generate_warns_that_a_greeting_is_not_the_agents_to_choose(monkeypatch):
@@ -827,8 +858,8 @@ async def test_generate_warns_that_a_greeting_is_not_the_agents_to_choose(monkey
     # The greeting is `begin_message`, not behaviour, and it is built from a
     # variable this prompt reads.
     assert "The agent's first line is not its own." in sent
-    assert "It is built from {{first_name}}" in sent
-    assert "A criterion about the greeting therefore grades that value" in sent
+    assert "It reads {{first_name}}" in sent
+    assert "a criterion about the greeting grades those values rather than the agent" in sent
     # And an agent default is a value rather than an absence, so a scenario it
     # contradicts is graded in the state it was written to avoid.
     assert "it means *that* value" in sent
