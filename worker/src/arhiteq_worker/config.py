@@ -110,6 +110,9 @@ class LLMConfig:
     begin_message: str | None = None
     start_speaker: str = "agent"
     general_tools: list[dict[str, Any]] = field(default_factory=list)
+    # Knowledge bases attached in the dashboard; the kb_lookup tool searches
+    # these unless its own config names a narrower set.
+    knowledge_base_ids: list[str] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -122,6 +125,9 @@ class LLMConfig:
             begin_message=begin if isinstance(begin, str) and begin else None,
             start_speaker=_str(d.get("start_speaker"), "agent"),
             general_tools=[t for t in (d.get("general_tools") or []) if isinstance(t, dict)],
+            knowledge_base_ids=[
+                str(i) for i in (d.get("knowledge_base_ids") or []) if isinstance(i, str) and i
+            ],
             raw=d,
         )
 

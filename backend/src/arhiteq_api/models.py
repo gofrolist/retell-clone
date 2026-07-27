@@ -454,8 +454,10 @@ class KnowledgeBase(Base):
     )
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
     knowledge_base_name: Mapped[str] = mapped_column(String(255))
-    # Sources are stored verbatim; retrieval/embedding is TODO (storage + CRUD only).
-    # Each item: {"type": "text"|"url", "source_id": "src_...", ...}
+    # Sources are stored verbatim. Each item:
+    # {"type": "text"|"url"|"document", "source_id": "src_...", ...}. Only the
+    # "text" ones carry searchable content today — services/knowledge.py chunks
+    # and ranks them per kb_lookup, with no derived index to keep in sync.
     sources: Mapped[list[Any]] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(24), default="complete")
     enable_auto_refresh: Mapped[bool] = mapped_column(Boolean, default=False)

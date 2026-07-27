@@ -799,6 +799,9 @@ async def entrypoint(ctx: JobContext) -> None:
         control=runtime,
         state=state,
         call_info=cfg.tool_call_object(),
+        knowledge=api_client,
+        call_id=cfg.call_id,
+        knowledge_base_ids=cfg.llm.knowledge_base_ids,
     )
 
     instructions = resolve_template(cfg.llm.general_prompt, variables)
@@ -851,6 +854,11 @@ async def entrypoint(ctx: JobContext) -> None:
             control=runtime,
             state=state,
             call_info=cfg.tool_call_object(),
+            knowledge=api_client,
+            # The call id never changes across a swap (Retell keeps one call),
+            # but the destination agent brings its own knowledge bases.
+            call_id=cfg.call_id,
+            knowledge_base_ids=swap_cfg.llm.knowledge_base_ids,
         )
         await agent.update_instructions(new_instructions)
         await agent.update_tools(new_tools)

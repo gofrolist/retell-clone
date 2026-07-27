@@ -13,7 +13,7 @@ import pytest
 
 from arhiteq_api.config import get_settings
 from arhiteq_api.models import RetellLLM
-from arhiteq_api.services import simulation
+from arhiteq_api.services import knowledge, simulation
 from arhiteq_api.services.template_variables import CallVariables, resolve_template
 
 
@@ -147,6 +147,85 @@ def test_tool_catalog_reads_the_llm_tool_entries():
     assert catalog[0]["parameters"] == {"a": 1}
     assert catalog[1]["parameters"] == {"type": "object", "properties": {}}
     assert simulation.tool_catalog(None) == []
+
+
+# ------------------------------------------------------------------ kb_lookup
+
+KB_TOOL = {
+    "name": "kb_lookup",
+    "type": "kb_lookup",
+    "description": "Look up a fact",
+    "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
+}
+
+
+def _kb_view(**overrides):
+    return knowledge.KnowledgeBaseView(
+        knowledge_base_id="know_1",
+        knowledge_base_name="Company",
+        sources=overrides.pop(
+            "sources",
+            [
+                {
+                    "type": "text",
+                    "source_id": "src_1",
+                    "title": "Pricing",
+                    "content": "The plan costs $29 per month.",
+                }
+            ],
+        ),
+    )
+
+
+async def test_kb_lookup_runs_for_real_instead_of_being_invented(monkeypatch):
+    """The one tool the harness executes.
+
+    A synthesized payload would be fabricated facts, so a criterion about
+    answering from the knowledge base could only ever grade the harness.
+    """
+    # No queued replies: reaching the model at all would raise.
+    sim, model = make_simulator(monkeypatch, [], catalog=[KB_TOOL], knowledge_bases=[_kb_view()])
+
+    result = json.loads(
+        await sim._tool_result(KB_TOOL, "kb_lookup", {"query": "what does the plan cost"})
+    )
+
+    assert result["results"] == [{"title": "Pricing", "content": "The plan costs $29 per month."}]
+    assert model.prompts == [], "kb_lookup must not be synthesized by the model"
+
+
+async def test_kb_lookup_miss_tells_the_agent_not_to_guess(monkeypatch):
+    sim, _ = make_simulator(monkeypatch, [], catalog=[KB_TOOL], knowledge_bases=[_kb_view()])
+    result = json.loads(await sim._tool_result(KB_TOOL, "kb_lookup", {"query": "zebra migration"}))
+    assert result["results"] == []
+    assert result["message"] == knowledge.NO_RESULTS_MESSAGE
+
+
+async def test_kb_lookup_without_an_attached_base_is_a_miss(monkeypatch):
+    sim, _ = make_simulator(monkeypatch, [], catalog=[KB_TOOL], knowledge_bases=[])
+    result = json.loads(
+        await sim._tool_result(KB_TOOL, "kb_lookup", {"query": "what does the plan cost"})
+    )
+    assert result["results"] == []
+
+
+async def test_an_explicit_mock_still_overrides_kb_lookup(monkeypatch):
+    """A case testing "the KB doesn't know" must be able to force that."""
+    sim, _ = make_simulator(
+        monkeypatch,
+        [],
+        catalog=[KB_TOOL],
+        knowledge_bases=[_kb_view()],
+        definition={
+            "user_prompt": "You ask about pricing.",
+            "metrics": [],
+            "tool_mocks": [{"tool_name": "kb_lookup", "output": '{"results": []}'}],
+        },
+    )
+    result = json.loads(
+        await sim._tool_result(KB_TOOL, "kb_lookup", {"query": "what does the plan cost"})
+    )
+    assert result == {"results": []}
 
 
 # ------------------------------------------------------------------ the run

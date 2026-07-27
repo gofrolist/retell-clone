@@ -57,12 +57,23 @@ def load_tools(repo: Path, dirs: list[str]) -> list[dict]:
         for f in sorted((repo / d).glob("*.json")):
             spec = json.loads(f.read_text())
             url = spec.get("url", "")
-            if not url or url.startswith("RETELL_BUILT_IN"):
-                # kb_lookup → Arhiteq knowledge-base tool, configured separately
-                continue
             name = spec["name"]
             if name in tools:
                 continue  # first declaration wins on duplicates across dirs
+            if not url or url.startswith("RETELL_BUILT_IN"):
+                # A Retell built-in, not a customer endpoint. kb_lookup maps
+                # onto our own knowledge-base retrieval; its declared
+                # parameters (the `category` enum) are kept because they steer
+                # the search. Which knowledge bases it reads is set on the LLM,
+                # not here — attach them in the dashboard.
+                if name == "kb_lookup":
+                    tools[name] = {
+                        "type": "kb_lookup",
+                        "name": name,
+                        "description": spec.get("description", ""),
+                        "parameters": spec.get("parameters", {}),
+                    }
+                continue
             tools[name] = {
                 "type": "custom",
                 "name": name,

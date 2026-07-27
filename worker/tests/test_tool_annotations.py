@@ -33,6 +33,19 @@ class _Control:
         return "ok"
 
 
+class _Knowledge:
+    async def search_knowledge_base(
+        self,
+        call_id: str,
+        query: str,
+        *,
+        knowledge_base_ids: list[str] | None = None,
+        category: str | None = None,
+        top_k: int | None = None,
+    ) -> dict:
+        return {"results": []}
+
+
 def test_all_tool_handlers_resolve_type_hints() -> None:
     from livekit.agents import RunContext
 
@@ -65,14 +78,18 @@ def test_all_tool_handlers_resolve_type_hints() -> None:
                 "sms_content": {"type": "inferred", "prompt": "confirm the booking"},
             },
             {"type": "agent_swap", "name": "agent_swap", "agent_id": "agent_x"},
+            {"type": "kb_lookup", "name": "kb_lookup"},
         ],
         http=httpx.AsyncClient(),
         function_secret="s",
         variables={},
         control=_Control(),
         state=CallState(call_id="call_x"),
+        knowledge=_Knowledge(),
+        call_id="call_x",
+        knowledge_base_ids=["know_1"],
     )
-    assert len(tools) == 9
+    assert len(tools) == 10
     for tool in tools:
         fnc = getattr(tool, "_fnc", None) or getattr(tool, "fnc", tool)
         hints = typing.get_type_hints(fnc)  # raised NameError before the fix
