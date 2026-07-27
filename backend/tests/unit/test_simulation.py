@@ -7,6 +7,7 @@ anything about Gemini.
 
 import json
 import types
+from datetime import date
 
 import pytest
 
@@ -770,11 +771,198 @@ async def test_generate_offers_the_clock_to_a_prompt_that_reads_the_time(monkeyp
     )
     monkeypatch.setattr(simulation, "build_genai_client", lambda _s: client)
     monkeypatch.setattr(simulation, "genai_credentials_available", lambda _s: True)
+    monkeypatch.setattr(simulation, "_today", lambda: date(2026, 7, 27))
 
     cases = await simulation.generate_test_cases(_gated_llm(), 1)
 
     assert "- {{current_time}} (settable: pins the clock" in model.prompts[0]
-    assert cases[0]["dynamic_variables"]["current_time"] == "2026-07-27T08:15"
+    assert cases[0]["dynamic_variables"]["current_time"] == "2026-07-27T08:15:00"
+
+
+@pytest.mark.parametrize(
+    ("written", "expected_time"),
+    [
+        ("2023-10-27T08:15", "08:15:00"),  # a model-invented year, three years stale
+        ("2026-07-27 19:30:00", "19:30:00"),
+    ],
+)
+async def test_generate_moves_a_pinned_clock_onto_today(monkeypatch, written, expected_time):
+    """The time of day is the scenario's; the date is the harness's.
+
+    A stale date costs the dose window nothing but tests any date-sensitive
+    branch — a trial ending, {{current_calendar}} — years from where it lives.
+    """
+    client, _ = fake_client(
+        [
+            {
+                "test_cases": [
+                    {
+                        "name": "Morning dose",
+                        "user_prompt": "You took your pills.",
+                        "metrics": ["The agent logs the dose"],
+                        "dynamic_variables": {"current_time": written},
+                    }
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr(simulation, "build_genai_client", lambda _s: client)
+    monkeypatch.setattr(simulation, "genai_credentials_available", lambda _s: True)
+    monkeypatch.setattr(simulation, "_today", lambda: date(2030, 1, 5))
+
+    cases = await simulation.generate_test_cases(_gated_llm(), 1)
+
+    assert cases[0]["dynamic_variables"]["current_time"] == f"2030-01-05T{expected_time}"
+
+
+async def test_generate_moves_every_time_in_a_scenario_by_the_same_delta(monkeypatch):
+    """The gaps between a scenario's times are the scenario.
+
+    The generate prompt asks for the other times "relative to" the pin, so
+    re-dating the pin alone would leave a case whose last dose was an hour
+    before the call three years apart from it — and a branch reading the gap
+    unreachable. Stale-but-agreeing is better than fresh-but-contradictory.
+    """
+    client, _ = fake_client(
+        [
+            {
+                "test_cases": [
+                    {
+                        "name": "Dose window",
+                        "user_prompt": "You took your pills an hour ago.",
+                        "metrics": ["The agent logs the dose"],
+                        "dynamic_variables": {
+                            "current_time": "2023-10-27T08:15",
+                            "last_dose_at": "2023-10-27 07:15",
+                            "trial_ends_on": "2023-11-15",
+                            "medications_today": "Lipitor at 08:00",
+                        },
+                    }
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr(simulation, "build_genai_client", lambda _s: client)
+    monkeypatch.setattr(simulation, "genai_credentials_available", lambda _s: True)
+    monkeypatch.setattr(simulation, "_today", lambda: date(2030, 1, 5))
+
+    variables = (await simulation.generate_test_cases(_gated_llm(), 1))[0]["dynamic_variables"]
+
+    assert variables["current_time"] == "2030-01-05T08:15:00"
+    # An hour before the call, still an hour before the call.
+    assert variables["last_dose_at"] == "2030-01-05T07:15:00"
+    # 19 days out before, 19 days out after.
+    assert variables["trial_ends_on"] == "2030-01-24"
+    # Not a timestamp, and the pin keeps the time of day it lines up with.
+    assert variables["medications_today"] == "Lipitor at 08:00"
+
+
+@pytest.mark.parametrize(
+    ("written", "expected"),
+    [
+        # A bare time of day: what the prompt's emphasis on the window invites.
+        ("08:15", "2030-01-05T08:15:00"),
+        ("8:15", "2030-01-05T08:15:00"),
+        # An offset is dropped, not converted: a pin means wall-clock, and
+        # honouring this one would land the call at 19:00 the previous day.
+        ("2023-10-27T02:00:00Z", "2030-01-05T02:00:00"),
+        ("2023-10-27T08:15+02:00", "2030-01-05T08:15:00"),
+    ],
+)
+async def test_generate_pins_the_shapes_a_model_actually_writes(monkeypatch, written, expected):
+    client, _ = fake_client(
+        [
+            {
+                "test_cases": [
+                    {
+                        "name": "Morning dose",
+                        "user_prompt": "You took your pills.",
+                        "metrics": ["The agent logs the dose"],
+                        "dynamic_variables": {"current_time": written},
+                    }
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr(simulation, "build_genai_client", lambda _s: client)
+    monkeypatch.setattr(simulation, "genai_credentials_available", lambda _s: True)
+    monkeypatch.setattr(simulation, "_today", lambda: date(2030, 1, 5))
+
+    cases = await simulation.generate_test_cases(_gated_llm(), 1)
+
+    assert cases[0]["dynamic_variables"]["current_time"] == expected
+
+
+async def test_generate_leaves_other_times_alone_when_the_pin_is_not_one(monkeypatch):
+    """No pin, no delta — so nothing else may be moved either."""
+    client, _ = fake_client(
+        [
+            {
+                "test_cases": [
+                    {
+                        "name": "Trial end",
+                        "user_prompt": "Your trial is ending.",
+                        "metrics": ["The agent offers to continue"],
+                        "dynamic_variables": {"trial_ends_on": "2023-11-15"},
+                    }
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr(simulation, "build_genai_client", lambda _s: client)
+    monkeypatch.setattr(simulation, "genai_credentials_available", lambda _s: True)
+    monkeypatch.setattr(simulation, "_today", lambda: date(2030, 1, 5))
+
+    cases = await simulation.generate_test_cases(_gated_llm(), 1)
+
+    assert cases[0]["dynamic_variables"]["trial_ends_on"] == "2023-11-15"
+
+
+async def test_generate_leaves_a_current_time_that_is_not_a_clock_alone(monkeypatch):
+    """Anchoring follows the pin: prose is an ordinary variable, not a date."""
+    client, _ = fake_client(
+        [
+            {
+                "test_cases": [
+                    {
+                        "name": "Evening chat",
+                        "user_prompt": "You are winding down.",
+                        "metrics": ["The agent says goodnight"],
+                        "dynamic_variables": {"current_time": "Tuesday at 7 PM"},
+                    }
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr(simulation, "build_genai_client", lambda _s: client)
+    monkeypatch.setattr(simulation, "genai_credentials_available", lambda _s: True)
+
+    cases = await simulation.generate_test_cases(_gated_llm(), 1)
+
+    assert cases[0]["dynamic_variables"]["current_time"] == "Tuesday at 7 PM"
+
+
+async def test_generate_tells_the_model_todays_date(monkeypatch):
+    client, model = fake_client(
+        [
+            {
+                "test_cases": [
+                    {
+                        "name": "Morning dose",
+                        "user_prompt": "You took your pills.",
+                        "metrics": ["The agent logs the dose"],
+                    }
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr(simulation, "build_genai_client", lambda _s: client)
+    monkeypatch.setattr(simulation, "genai_credentials_available", lambda _s: True)
+    monkeypatch.setattr(simulation, "_today", lambda: date(2030, 1, 5))
+
+    await simulation.generate_test_cases(_gated_llm(), 1)
+
+    assert '"2030-01-05T<HH:MM>"' in model.prompts[0]
 
 
 async def test_generate_does_not_offer_the_clock_to_a_prompt_that_ignores_time(monkeypatch):

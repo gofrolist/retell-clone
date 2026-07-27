@@ -37,7 +37,9 @@ import logging
 import re
 import secrets
 from collections.abc import Mapping
+from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
@@ -54,7 +56,9 @@ from ..models import (
 )
 from .gemini import build_genai_client, genai_credentials_available, is_live_model
 from .template_variables import (
+    DEFAULT_TIMEZONE,
     CallVariables,
+    parse_clock,
     prompt_variables,
     resolve_deep,
     resolve_template,
@@ -86,6 +90,82 @@ _TERMINAL_TOOL_TYPES = ("end_call", "transfer_call", "agent_swap")
 # A prompt that reads any of the time family can be put at a chosen moment by
 # pinning {{current_time}}, so generation offers it that variable.
 _READS_THE_CLOCK = re.compile(r"\{\{\s*current_(?:time|hour|calendar)")
+
+# A pin written as the time of day alone, which the generate prompt's emphasis
+# on "the time of day inside the window" invites.
+_TIME_OF_DAY = re.compile(r"(\d{1,2}):(\d{2})(?::(\d{2}))?")
+
+
+def _today() -> date:
+    """The date a generated case should be pinned to.
+
+    Read in the platform's default zone rather than UTC so "today" is the day
+    the operator generating the case is having.
+    """
+    return datetime.now(ZoneInfo(DEFAULT_TIMEZONE)).date()
+
+
+def _pinned_clock(value: str, today: date) -> datetime | None:
+    """A generated ``current_time`` read as the moment it was meant to be.
+
+    Two shapes the run-time pin rejects are accepted here, because generation is
+    where a draft gets put into the shape it needs rather than left to fail
+    silently later: a bare time of day (the prompt asks for a time inside the
+    window, so "08:15" is a natural thing to answer with) lands on *today*, and
+    an offset is dropped rather than converted. A pin means wall-clock — 08:15
+    is a quarter past eight wherever the prompt looks — so honouring an offset
+    the model volunteered would move the call off the hour the scenario is about
+    and, at the wrong offset, onto the day before.
+    """
+    text = value.strip()
+    if match := _TIME_OF_DAY.fullmatch(text):
+        hour, minute, second = (int(part or 0) for part in match.groups())
+        # Naive on purpose, like every pin: see `parse_clock` on why a written
+        # time of day is a wall-clock reading rather than one zone's instant.
+        return datetime(today.year, today.month, today.day, hour, minute, second)  # noqa: DTZ001
+    clock = parse_clock(text)
+    return clock.replace(tzinfo=None) if clock else None
+
+
+def _anchor_variables(variables: dict[str, str], today: date) -> dict[str, str]:
+    """A generated case's timestamps moved onto *today*, keeping what they mean.
+
+    Models pick a date out of the air — one wrote 2023 — and the time of day is
+    the part a scenario actually means: it is what puts the call inside the dose
+    window or after the evening cutoff. A stale date costs nothing there but
+    tests any date-sensitive branch (a trial ending, {{current_calendar}}) years
+    from where it lives.
+
+    Every timestamp moves by the *same* delta rather than each being pinned to
+    today, because the generate prompt asks for the scenario's other times
+    "relative to it": re-dating the pin alone would leave a case whose last dose
+    was an hour before the call three years apart from it, and a branch reading
+    the gap would be unreachable — the pre-anchoring dates were stale but at
+    least agreed with each other. A value that is not a timestamp is left alone,
+    and so is everything if the pin itself is not one, since without it there is
+    no delta the rest can be trusted to share.
+    """
+    pin = _pinned_clock(variables.get("current_time", ""), today)
+    if pin is None:
+        return variables
+    delta = today - pin.date()
+    anchored = dict(variables)
+    anchored["current_time"] = (pin + delta).isoformat()
+    for name, value in variables.items():
+        if name == "current_time":
+            continue
+        if (clock := parse_clock(value)) is not None:
+            anchored[name] = (clock + delta).isoformat()
+            continue
+        # A bare date is not a clock (a pin at midnight is the one reading
+        # nobody means) but it is still a date this scenario placed, so it
+        # travels with the rest rather than being left behind.
+        try:
+            anchored[name] = (date.fromisoformat(value.strip()) + delta).isoformat()
+        except ValueError:
+            continue
+    return anchored
+
 
 _AGENT_PROMPT = """\
 {general_prompt}
@@ -233,7 +313,8 @@ For each case produce:
   when a value is in a particular shape needs that shape, or it cannot pass.
   When the prompt gates a step on the time of day ("within 60 minutes of the
   dose", "only after 14:00", a morning flow versus an evening one), also set
-  "current_time" to "<YYYY-MM-DDTHH:MM>" inside the window that step needs, and
+  "current_time" to "{today}T<HH:MM>" — today's date, with the time of day
+  inside the window that step needs — and
   write every other time this scenario depends on relative to it. Setting it
   pins the clock the call runs on; leaving it out grades the case against
   whatever time it happens to be run at, which puts the branch it is about out
@@ -927,10 +1008,12 @@ async def generate_test_cases(llm: RetellLLM, count: int) -> list[dict[str, Any]
             "forms this prompt uses)"
         )
     variables = "\n".join(lines) or "(none — this prompt reads no dynamic variables)"
+    today = _today()
     client = build_genai_client(settings)
     resp = await client.aio.models.generate_content(
         model=settings.analysis_model,
         contents=_GENERATE_PROMPT.format(
+            today=today.isoformat(),
             general_prompt=(llm.general_prompt or "(empty prompt)")[:20000],
             begin_message=llm.begin_message or "(none)",
             start_speaker=llm.start_speaker or "agent",
@@ -972,6 +1055,10 @@ async def generate_test_cases(llm: RetellLLM, count: int) -> list[dict[str, Any]
             if isinstance(raw_variables, dict)
             else {}
         )
+        # Asking for today's date in the prompt is not enough on its own — the
+        # same bullet asks for "Lipitor at 08:00" and still got "Lipitor" — so
+        # the date is put right here rather than trusted.
+        case_variables = _anchor_variables(case_variables, today)
         cases.append(
             {
                 "name": str(raw.get("name") or "Generated test").strip()[:255],
