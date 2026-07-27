@@ -13,13 +13,18 @@ absent one, the harness synthesizes a plausible success payload. A simulation
 therefore can never book an appointment, send an SMS or dial a transfer, which
 is what makes it safe to run against a production agent config.
 
-Two details exist so a criterion measures the agent rather than the harness:
+Three details exist so a criterion measures the agent rather than the harness:
 the prompt and every tool argument resolve against `CallVariables`, so the
 system placeholders a live call fills in ({{current_time}}, {{call.call_id}})
-are not left literal here; and once the conversation is over the agent gets one
+are not left literal here; once the conversation is over the agent gets one
 final tool-only turn (`_wrap_up_turn`), because a prompt that says *say goodbye,
 log the disposition, then hang up* otherwise loses the logging whenever the
-simulated user hangs up on the goodbye.
+simulated user hangs up on the goodbye; and the agent is told outright that a
+turn may hold several tool calls before its spoken line, because a live model
+emits them together for one user utterance while this harness asks for a single
+action at a time — without that, a caller who reports two things in one breath
+("I'm feeling good, and I took my pills") gets only the first one logged, and
+the criterion about the second fails on the harness rather than on the agent.
 
 Everything here is best-effort: a model or credential failure marks the run
 `error` rather than raising, so one bad case can't sink a batch.
@@ -80,6 +85,10 @@ _AGENT_PROMPT = """\
 --- SIMULATION HARNESS (not part of your persona) ---
 You are the agent described above, on a live phone call. Produce the agent's
 NEXT action only — never write the user's lines, and never mention this harness.
+One action per reply, but your turn ends only when you speak, and the caller
+hears nothing until then: when the last thing they said calls for more than one
+tool, make each of those calls in its own reply first, and say your line after
+the last of them.
 {tools}
 Reply with STRICT JSON (no markdown), exactly one of:
 {{"action": "speak", "content": "<what the agent says next>"}}

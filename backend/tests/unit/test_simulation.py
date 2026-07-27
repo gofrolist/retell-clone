@@ -198,6 +198,50 @@ async def test_run_feeds_the_mocked_output_back_without_calling_a_tool(monkeypat
     assert "CB-42" in model.prompts[3]
 
 
+async def test_one_utterance_can_draw_several_tool_calls_before_the_agent_speaks(monkeypatch):
+    """A caller who reports two things in one breath gets both of them logged.
+
+    A live model emits both calls for the single utterance that earned them;
+    this harness asks for one action at a time, so the agent has to be told its
+    turn is not over until it speaks — otherwise it answers the caller after the
+    first result and the criterion about the second tool fails on the harness.
+    """
+    tools = ("log_mood", "log_medication_taken")
+    sim, model = make_simulator(
+        monkeypatch,
+        [
+            {"action": "speak", "content": "I'm good, and I took my morning pills."},
+            {"action": "tool_call", "tool_name": "log_mood", "arguments": {"score": 5}},
+            {"action": "tool_call", "tool_name": "log_medication_taken", "arguments": {"ok": True}},
+            {"action": "speak", "content": "Lovely — I've noted both."},
+            {"action": "hangup", "reason": "done"},
+            {"action": "done"},
+        ],
+        definition={
+            "user_prompt": "You feel good and took your medication.",
+            "metrics": [],
+            "tool_mocks": [
+                {"tool_name": name, "input_match_rule": {"type": "any"}, "output": "{}"}
+                for name in tools
+            ],
+        },
+        catalog=[
+            {
+                "name": name,
+                "type": "custom",
+                "description": "",
+                "parameters": {"type": "object", "properties": {}},
+            }
+            for name in tools
+        ],
+    )
+    transcript = await sim.run()
+    assert [t["name"] for t in transcript if t["role"] == "tool_call_invocation"] == list(tools)
+    assert transcript[-1] == {"role": "agent", "content": "Lovely — I've noted both."}
+    # Chaining is asked for in the agent's own prompt, not left to the model.
+    assert "turn ends only when you speak" in model.prompts[1]
+
+
 async def test_unmocked_tool_result_is_synthesized(monkeypatch):
     sim, _ = make_simulator(
         monkeypatch,
