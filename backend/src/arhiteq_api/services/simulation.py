@@ -37,7 +37,9 @@ import logging
 import re
 import secrets
 from collections.abc import Mapping
+from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
@@ -54,7 +56,9 @@ from ..models import (
 )
 from .gemini import build_genai_client, genai_credentials_available, is_live_model
 from .template_variables import (
+    DEFAULT_TIMEZONE,
     CallVariables,
+    parse_clock,
     prompt_variables,
     resolve_deep,
     resolve_template,
@@ -86,6 +90,32 @@ _TERMINAL_TOOL_TYPES = ("end_call", "transfer_call", "agent_swap")
 # A prompt that reads any of the time family can be put at a chosen moment by
 # pinning {{current_time}}, so generation offers it that variable.
 _READS_THE_CLOCK = re.compile(r"\{\{\s*current_(?:time|hour|calendar)")
+
+
+def _today() -> date:
+    """The date a generated case should be pinned to.
+
+    Read in the platform's default zone rather than UTC so "today" is the day
+    the operator generating the case is having.
+    """
+    return datetime.now(ZoneInfo(DEFAULT_TIMEZONE)).date()
+
+
+def _anchor_to_today(value: str, today: date) -> str:
+    """A generated ``current_time`` moved onto *today*, keeping its time of day.
+
+    Models pick a date out of the air — one wrote 2023 — and the time of day is
+    the part a scenario actually means: it is what puts the call inside the dose
+    window or after the evening cutoff. A stale date costs nothing there but
+    tests any date-sensitive branch (a trial ending, {{current_calendar}}) years
+    away from where it lives, so the date is replaced and the clock time kept.
+    Anything that is not a timestamp is left alone, exactly as the pin is.
+    """
+    clock = parse_clock(value)
+    if clock is None:
+        return value
+    return clock.replace(year=today.year, month=today.month, day=today.day).isoformat()
+
 
 _AGENT_PROMPT = """\
 {general_prompt}
@@ -233,7 +263,8 @@ For each case produce:
   when a value is in a particular shape needs that shape, or it cannot pass.
   When the prompt gates a step on the time of day ("within 60 minutes of the
   dose", "only after 14:00", a morning flow versus an evening one), also set
-  "current_time" to "<YYYY-MM-DDTHH:MM>" inside the window that step needs, and
+  "current_time" to "{today}T<HH:MM>" — today's date, with the time of day
+  inside the window that step needs — and
   write every other time this scenario depends on relative to it. Setting it
   pins the clock the call runs on; leaving it out grades the case against
   whatever time it happens to be run at, which puts the branch it is about out
@@ -927,10 +958,12 @@ async def generate_test_cases(llm: RetellLLM, count: int) -> list[dict[str, Any]
             "forms this prompt uses)"
         )
     variables = "\n".join(lines) or "(none — this prompt reads no dynamic variables)"
+    today = _today()
     client = build_genai_client(settings)
     resp = await client.aio.models.generate_content(
         model=settings.analysis_model,
         contents=_GENERATE_PROMPT.format(
+            today=today.isoformat(),
             general_prompt=(llm.general_prompt or "(empty prompt)")[:20000],
             begin_message=llm.begin_message or "(none)",
             start_speaker=llm.start_speaker or "agent",
@@ -972,6 +1005,11 @@ async def generate_test_cases(llm: RetellLLM, count: int) -> list[dict[str, Any]
             if isinstance(raw_variables, dict)
             else {}
         )
+        # Asking for today's date in the prompt is not enough on its own — the
+        # same bullet asks for "Lipitor at 08:00" and still got "Lipitor" — so
+        # the date is put right here rather than trusted.
+        if "current_time" in case_variables:
+            case_variables["current_time"] = _anchor_to_today(case_variables["current_time"], today)
         cases.append(
             {
                 "name": str(raw.get("name") or "Generated test").strip()[:255],
