@@ -13,6 +13,21 @@ and ``{{session_duration}}``. :class:`ChatVariables` adds the chat-session
 ones (``{{chat_id}}``); :class:`CallVariables` adds the call-scoped ones
 (``{{call_id}}``, ``{{call.call_id}}``, ``{{direction}}``) for the simulation
 harness, which plays a voice call without a `calls` row behind it.
+
+A session built with ``pin_clock`` reads ``current_time`` as *the clock*: the
+whole time family is computed from that instant rather than from now. Only the
+simulation harness asks for it — a customer who sends ``current_time`` on a
+real chat or call means a string for ``{{current_time}}`` and keeps getting
+exactly that, because moving ``{{current_hour}}`` to a moment they never set
+would make one prompt read differently here than on the call the worker serves.
+The pin is also the one place the mirror is deliberately one-way: the worker
+computes the time family at lookup so a live ``{{current_time}}`` advances
+mid-call, which is right for a call that is really happening and useless for a
+simulation of one. A prompt
+branch gated on "within an hour of the 8am dose" is otherwise reachable only by
+running the case between 7 and 9 in the morning, so a case covering it fails on
+the hour it was run rather than on the agent. A value that is not a timestamp
+is left alone, so the pin costs nothing to prompts that never wanted it.
 """
 
 from __future__ import annotations
@@ -113,6 +128,61 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+# Timestamps a pinned {{current_time}} may be written as. Seconds and the "T"
+# are optional so an operator can type the obvious thing; anything else is not
+# a clock and stays a plain string.
+#
+# A date alone is deliberately not one of them. It parses happily — to
+# midnight — and a pin at 00:00 puts every time-gated branch out of reach at
+# once, which is worse than not pinning: someone writing "2026-07-27" means
+# *the day*, and would get a call that happens in the middle of the night.
+_CLOCK_FORMATS = (
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M",
+    "%Y-%m-%d %H:%M",
+    "%Y-%m-%d %H:%M:%S",
+)
+
+
+def parse_clock(value: Any) -> datetime | None:
+    """A pinned ``current_time`` as a datetime, or None if it isn't one.
+
+    Accepts ISO-8601 with or without an offset. A value with no offset is
+    *wall-clock*: it means that reading on whatever clock is being asked for, so
+    pinning "08:15" puts every zone's ``{{current_time_<zone>}}`` at 08:15 local
+    rather than at whatever 08:15 in one zone happens to be in another. That is
+    the reading someone testing a "within an hour of the 8am dose" branch means.
+    """
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    # `fromisoformat` takes a bare date too, so the time is required here rather
+    # than left to the format list — see `_CLOCK_FORMATS` on why midnight is the
+    # one reading a date-only pin must not get.
+    if ":" not in text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        pass
+    for fmt in _CLOCK_FORMATS:
+        try:
+            # Naive on purpose: a pin written without an offset is a wall-clock
+            # reading, and `_at_zone` attaches whichever zone is being asked
+            # for. Resolving it against one zone here is the bug, not the fix.
+            return datetime.strptime(text, fmt)  # noqa: DTZ007
+        except ValueError:
+            continue
+    return None
+
+
+def _at_zone(clock: datetime, zone: ZoneInfo) -> datetime:
+    """*clock* as read in *zone* — see `parse_clock` on the naive case."""
+    return clock.astimezone(zone) if clock.tzinfo is not None else clock.replace(tzinfo=zone)
+
+
 def _known_zone(name: str | None) -> str | None:
     """*name* if it is a loadable IANA zone, else None."""
     if not name:
@@ -190,6 +260,7 @@ class _SystemVariables(dict):
         fallbacks: Mapping[str, str] | None = None,
         start_timestamp_ms: int | None = None,
         default_timezone: str | None = None,
+        pin_clock: bool = False,
     ) -> None:
         super().__init__(base)
         # Overrides are stored verbatim, empty ones included: a session fact
@@ -202,6 +273,27 @@ class _SystemVariables(dict):
         # Agent "Current Time Awareness"; an unknown name falls back to the
         # platform default rather than making every {{current_time}} literal.
         self._default_timezone = _known_zone(default_timezone) or DEFAULT_TIMEZONE
+        # Off unless a caller asks for it: a customer passing `current_time` on
+        # a real session means it as a string for {{current_time}}, and must
+        # keep getting exactly that — the worker would, and it is not this
+        # module's business to move {{current_hour}} to a moment nobody set.
+        self._pin_clock = pin_clock
+
+    def _clock(self) -> datetime | None:
+        """The instant the time family reads from, when one has been pinned.
+
+        A stored ``current_time`` is treated as the clock rather than as a
+        string about one key: a prompt that gates on "within 60 minutes of the
+        dose" reads {{current_time_<zone>}} and {{current_hour}}, so pinning
+        only the exact key would leave the branch under test being judged
+        against the real wall clock — which is what makes a time-gated case
+        pass or fail on the hour it happened to be run. Anything that is not a
+        timestamp is left alone as an ordinary variable, and so is everything
+        unless the caller opted in — only a simulated session may pin.
+        """
+        if not self._pin_clock:
+            return None
+        return parse_clock(dict.get(self, "current_time"))
 
     def _system_value(self, key: str) -> str | None:
         if key in self._fallbacks:
@@ -226,7 +318,16 @@ class _SystemVariables(dict):
             zone = ZoneInfo(zone_name)
         except KeyError, ValueError, OSError:
             return None  # unknown timezone suffix -> placeholder stays literal
-        return formatter(_utcnow().astimezone(zone))
+        clock = self._clock()
+        return formatter(_at_zone(clock, zone) if clock else _utcnow().astimezone(zone))
+
+    def __getitem__(self, key: str) -> Any:
+        # A pinned clock owns {{current_time}} too, so the family reads in one
+        # format and one moment; without this the pinned key would render as the
+        # raw text the operator typed while its zone variants render Retell-style.
+        if key == "current_time" and (clock := self._clock()) is not None:
+            return _format_current_time(_at_zone(clock, ZoneInfo(self._default_timezone)))
+        return super().__getitem__(key)
 
     def __missing__(self, key: str) -> str:
         value = self._system_value(key)
@@ -300,9 +401,11 @@ class CallVariables(_SystemVariables):
         call_id: str = "",
         start_timestamp_ms: int | None = None,
         default_timezone: str | None = None,
+        pin_clock: bool = False,
     ) -> None:
         super().__init__(
             base,
+            pin_clock=pin_clock,
             overrides={
                 "call.call_id": call_id,
                 "call.direction": "",

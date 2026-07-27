@@ -176,7 +176,7 @@ export default function TestCaseModal({
 
         <Field
           label="Dynamic variables"
-          hint="The state the agent runs in for this scenario. An unset variable stays literal, so a branch the prompt gates on one never fires."
+          hint="The state the agent runs in for this scenario. An unset variable stays literal, so a branch the prompt gates on one never fires. Set current_time to a timestamp (2026-07-27T08:15) to pin the clock the call runs on — a step the prompt gates on the time is otherwise out of reach except at that hour."
         >
           <PairRows
             addLabel="Add variable"
