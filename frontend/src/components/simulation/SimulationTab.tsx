@@ -129,18 +129,29 @@ export default function SimulationTab({
       .then(async (batchList) => {
         if (cancelled || !batchList) return;
         const recent = batchList.items.slice(0, HISTORY_BATCHES);
-        setBatch(recent[0] ?? null);
-        // Fetched together rather than one after the next: `adoptRuns` keeps
-        // the newest run per case whatever order they arrive in, and applying
-        // the responses oldest-first preserves how ties resolved when these
-        // were serial.
-        const lists = await Promise.all(
+        // Only claim the slot if nothing else has: the table is interactive
+        // while this is still in flight, so "Run all" can have already put its
+        // own in-progress batch here. Overwriting it with the newest *finished*
+        // one from a list request issued before it existed would stop the poll
+        // loop and drop the run the operator is watching.
+        setBatch((prev) => prev ?? recent[0] ?? null);
+        // Fetched together rather than one after the next; `allSettled` so one
+        // failed batch costs its own verdicts, not the other four's. `adoptRuns`
+        // keeps the newest run per case whatever order they arrive in, and
+        // applying the responses oldest-first preserves how ties resolved when
+        // these were serial.
+        const lists = await Promise.allSettled(
           recent.map((b) => api.listTestRuns(b.test_case_batch_job_id)),
         );
         if (cancelled) return;
-        for (const runList of lists.reverse()) adoptRuns(runList.items);
+        for (const result of lists.reverse()) {
+          if (result.status === "fulfilled") adoptRuns(result.value.items);
+        }
       })
-      .catch((e) => !cancelled && setError(e instanceof Error ? e.message : "Failed to load tests"));
+      // Tolerated the way the batch list above already is: this only backfills
+      // the "Last result" column, and the tests themselves loaded fine — an
+      // error banner over a populated table would name the wrong failure.
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
