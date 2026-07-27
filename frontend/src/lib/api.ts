@@ -1168,12 +1168,16 @@ export const api = {
   deleteTestCase: (id: string) =>
     request<void>(`/delete-test-case-definition/${encodeURIComponent(id)}`, del),
 
-  /** Draft cases from the agent's own prompt + tools ("the agent tests itself"). */
+  /** Draft cases from the agent's own prompt + tools ("the agent tests itself").
+   *  The backend writes every case in one synchronous model call, so this runs
+   *  far past the default 10s budget — and it commits the rows regardless, so
+   *  aborting early would strand a saved suite behind a "backend unreachable"
+   *  banner and tempt a second click that duplicates it. */
   generateTestCases: (body: { agent_id: string; count?: number }) =>
-    request<{ items: RawTestCase[]; saved: boolean }>(
-      "/generate-test-case-definitions",
-      post({ ...body, save: true }),
-    ),
+    request<{ items: RawTestCase[]; saved: boolean }>("/generate-test-case-definitions", {
+      ...post({ ...body, save: true }),
+      signal: AbortSignal.timeout(180_000),
+    }),
 
   createBatchTest: (body: { llm_id: string; agent_id?: string; test_case_definition_ids: string[] }) =>
     request<RawBatchTest>(
