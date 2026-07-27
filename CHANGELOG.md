@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.2](https://github.com/gofrolist/retell-clone/compare/v0.15.1...v0.15.2) (2026-07-27)
+
+
+### Bug Fixes
+
+* **simulation:** let one utterance draw several tool calls ([#168](https://github.com/gofrolist/retell-clone/issues/168)) ([1ea7802](https://github.com/gofrolist/retell-clone/commit/1ea7802bbc2e9738ff3cfe7961de32315abdab8f))
+
 ## [0.15.1](https://github.com/gofrolist/retell-clone/compare/v0.15.0...v0.15.1) (2026-07-27)
 
 
