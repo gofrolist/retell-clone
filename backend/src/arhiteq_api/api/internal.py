@@ -216,6 +216,11 @@ async def query_knowledge_base(
     Scoped by call_id rather than taking a workspace: the requested ids come
     from user-editable tool config, so an unscoped lookup would let one
     workspace read another's knowledge bases.
+
+    The empty-ids fallback resolves the agent the CALL was created with, which
+    an agent_swap does not update — so a caller that has swapped must send its
+    destination agent's ids explicitly rather than relying on it. The worker
+    does; it short-circuits instead of sending an empty list.
     """
     call = await session.get(Call, call_id)
     if call is None:

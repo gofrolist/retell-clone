@@ -602,7 +602,9 @@ class _Simulator:
             {"title": r["title"], "content": r["content"]} for r in found.get("results") or []
         ]
         if not results:
-            return json.dumps({"results": [], "message": knowledge.NO_RESULTS_MESSAGE})
+            return json.dumps(
+                {"results": [], "message": knowledge.NO_RESULTS_MESSAGE}, ensure_ascii=False
+            )
         return json.dumps({"results": results}, ensure_ascii=False)
 
     async def _tool_result(

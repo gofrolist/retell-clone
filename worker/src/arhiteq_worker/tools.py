@@ -933,14 +933,19 @@ def kb_lookup_result(payload: Mapping[str, Any]) -> str:
     """
     results = [r for r in (payload.get("results") or []) if isinstance(r, Mapping)]
     if not results:
-        return json.dumps({"results": [], "message": KB_LOOKUP_NO_RESULTS})
+        return json.dumps({"results": [], "message": KB_LOOKUP_NO_RESULTS}, ensure_ascii=False)
+    # ensure_ascii=False to match the simulation harness: a Spanish or accented
+    # knowledge base would otherwise reach the model as \uXXXX escapes on a
+    # live call and as literal characters in a simulation of the same case —
+    # and the escaped form is what an operator reads in the tool-call timeline.
     return json.dumps(
         {
             "results": [
                 {"title": str(r.get("title") or ""), "content": str(r.get("content") or "")}
                 for r in results
             ]
-        }
+        },
+        ensure_ascii=False,
     )
 
 
@@ -956,8 +961,8 @@ def _make_kb_lookup_tool(
     from livekit.agents import RunContext, function_tool
 
     name = entry.get("name") or "kb_lookup"
-    # A tool may point at a subset of the workspace's knowledge bases; with
-    # none configured the control plane searches everything attached to the LLM.
+    # A tool may point at a subset of the agent's knowledge bases; with none of
+    # its own it searches everything attached to the LLM.
     configured = [
         str(i) for i in (entry.get("knowledge_base_ids") or []) if i
     ] or knowledge_base_ids
@@ -978,6 +983,15 @@ def _make_kb_lookup_tool(
         async def body() -> str:
             if not query:
                 raise ToolConfigError("kb_lookup needs a query")
+            if not configured:
+                # Never send an empty list: the control plane reads that as
+                # "not specified" and falls back to the knowledge bases of the
+                # agent the CALL was created with. After an agent_swap that is
+                # the agent we swapped AWAY from, so a destination agent with no
+                # knowledge bases of its own would answer out of the previous
+                # agent's. No bases configured means nothing to search.
+                logger.warning("kb_lookup %r has no knowledge bases attached", name)
+                return kb_lookup_result({"results": []})
             payload = await knowledge.search_knowledge_base(
                 call_id,
                 query,

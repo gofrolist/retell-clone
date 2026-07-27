@@ -99,6 +99,21 @@ def test_result_keeps_only_what_the_model_needs() -> None:
     assert shaped == {"results": [{"title": "Pricing", "content": "$29 per month."}]}
 
 
+def test_non_ascii_content_is_not_escaped() -> None:
+    """Live and simulated results must read the same.
+
+    The simulation harness shapes its own kb_lookup result with
+    ensure_ascii=False; escaping here would show an operator "informaci\\u00f3n"
+    in the tool-call timeline for a live call and the real word in a simulation
+    of the very same case.
+    """
+    shaped = kb_lookup_result(
+        {"results": [{"title": "Información", "content": "El plan cuesta $29 al mes."}]}
+    )
+    assert "Información" in shaped
+    assert "\\u" not in shaped
+
+
 def test_empty_results_tell_the_agent_not_to_guess() -> None:
     shaped = json.loads(kb_lookup_result({"results": []}))
     assert shaped["results"] == []
@@ -227,6 +242,25 @@ def test_an_empty_query_is_rejected_without_a_lookup() -> None:
     result = json.loads(_invoke(_build(CONSUMER_ENTRY, knowledge=knowledge)[0], {"query": "  "}))
     assert "error" in result
     assert knowledge.calls == []
+
+
+def test_no_attached_bases_searches_nothing_rather_than_falling_back() -> None:
+    """An agent with no knowledge bases must not read another agent's.
+
+    Sending an empty list makes the control plane fall back to the knowledge
+    bases of the agent the CALL was created with — after an agent_swap, the
+    agent we swapped away from. A destination agent configured with kb_lookup
+    but no bases of its own would then answer out of the previous agent's KB.
+    """
+    pytest.importorskip("livekit.agents")
+    knowledge = _Knowledge()
+    tool = _build(CONSUMER_ENTRY, knowledge=knowledge, knowledge_base_ids=[])[0]
+
+    result = json.loads(_invoke(tool, {"query": "how much"}))
+
+    assert knowledge.calls == [], "no bases configured means no lookup at all"
+    assert result["results"] == []
+    assert result["message"] == KB_LOOKUP_NO_RESULTS
 
 
 def test_a_control_plane_failure_becomes_a_tool_error() -> None:

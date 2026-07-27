@@ -19,11 +19,15 @@ uploaded documents are opaque blobs, so neither has text to search yet;
 the KB" apart from "that source type isn't searchable yet".
 """
 
+import logging
 import math
 import re
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 # Chunking: sources are split on blank lines and re-packed to roughly this many
 # words, so a hit returns a coherent paragraph or two rather than a whole
@@ -150,9 +154,36 @@ class Chunk:
         return tokenize(f"{self.title} {self.text}")
 
 
+def _split_paragraph(paragraph: str) -> list[str]:
+    """One oversized paragraph as overlapping word windows.
+
+    Blank lines are not a reliable boundary: an FAQ pasted with single
+    newlines, or any long section, arrives as ONE paragraph. Leaving it whole
+    used to produce a chunk far longer than a snippet, and `_snippet` then
+    returned its opening — so a query matching something on page three came
+    back "successful" with text that does not contain the answer. That is
+    worse than a miss, because the agent answers confidently from the wrong
+    section instead of being told to say it doesn't know.
+    """
+    words = paragraph.split()
+    if len(words) <= CHUNK_TARGET_WORDS:
+        return [paragraph]
+    step = CHUNK_TARGET_WORDS - CHUNK_OVERLAP_WORDS
+    return [
+        " ".join(window)
+        for start in range(0, len(words), step)
+        if (window := words[start : start + CHUNK_TARGET_WORDS])
+    ]
+
+
 def split_text(content: str) -> list[str]:
     """Blank-line paragraphs re-packed into ~CHUNK_TARGET_WORDS windows."""
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", content) if p.strip()]
+    paragraphs = [
+        piece
+        for block in re.split(r"\n\s*\n", content)
+        if block.strip()
+        for piece in _split_paragraph(block.strip())
+    ]
     if not paragraphs:
         return []
     chunks: list[str] = []
@@ -174,8 +205,6 @@ def split_text(content: str) -> list[str]:
         current_words += words
     if current:
         chunks.append("\n\n".join(current))
-    # A single paragraph longer than the target is left whole rather than cut
-    # mid-sentence; MAX_SNIPPET_CHARS bounds what actually reaches the model.
     return chunks
 
 
@@ -225,28 +254,35 @@ def rank_chunks(
     on a corpus of a handful of chunks the classic formulation goes negative
     for any term appearing in more than half of them, which would rank the
     chunks that contain the query word *below* the ones that don't.
+
+    Document frequency is computed ONCE per term. It is a property of the
+    corpus, not of the chunk being scored, and recomputing it inside the loop
+    made ranking quadratic: a pasted handbook of a few thousand chunks took
+    tens of seconds, and since this runs synchronously inside an async request
+    handler it blocked the whole API process — well past the worker's 10s
+    lookup timeout — on every kb_lookup.
     """
     terms = query_terms(query)
     if not chunks or not terms:
         return []
-    documents = [chunk.tokens for chunk in chunks]
-    total = len(documents)
-    avg_len = sum(len(doc) for doc in documents) / total
+    counts: list[Counter[str]] = [Counter(chunk.tokens) for chunk in chunks]
+    total = len(counts)
+    avg_len = sum(sum(c.values()) for c in counts) / total
     category_token = (category or "").strip().casefold()
 
+    idfs: dict[str, float] = {}
+    for term in set(terms):
+        containing = sum(1 for c in counts if term in c)
+        idfs[term] = math.log(1 + (total - containing + 0.5) / (containing + 0.5))
+
     scored: list[tuple[Chunk, float]] = []
-    for chunk, doc in zip(chunks, documents, strict=True):
-        doc_len = len(doc) or 1
-        counts: dict[str, int] = {}
-        for token in doc:
-            counts[token] = counts.get(token, 0) + 1
+    for chunk, count in zip(chunks, counts, strict=True):
+        doc_len = sum(count.values()) or 1
         score = 0.0
-        for term in set(terms):
-            freq = counts.get(term, 0)
+        for term, idf in idfs.items():
+            freq = count.get(term, 0)
             if not freq:
                 continue
-            containing = sum(1 for other in documents if term in other)
-            idf = math.log(1 + (total - containing + 0.5) / (containing + 0.5))
             score += idf * (
                 freq * (BM25_K1 + 1) / (freq + BM25_K1 * (1 - BM25_B + BM25_B * doc_len / avg_len))
             )
@@ -260,10 +296,26 @@ def rank_chunks(
     return scored
 
 
-def _snippet(text: str) -> str:
+def _snippet(text: str, terms: Sequence[str]) -> str:
+    """At most MAX_SNIPPET_CHARS of `text`, windowed around what matched.
+
+    Chunking already keeps chunks well under the cap, so this is the backstop
+    for the pathological source (one enormous unbroken line). Taking the head
+    unconditionally is what must not happen: it can return a "hit" whose text
+    does not contain the match, which reads to the agent as an answer.
+    """
     if len(text) <= MAX_SNIPPET_CHARS:
         return text
-    return text[:MAX_SNIPPET_CHARS].rstrip() + "…"
+    lowered = text.casefold()
+    hits = [pos for term in terms if (pos := lowered.find(term)) >= 0]
+    if not hits:
+        return text[:MAX_SNIPPET_CHARS].rstrip() + "…"
+    # Open the window a third of the way before the first match, so the
+    # matched sentence keeps the lead-in that gives it meaning.
+    start = max(0, min(hits) - MAX_SNIPPET_CHARS // 3)
+    start = min(start, len(text) - MAX_SNIPPET_CHARS)
+    piece = text[start : start + MAX_SNIPPET_CHARS].strip()
+    return ("…" if start else "") + piece + ("…" if start + MAX_SNIPPET_CHARS < len(text) else "")
 
 
 def search(
@@ -291,12 +343,13 @@ def search(
         chunks.extend(kb_chunks)
         skipped.extend(kb_skipped)
 
+    terms = query_terms(query)
     ranked = rank_chunks(chunks, query, category)
     floor = ranked[0][1] * SCORE_FLOOR_RATIO if ranked else 0.0
     results = [
         {
             "title": chunk.title,
-            "content": _snippet(chunk.text),
+            "content": _snippet(chunk.text, terms),
             "source_id": chunk.source_id,
             "knowledge_base_id": chunk.knowledge_base_id,
             "knowledge_base_name": chunk.knowledge_base_name,
@@ -305,4 +358,15 @@ def search(
         for chunk, score in ranked[:top_k]
         if score >= floor
     ]
+    if not results and skipped:
+        # "Attach our handbook" builds a knowledge base entirely out of PDFs or
+        # URLs. It stores fine and the dashboard shows it complete, but nothing
+        # in it is searchable yet, so every lookup misses forever — a silence
+        # that is indistinguishable from an honest "the KB has no answer".
+        # This is the one line that tells an operator which one they have.
+        log.warning(
+            "knowledge lookup found nothing and %d source(s) were not searchable: %s",
+            len(skipped),
+            sorted({s["type"] for s in skipped}),
+        )
     return {"query": query, "results": results, "skipped_sources": skipped}

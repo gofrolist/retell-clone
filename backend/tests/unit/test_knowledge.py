@@ -1,5 +1,7 @@
 """Lexical knowledge-base retrieval + the internal endpoint behind kb_lookup."""
 
+import logging
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -114,6 +116,87 @@ def test_split_text_packs_paragraphs_and_overlaps() -> None:
         assert f"paragraph {i}" in joined
     # Consecutive chunks share a tail so a fact on the boundary stays findable.
     assert set(chunks[0].split()) & set(chunks[1].split())
+
+
+def test_a_hit_always_contains_what_matched() -> None:
+    """A snippet that omits the match is worse than no hit at all.
+
+    An FAQ pasted with single newlines is one paragraph. When that was left
+    whole, the chunk ran past MAX_SNIPPET_CHARS and the snippet was its
+    opening — so a question answered on "page three" came back as a confident
+    hit whose text does not mention it, and the agent answered from the wrong
+    section instead of being told to say it doesn't know.
+    """
+    lines = [f"Q{i}: question {i}? A{i}: filler answer text goes here." for i in range(120)]
+    lines.insert(100, "Q: What is the refund policy? A: Refunds are issued within five days.")
+    found = knowledge.search(
+        [
+            _kb(
+                {
+                    "type": "text",
+                    "source_id": "src_faq",
+                    "title": "FAQ",
+                    "content": "\n".join(lines),
+                }
+            )
+        ],
+        "what is the refund policy",
+    )
+
+    assert found["results"], "the answer is in the source; it must be findable"
+    assert "refund" in found["results"][0]["content"].lower()
+
+
+def test_a_long_unbroken_source_is_chunked() -> None:
+    one_paragraph = " ".join(f"word{i}" for i in range(2000))
+    chunks = knowledge.split_text(one_paragraph)
+    assert len(chunks) > 1
+    # Bounded, not exactly TARGET: re-packing prepends the previous chunk's
+    # overlap tail, so a chunk tops out at target + overlap.
+    ceiling = knowledge.CHUNK_TARGET_WORDS + knowledge.CHUNK_OVERLAP_WORDS
+    assert all(len(c.split()) <= ceiling for c in chunks)
+    # Nothing is lost: the first and last words both survive the windowing.
+    joined = " ".join(chunks)
+    assert "word0" in joined
+    assert "word1999" in joined
+
+
+def test_snippet_windows_around_the_match() -> None:
+    text = ("filler " * 400) + "the refund policy is five days " + ("tail " * 400)
+    snippet = knowledge._snippet(text, ["refund"])
+    assert len(snippet) <= knowledge.MAX_SNIPPET_CHARS + 2  # +2 for the ellipses
+    assert "refund policy is five days" in snippet
+
+
+def test_document_frequency_is_computed_once_per_term() -> None:
+    """Ranking must not be quadratic in the number of chunks.
+
+    Recomputing df inside the per-chunk loop took ~60s on a few thousand
+    chunks — synchronously, inside an async handler, so it blocked the whole
+    API process and blew past the worker's 10s lookup timeout.
+    """
+    content = "\n\n".join(
+        f"section {i} " + " ".join(["medication billing coverage detail"] * 30) for i in range(2000)
+    )
+    chunks, _ = knowledge.chunk_sources(
+        "k", "n", [{"type": "text", "source_id": "s", "title": "T", "content": content}]
+    )
+    assert len(chunks) > 3000
+    start = time.perf_counter()
+    ranked = knowledge.rank_chunks(chunks, "what does the medication billing plan cover")
+    elapsed = time.perf_counter() - start
+    assert ranked
+    # ~0.3s once df is hoisted, ~18s when it is not. 5s sits far enough from
+    # both to fail loudly on a regression without flaking on a slow CI box.
+    assert elapsed < 5.0, f"ranking {len(chunks)} chunks took {elapsed:.1f}s"
+
+
+def test_search_warns_when_only_unsearchable_sources_exist(caplog) -> None:
+    """ "Attach our handbook" builds a KB of PDFs that silently answers nothing."""
+    with caplog.at_level(logging.WARNING):
+        found = knowledge.search([_kb(A_URL, A_FILE)], "what is the refund policy")
+    assert found["results"] == []
+    assert "not searchable" in caplog.text
 
 
 def test_split_text_ignores_blank_content() -> None:
