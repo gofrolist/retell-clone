@@ -1,6 +1,6 @@
 # Regional GKE cluster with Workload Identity and two node pools:
 #   default — e2-standard-4, general workloads (api, dashboard, monitoring)
-#   voice   — c2-standard-8, tainted for LiveKit server/SIP + agent workers
+#   voice   — c2d-standard-4, tainted for LiveKit server/SIP + agent workers
 
 resource "google_container_cluster" "cluster" {
   name     = var.cluster_name
@@ -151,8 +151,10 @@ resource "google_container_node_pool" "voice" {
 
   node_config {
     machine_type = var.voice_pool_machine_type
-    disk_size_gb = 100
-    disk_type    = "pd-ssd"
+    # Boot disk only: media is relayed through memory and the network, and
+    # recordings go straight to GCS, so nothing here is disk-IO bound.
+    disk_size_gb = 50
+    disk_type    = "pd-balanced"
 
     service_account = google_service_account.gke_nodes.email
     oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]

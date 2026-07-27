@@ -47,7 +47,11 @@ variable "default_pool_machine_type" {
 variable "voice_pool_machine_type" {
   description = "Machine type for the voice node pool (LiveKit server/SIP + workers; CPU-sensitive realtime audio)."
   type        = string
-  default     = "c2-standard-8"
+  # c2d is the AMD sibling of c2 — same compute-optimized class, ~13% cheaper,
+  # available in every us-east1 zone. Four vCPUs hold one livekit-server + one
+  # livekit-sip + one worker with headroom; concurrency scales out via the
+  # worker HPA and the pool's autoscaler (max 10) rather than up per node.
+  default = "c2d-standard-4"
 }
 
 variable "sip_signalling_source_ranges" {

@@ -43,9 +43,11 @@ tolerations:
     effect: NoSchedule
 
 # Audio-only OGG composites are light; no Chrome/video pipeline involved.
+# Requests track the idle floor so the pod packs onto an existing voice node;
+# the memory limit still covers a concurrent-recording spike.
 resources:
   requests:
-    cpu: 500m
-    memory: 1Gi
+    cpu: 250m
+    memory: 512Mi
   limits:
     memory: 2Gi
