@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import select
 
 import arhiteq_api.db as db_module
-from arhiteq_api.models import KnowledgeBase, RetellLLM
+from arhiteq_api.models import KnowledgeBase, KnowledgeBaseFile, RetellLLM
 from arhiteq_api.services import knowledge
 
 from ..conftest import (
@@ -294,6 +294,80 @@ def test_markdown_sections_carry_their_heading_path() -> None:
     # Dropping back to ## resets the deeper trail rather than accumulating it.
     assert "pricing_snapshot.md › Pricing Snapshot › Cancellation" in sections
     assert "free trial" in sections["pricing_snapshot.md › Pricing Snapshot › Current trial offer"]
+
+
+def test_a_hash_inside_fenced_code_is_not_a_heading() -> None:
+    """A `# comment` in a shell block is not a section, and mis-taking it for
+    one both splits mid-block and re-parents everything after it under the
+    comment — corrupting the attribution the heading path exists to give."""
+    doc = (
+        "# Emergency Resources\n\nCall 911.\n\n"
+        "```bash\n# Poison control\ncurl x\n```\n\n"
+        "## Local hotlines\n\nDial 800-222-1222.\n"
+    )
+    titles = [t for t, _ in knowledge.split_markdown_sections(doc, "guide.md")]
+    assert titles == [
+        "guide.md › Emergency Resources",
+        "guide.md › Emergency Resources › Local hotlines",
+    ]
+    # Tilde fences count too, and an unclosed fence must not swallow the rest.
+    tilde = "# A\n\n~~~\n# not a heading\n~~~\n\n## B\n\nbody\n"
+    assert [t for t, _ in knowledge.split_markdown_sections(tilde, "f.md")] == [
+        "f.md › A",
+        "f.md › A › B",
+    ]
+
+
+def test_heading_depth_is_tracked_not_inferred_from_position() -> None:
+    """A document whose first heading is deeper than a later one must not
+    report the top-level section as nested inside the deeper one."""
+    titles = [
+        t
+        for t, _ in knowledge.split_markdown_sections(
+            "### Deep first\n\na\n\n## Later top\n\nb\n", "x.md"
+        )
+    ]
+    assert titles == ["x.md › Deep first", "x.md › Later top"]
+
+
+def test_a_leading_thematic_break_is_not_frontmatter() -> None:
+    """Trusting the `---` delimiters alone deleted real content from the index.
+
+    The text between the breaks is present in the knowledge base and shows as
+    complete in the dashboard, so losing it is silent.
+    """
+    text = "---\n\nSome intro\n\n---\n\nrest of doc\n"
+    fields, body = knowledge.split_frontmatter(text)
+    assert fields == {}
+    assert body == text, "no parsed field means it was never frontmatter"
+    assert (
+        "Some intro"
+        in knowledge.search([_doc_kb(_file(data=text.encode()))], "intro")["results"][0]["content"]
+    )
+    # Genuine frontmatter is still parsed and stripped.
+    assert knowledge.split_frontmatter("---\ncategory: faq\n---\nbody\n")[0] == {"category": "faq"}
+
+
+def test_a_document_with_no_readable_text_is_reported() -> None:
+    """Zero chunks AND zero skip entries reads as "the KB simply had no match"."""
+    empty = _file(source_id="src_empty", filename="stub.md", data=b"---\ncategory: faq\n---\n")
+    found = knowledge.search([_doc_kb(empty)], "anything")
+    assert found["results"] == []
+    assert found["skipped_sources"][0]["reason"] == "no readable text in the file"
+
+
+def test_oversized_is_reported_from_metadata_without_reading_the_blob() -> None:
+    """load_views deliberately leaves the bytes unread; the reason must still
+    say "too large" rather than blame the caller for not loading them."""
+    big = knowledge.KnowledgeBaseFileView(
+        source_id="src_big",
+        filename="handbook.md",
+        content_type="text/markdown",
+        data=b"",
+        size_bytes=5 * 1024 * 1024,
+    )
+    found = knowledge.search([_doc_kb(big)], "anything")
+    assert found["skipped_sources"][0]["reason"] == "larger than 2MB"
 
 
 def test_a_markdown_upload_becomes_searchable() -> None:
@@ -637,6 +711,64 @@ async def test_an_uploaded_markdown_file_is_searchable_end_to_end(client) -> Non
     assert body["results"], "an uploaded markdown file must be reachable from a call"
     assert "free trial" in body["results"][0]["content"]
     assert "Current trial offer" in body["results"][0]["title"]
+
+
+async def test_load_views_reports_oversize_and_respects_the_lookup_budget() -> None:
+    """The DB path must distinguish "too large", "over budget" and loaded.
+
+    Filtering oversized rows out in SQL hid them entirely and they came back as
+    "not loaded" — the reason that means the caller forgot the blobs.
+    """
+    kb_id = "know_budget00000001"
+    async with db_module.session_factory()() as session:
+        session.add(
+            KnowledgeBase(
+                knowledge_base_id=kb_id,
+                workspace_id=WORKSPACE_ID,
+                knowledge_base_name="Budget",
+                sources=[
+                    {"type": "document", "source_id": "src_a_small", "filename": "small.md"},
+                    {"type": "document", "source_id": "src_b_huge", "filename": "huge.md"},
+                ],
+            )
+        )
+        session.add(
+            KnowledgeBaseFile(
+                source_id="src_a_small",
+                knowledge_base_id=kb_id,
+                workspace_id=WORKSPACE_ID,
+                filename="small.md",
+                content_type="text/markdown",
+                size_bytes=len(MARKDOWN),
+                data=MARKDOWN,
+            )
+        )
+        # Stored size over the per-file cap; the bytes must never be read.
+        session.add(
+            KnowledgeBaseFile(
+                source_id="src_b_huge",
+                knowledge_base_id=kb_id,
+                workspace_id=WORKSPACE_ID,
+                filename="huge.md",
+                content_type="text/markdown",
+                size_bytes=knowledge.MAX_INDEXED_FILE_BYTES + 1,
+                data=b"x" * 32,
+            )
+        )
+        await session.commit()
+
+    async with db_module.session_factory()() as session:
+        views = await knowledge.load_views(session, [kb_id], WORKSPACE_ID)
+    assert len(views) == 1
+    files = views[0].files
+    assert files["src_a_small"].data == MARKDOWN
+    assert files["src_b_huge"].data == b"", "an oversized blob must not be read"
+    assert files["src_b_huge"].stored_size > knowledge.MAX_INDEXED_FILE_BYTES
+
+    found = knowledge.search(views, "is there a free trial")
+    assert found["results"], "the small file is still searchable"
+    reasons = {s["source_id"]: s["reason"] for s in found["skipped_sources"]}
+    assert reasons["src_b_huge"] == "larger than 2MB"
 
 
 async def test_query_requires_the_internal_token(client, call_id) -> None:

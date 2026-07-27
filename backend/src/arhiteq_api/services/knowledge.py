@@ -96,6 +96,11 @@ MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
 # CPU inside a live call — the whole point of the per-lookup design is that a
 # voice agent's knowledge base is small.
 MAX_INDEXED_FILE_BYTES = 2 * 1024 * 1024
+# And a ceiling across everything one lookup will read and chunk. The per-file
+# cap alone bounds nothing in aggregate: attach enough 2MB files and each
+# kb_lookup re-reads all of them from Postgres and re-tokenizes them on the
+# event loop, inside a live call.
+MAX_INDEXED_BYTES_PER_LOOKUP = 8 * 1024 * 1024
 
 _TOKEN_RE = re.compile(r"[\w']+", re.UNICODE)
 # Dropped from queries only. These carry no signal in a question ("what is the
@@ -149,6 +154,9 @@ def query_terms(query: str) -> list[str]:
 _FRONTMATTER_RE = re.compile(r"\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
 _FRONTMATTER_FIELD_RE = re.compile(r"^([A-Za-z_][\w-]*)\s*:\s*(.*)$")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
+# CommonMark fences: up to three leading spaces, then ``` or ~~~ (an info
+# string like ```bash may follow).
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
 
 def _suffix(filename: str) -> str:
@@ -194,6 +202,13 @@ def split_frontmatter(text: str) -> tuple[dict[str, str], str]:
             continue  # a nested value or a comment, not a scalar field
         if field := _FRONTMATTER_FIELD_RE.match(line):
             fields[field.group(1).strip().lower()] = field.group(2).strip().strip("\"'")
+    if not fields:
+        # A document that merely OPENS with a thematic break is not a document
+        # with frontmatter. Trusting the delimiters alone silently deleted
+        # everything up to the next `---` from the index — content that is
+        # present in the knowledge base, shown as complete in the dashboard,
+        # and unretrievable. No parsed field means no frontmatter.
+        return {}, text
     return fields, text[match.end() :]
 
 
@@ -204,27 +219,46 @@ def split_markdown_sections(text: str, root_title: str = "") -> list[tuple[str, 
     comes back titled "Pricing Snapshot › Current trial offer" rather than
     "pricing_snapshot.md", which is most of what tells the agent — and the
     operator reading the transcript — where an answer came from.
+
+    Fenced code is skipped rather than scanned, because a `# comment` on the
+    first line of a shell or YAML block is not a heading — treating it as one
+    both splits the section mid-block and re-parents everything after it under
+    the comment's text, which is precisely the attribution this title exists to
+    give. The trail stores each heading's real depth instead of assuming
+    position implies level, so a document whose first heading is an `###`
+    followed by an `##` does not report the top-level section as nested inside
+    the deeper one.
     """
     sections: list[tuple[str, str]] = []
-    trail: list[str] = []
+    trail: list[tuple[int, str]] = []
     title = root_title
     body: list[str] = []
+    fence: str | None = None
 
     def flush() -> None:
         if content := "\n".join(body).strip():
             sections.append((title, content))
 
     for line in text.splitlines():
-        heading = _HEADING_RE.match(line)
-        if not heading:
+        if marker := _FENCE_RE.match(line):
+            char = marker.group(1)[0]
+            if fence is None:
+                fence = char
+            elif char == fence:
+                fence = None
+            body.append(line)
+            continue
+        heading = None if fence is not None else _HEADING_RE.match(line)
+        if heading is None:
             body.append(line)
             continue
         flush()
         body = []
         depth = len(heading.group(1))
-        del trail[depth - 1 :]
-        trail.append(heading.group(2).strip())
-        parts = ([root_title] if root_title else []) + trail
+        while trail and trail[-1][0] >= depth:
+            trail.pop()
+        trail.append((depth, heading.group(2).strip()))
+        parts = ([root_title] if root_title else []) + [text for _, text in trail]
         title = " › ".join(parts)
     flush()
     return sections
@@ -238,14 +272,27 @@ class KnowledgeBaseFileView:
     filename: str
     content_type: str
     data: bytes
+    # The stored size, which is NOT len(data): a blob too large to index is
+    # loaded as empty rather than read out of the database, and the reason it
+    # was skipped has to say "too large" rather than blame the caller.
+    size_bytes: int = -1
+    # Set when the whole knowledge base exceeds what one lookup will index.
+    over_budget: bool = False
+
+    @property
+    def stored_size(self) -> int:
+        return self.size_bytes if self.size_bytes >= 0 else len(self.data)
 
     @classmethod
     def of(cls, row: Any) -> KnowledgeBaseFileView:
+        data = bytes(getattr(row, "data", b"") or b"")
+        size = getattr(row, "size_bytes", None)
         return cls(
             source_id=str(getattr(row, "source_id", "")),
             filename=str(getattr(row, "filename", "")),
             content_type=str(getattr(row, "content_type", "")),
-            data=bytes(getattr(row, "data", b"") or b""),
+            data=data,
+            size_bytes=int(size) if isinstance(size, int) else len(data),
         )
 
 
@@ -273,7 +320,12 @@ class KnowledgeBaseView:
             sources=list(getattr(kb, "sources", None) or []),
             files={
                 view.source_id: view
-                for view in (KnowledgeBaseFileView.of(row) for row in files)
+                for view in (
+                    # Already a view when it came from load_views; re-wrapping
+                    # would drop the fields getattr cannot see (over_budget).
+                    row if isinstance(row, KnowledgeBaseFileView) else KnowledgeBaseFileView.of(row)
+                    for row in files
+                )
                 if view.source_id
             },
         )
@@ -363,8 +415,10 @@ def _document_text(
         return None, "not loaded"
     if not is_indexable_file(blob.filename, blob.content_type):
         return None, blob.content_type or "unknown type"
-    if len(blob.data) > MAX_INDEXED_FILE_BYTES:
+    if blob.stored_size > MAX_INDEXED_FILE_BYTES:
         return None, f"larger than {MAX_INDEXED_FILE_BYTES // (1024 * 1024)}MB"
+    if blob.over_budget:
+        return None, "knowledge base is too large to index in one lookup"
     text = decode_file(blob.data)
     if text is None:
         return None, "not valid UTF-8 text"
@@ -433,6 +487,21 @@ def chunk_sources(
             pieces, category = _chunk_document(
                 text, filename=filename, is_markdown=_suffix(filename) in MARKDOWN_SUFFIXES
             )
+            if not pieces:
+                # Decoded, but there was nothing in it — a frontmatter-only
+                # file, or a 0-byte upload. Contributing neither a chunk nor a
+                # skip entry would make it indistinguishable from a source that
+                # simply didn't match, which is the ambiguity skipped_sources
+                # exists to remove.
+                skipped.append(
+                    {
+                        "source_id": source_id,
+                        "type": source_type,
+                        "title": label,
+                        "reason": "no readable text in the file",
+                    }
+                )
+                continue
             for title, chunk in pieces:
                 add(source_id, title, chunk, category)
             continue
@@ -553,20 +622,77 @@ async def load_views(session: Any, knowledge_base_ids: Sequence[str], workspace_
     if not rows:
         return []
     found = [kb.knowledge_base_id for kb in rows]
-    files = (
-        await session.scalars(
-            select(KnowledgeBaseFile).where(
+    # Metadata for EVERY file first, blobs second. Filtering the oversized ones
+    # out in SQL would keep them out of the result set entirely, and the source
+    # would then be reported as "not loaded" — the reason that means the caller
+    # forgot the blobs — instead of "too large", pointing an operator whose
+    # handbook is silently unsearchable at the wrong cause.
+    metas = (
+        await session.execute(
+            select(
+                KnowledgeBaseFile.source_id,
+                KnowledgeBaseFile.knowledge_base_id,
+                KnowledgeBaseFile.filename,
+                KnowledgeBaseFile.content_type,
+                KnowledgeBaseFile.size_bytes,
+            )
+            .where(
                 KnowledgeBaseFile.workspace_id == workspace_id,
                 KnowledgeBaseFile.knowledge_base_id.in_(found),
-                # Blobs we could never index are not worth reading out of the
-                # database on every lookup.
-                KnowledgeBaseFile.size_bytes <= MAX_INDEXED_FILE_BYTES,
             )
+            .order_by(KnowledgeBaseFile.source_id)
         )
     ).all()
-    by_kb: dict[str, list[Any]] = {}
-    for row in files:
-        by_kb.setdefault(row.knowledge_base_id, []).append(row)
+
+    # Per-file cap, then a budget across the whole lookup. The per-lookup design
+    # re-reads and re-chunks everything on every call, so without a total the
+    # per-file limit still allows an unbounded corpus: enough 2MB files put
+    # seconds of event-loop CPU inside a live call, which is the failure
+    # rank_chunks' docstring already records.
+    wanted: list[Any] = []
+    over_budget: set[str] = set()
+    budget = MAX_INDEXED_BYTES_PER_LOOKUP
+    for meta in metas:
+        if meta.size_bytes > MAX_INDEXED_FILE_BYTES:
+            continue  # reported as "larger than …" from its metadata alone
+        if meta.size_bytes > budget:
+            over_budget.add(meta.source_id)
+            continue
+        budget -= meta.size_bytes
+        wanted.append(meta.source_id)
+    if over_budget:
+        log.warning(
+            "knowledge base exceeds the %dMB per-lookup budget; %d file(s) not indexed",
+            MAX_INDEXED_BYTES_PER_LOOKUP // (1024 * 1024),
+            len(over_budget),
+        )
+
+    blobs: dict[str, bytes] = {}
+    if wanted:
+        blobs = {
+            source_id: bytes(data or b"")
+            for source_id, data in (
+                await session.execute(
+                    select(KnowledgeBaseFile.source_id, KnowledgeBaseFile.data).where(
+                        KnowledgeBaseFile.workspace_id == workspace_id,
+                        KnowledgeBaseFile.source_id.in_(wanted),
+                    )
+                )
+            ).all()
+        }
+
+    by_kb: dict[str, list[KnowledgeBaseFileView]] = {}
+    for meta in metas:
+        by_kb.setdefault(meta.knowledge_base_id, []).append(
+            KnowledgeBaseFileView(
+                source_id=meta.source_id,
+                filename=meta.filename,
+                content_type=meta.content_type,
+                data=blobs.get(meta.source_id, b""),
+                size_bytes=meta.size_bytes,
+                over_budget=meta.source_id in over_budget,
+            )
+        )
     return [KnowledgeBaseView.of(kb, by_kb.get(kb.knowledge_base_id, ())) for kb in rows]
 
 
