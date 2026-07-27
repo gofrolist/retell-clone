@@ -118,6 +118,23 @@ def test_json_object_ignores_trailing_content(raw):
     assert simulation._json_object(raw)["content"] == "hi"
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '[{"action": "speak", "content": "hi"}]',
+        '```json\n[{"action": "speak", "content": "hi"}]\n```',
+        '[{"action": "speak", "content": "hi"}, {"action": "end_call"}]',
+    ],
+)
+def test_json_object_unwraps_a_listed_object(raw):
+    """A single action wrapped in a list is still that action.
+
+    Models reach for an array when asked for one object, and the reply is not
+    ambiguous — the first object in it is the answer.
+    """
+    assert simulation._json_object(raw)["content"] == "hi"
+
+
 @pytest.mark.parametrize("raw", [None, "", "no json here", "[1, 2]"])
 def test_json_object_rejects_non_objects(raw):
     with pytest.raises((ValueError, TypeError)):

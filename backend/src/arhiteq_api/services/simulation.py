@@ -376,25 +376,28 @@ def _json_object(raw: str | None) -> dict[str, Any]:
     if text.startswith("```"):
         text = text.split("\n", 1)[-1] if "\n" in text else ""
         text = text.rsplit("```", 1)[0]
+    data: Any = None
+    with contextlib.suppress(json.JSONDecodeError):
+        data = json.loads(text)
+    if isinstance(data, dict):
+        return data
+    # Anything else — the object with text around it, or the object wrapped in
+    # a list — is answered by the same rule: the reply is the FIRST complete
+    # object in it. Models prepend a sentence, append one, and wrap a single
+    # action in a one-element array; each of those is a whole simulation run
+    # lost if it raises. Reading to the *last* brace instead would swallow
+    # trailing junk and fail on "Extra data" the moment a reply is
+    # pretty-printed, because then the last brace is the trailing junk's.
+    start = text.find("{")
+    if start < 0:
+        raise ValueError(f"no JSON object in model reply: {(raw or '')[:200]!r}")
     try:
-        data: Any = json.loads(text)
+        # Decoding from a `{` yields an object or raises, so the result needs
+        # no further type check.
+        obj, _ = json.JSONDecoder().raw_decode(text, start)
     except json.JSONDecodeError as exc:
-        # Whatever is around the object, take the first complete one: models
-        # prepend a sentence, and they also *append* — a second object, or a
-        # line of commentary after the answer. Decoding from the opening brace
-        # and stopping where that object closes covers both, where reading to
-        # the last brace would swallow trailing junk and fail on "Extra data",
-        # which is a whole simulation run lost to a stray sentence.
-        start = text.find("{")
-        if start < 0:
-            raise ValueError(f"no JSON object in model reply: {(raw or '')[:200]!r}") from exc
-        try:
-            data, _ = json.JSONDecoder().raw_decode(text, start)
-        except json.JSONDecodeError as inner:
-            raise ValueError(f"no JSON object in model reply: {(raw or '')[:200]!r}") from inner
-    if not isinstance(data, dict):
-        raise TypeError("model reply was not a JSON object")
-    return data
+        raise ValueError(f"no JSON object in model reply: {(raw or '')[:200]!r}") from exc
+    return obj
 
 
 def _variable_value(value: Any) -> str:
