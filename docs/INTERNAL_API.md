@@ -105,11 +105,20 @@ lookup to the call's workspace — the ids arrive from user-editable tool
 config, so ids belonging to another workspace simply match nothing. `404`
 for an unknown call.
 
-Ranking is lexical BM25 over `type: "text"` sources, chunked per lookup
-(`services/knowledge.py`); URL and uploaded-document sources have no
-extracted text yet and come back under `skipped_sources`. `results` is empty
-when nothing matched, which the worker turns into an explicit
-"say you don't know" instruction rather than an error.
+Ranking is lexical BM25, chunked per lookup (`services/knowledge.py`).
+Searchable: `text` sources, plus uploaded documents whose bytes decode as
+UTF-8 text (`.md`/`.txt`/`.csv`, or a `text/*` content type). Markdown is
+split on its own headings, so `title` reads
+`pricing.md › Pricing Snapshot › Current trial offer`, and a YAML
+`category:` in frontmatter is matched exactly against the request's
+`category` (a stronger signal than the substring guess used for untagged
+sources — neither ever filters a chunk out, they only boost).
+
+`skipped_sources` entries carry a `reason`: PDF/Office uploads (no parser
+dependency), files over 2MB, bytes that are not valid UTF-8, URL sources,
+and `"not loaded"` when the caller passed knowledge bases without their
+blobs. `results` is empty when nothing matched, which the worker turns into
+an explicit "say you don't know" instruction rather than an error.
 
 On finalize the control plane: persists, fires `call_ended` (signed), runs
 Gemini post-call analysis (summary/call_summary, user_sentiment,

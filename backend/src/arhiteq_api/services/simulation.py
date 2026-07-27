@@ -51,7 +51,6 @@ from ..ids import new_call_id
 from ..models import (
     TEST_RUN_TERMINAL_STATUSES,
     Agent,
-    KnowledgeBase,
     RetellLLM,
     TestCaseBatchJob,
     TestCaseDefinition,
@@ -902,15 +901,7 @@ async def _load_knowledge_bases(
     ids = [str(i) for i in ((llm.knowledge_base_ids if llm else None) or []) if i]
     if not ids or llm is None:
         return []
-    rows = (
-        await session.scalars(
-            select(KnowledgeBase).where(
-                KnowledgeBase.workspace_id == llm.workspace_id,
-                KnowledgeBase.knowledge_base_id.in_(ids),
-            )
-        )
-    ).all()
-    return [knowledge.KnowledgeBaseView.of(row) for row in rows]
+    return await knowledge.load_views(session, ids, llm.workspace_id)
 
 
 async def _run_one(factory: Any, job_id: str) -> str:

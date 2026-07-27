@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import require_internal_token
 from ..db import get_session, session_factory
-from ..models import Agent, Call, Contact, KnowledgeBase, PhoneNumber, now_ms
+from ..models import Agent, Call, Contact, PhoneNumber, now_ms
 from ..schemas import agent_to_dict, coerce_dynamic_variables, llm_to_dict
 from ..services import inbound as inbound_svc
 from ..services import knowledge, versions, webhooks
@@ -236,16 +236,9 @@ async def query_knowledge_base(
     if not requested:
         return {"query": body.query, "results": [], "skipped_sources": []}
 
-    rows = (
-        await session.scalars(
-            select(KnowledgeBase).where(
-                KnowledgeBase.workspace_id == call.workspace_id,
-                KnowledgeBase.knowledge_base_id.in_(requested),
-            )
-        )
-    ).all()
+    views = await knowledge.load_views(session, requested, call.workspace_id)
     return knowledge.search(
-        rows,
+        views,
         body.query,
         category=body.category,
         top_k=body.top_k or knowledge.DEFAULT_TOP_K,
