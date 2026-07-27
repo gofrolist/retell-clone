@@ -95,6 +95,29 @@ def test_json_object_tolerates_fences_and_preamble(raw):
     assert simulation._json_object(raw)["content"] == "hi"
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # A sentence after the answer.
+        '{"action": "speak", "content": "hi"}\nLet me know if you need anything else.',
+        # A second object the run has no use for.
+        '{"action": "speak", "content": "hi"}\n{"action": "end_call"}',
+        # Preamble and trailer at once.
+        'Here you go: {"action": "speak", "content": "hi"} — hope that helps!',
+        # Pretty-printed, which is where the trailing brace of the *first*
+        # object is nowhere near the last brace in the text.
+        '{\n "action": "speak",\n "content": "hi"\n}\n{"note": "extra"}',
+    ],
+)
+def test_json_object_ignores_trailing_content(raw):
+    """A stray sentence after the JSON must not cost the whole run.
+
+    `json.loads` raises "Extra data" on all of these, and the reply is otherwise
+    perfectly usable — three runs of a 98-case batch died this way.
+    """
+    assert simulation._json_object(raw)["content"] == "hi"
+
+
 @pytest.mark.parametrize("raw", [None, "", "no json here", "[1, 2]"])
 def test_json_object_rejects_non_objects(raw):
     with pytest.raises((ValueError, TypeError)):
