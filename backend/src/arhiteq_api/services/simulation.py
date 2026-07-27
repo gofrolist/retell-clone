@@ -9,9 +9,11 @@ One run plays three LLM roles over a single transcript:
 * the **judge** reads the finished transcript and grades each metric.
 
 Tools are never really executed. A matching `tool_mock` supplies the result;
-absent one, the harness synthesizes a plausible success payload. A simulation
-therefore can never book an appointment, send an SMS or dial a transfer, which
-is what makes it safe to run against a production agent config.
+absent one, the harness synthesizes a plausible success payload — from the
+scenario, the case's variables and the call so far, so an invented payload is
+this call's backend state rather than some other caller's (`_call_facts`). A
+simulation therefore can never book an appointment, send an SMS or dial a
+transfer, which is what makes it safe to run against a production agent config.
 
 Three details exist so a criterion measures the agent rather than the harness:
 the prompt and every tool argument resolve against `CallVariables`, so the
@@ -212,6 +214,14 @@ character at all times and never reveal that this is a test.
 Your character, situation and goal:
 {user_prompt}
 
+That description is everything you know about yourself: do not invent a
+motive, a complaint or a request it does not give you, however plausible one
+would be for this sort of call. Asked about something it does not cover, give a
+brief, ordinary answer and leave it there. Raise what it tells you to raise —
+but a fact it frames as an answer ("when asked, …", "confirm that …") is yours
+to give when the agent asks for it, not before: volunteering it early turns the
+question the agent was about to ask into one it never has to.
+
 Speak the way people actually speak on the phone: short turns, one idea at a
 time, and answer what you were asked. Hang up once your goal is met or is
 clearly unreachable — do not keep the call going out of politeness.
@@ -259,7 +269,21 @@ arguments:
 
 Invent the JSON payload a working implementation would most plausibly return
 for a successful call. Keep it small and realistic; invent concrete values
-rather than placeholders. Return STRICT JSON (no markdown) — the payload only."""
+rather than placeholders.
+
+The payload is this call's own backend state, so it has to be the state this
+call is running on:
+{facts}
+Conversation so far:
+{history}
+
+Return what the scenario and the transcript already fix — the caller's name,
+what they told you last time, the state of their account — and invent only the
+details neither of them settles. Never contradict either, and never introduce a
+person, a topic or a record this call is not about: the agent will read this
+payload out to the caller as fact.
+
+Return STRICT JSON (no markdown) — the payload only."""
 
 _GENERATE_PROMPT = """\
 You are a QA engineer writing simulation tests for the AI phone agent below.
@@ -500,6 +524,39 @@ class _Simulator:
     def _tool_by_name(self, name: str) -> dict[str, Any] | None:
         return next((t for t in self._catalog if t["name"] == name), None)
 
+    def _call_facts(self) -> str:
+        """What an invented tool result has to agree with: scenario + variables.
+
+        A synthesized payload is the only thing in a run that speaks with the
+        backend's authority, and the agent repeats it to the caller as fact. Told
+        nothing but a tool name and its arguments, the model answers a memory
+        lookup with a whole different person — a case whose caller is Jane, with
+        a note about her gardening, gets back "Sarah Jenkins, enrolled in the
+        Phase 2 trial", and the agent then greets Jane as Sarah. The criterion
+        that fails is the one about remembering the note, so the run reads as the
+        agent hallucinating when it was the harness that did.
+
+        The variables are the state a live call would have looked this up out
+        of, which is why they are the fix rather than the scenario alone: they
+        hold the caller's name, their medications, the note from yesterday. The
+        dotted `call.*` family is left out — a call id tells an invented payload
+        nothing, and printing four empty keys only invites the model to fill
+        them in.
+        """
+        scenario = str(self._definition.get("user_prompt") or "").strip()
+        lines = [f"The scenario the caller is playing: {scenario}"] if scenario else []
+        # Read through __getitem__ so a pinned clock renders the way the prompt
+        # under test saw it rather than as the raw text the case was written in.
+        facts = [
+            f"- {name}: {value}"
+            for name in self._variables
+            if not name.startswith("call.") and (value := str(self._variables[name]).strip())
+        ]
+        if facts:
+            lines.append("What the systems behind this call hold about the caller:")
+            lines.extend(facts)
+        return "\n".join(lines) if lines else "(nothing beyond the call so far)"
+
     async def _tool_result(
         self, tool: dict[str, Any] | None, name: str, args: dict[str, Any]
     ) -> str:
@@ -523,6 +580,8 @@ class _Simulator:
                     tool_name=name,
                     description=description,
                     arguments=json.dumps(args, ensure_ascii=False),
+                    facts=self._call_facts(),
+                    history=_history(self.transcript),
                 ),
                 0.4,
             )

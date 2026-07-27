@@ -286,6 +286,98 @@ async def test_unmocked_tool_result_is_synthesized(monkeypatch):
     assert json.loads(transcript[3]["content"]) == {"status": "queued"}
 
 
+async def test_a_synthesized_tool_result_is_told_what_the_call_is_about(monkeypatch):
+    """An invented payload is the one thing in a run that speaks as the backend,
+    and the agent repeats it to the caller — so it is given the scenario, the
+    case's variables and the call so far, and told not to contradict them.
+
+    Without this, a memory lookup on a case about Jane's gardening comes back
+    about a different person entirely, and the criterion that fails is the one
+    about remembering the note.
+    """
+    sim, model = make_simulator(
+        monkeypatch,
+        [
+            {"action": "speak", "content": "Did you see my note about the hydrangeas?"},
+            {"action": "tool_call", "tool_name": "schedule_callback", "arguments": {}},
+            {"status": "queued"},  # the synthesized tool payload
+            {"action": "speak", "content": "I did!"},
+            {"action": "hangup", "reason": "done"},
+            {"action": "done"},
+        ],
+        definition={
+            "user_prompt": "Clara should remember your gardening note from yesterday.",
+            "metrics": [],
+        },
+        variables=CallVariables(
+            {"first_name": "Jane", "prior_conversation": "wanted to do some gardening"},
+            call_id="call_sim1",
+        ),
+    )
+    await sim.run()
+    synthesis = _flat(model.prompts[2])
+    assert "Clara should remember your gardening note from yesterday." in synthesis
+    assert "- first_name: Jane" in synthesis
+    assert "- prior_conversation: wanted to do some gardening" in synthesis
+    # The call it is answering, and the turn that prompted it, are both context
+    # the payload has to agree with.
+    assert "Tool call: schedule_callback" in synthesis
+    assert "Did you see my note about the hydrangeas?" in synthesis
+    assert "Never contradict either" in synthesis
+    # A call id tells an invented payload nothing; four empty dotted keys would
+    # only invite the model to fill them in.
+    assert "call.call_id" not in synthesis
+    assert "call.from_number" not in synthesis
+
+
+async def test_a_synthesized_tool_result_survives_a_case_with_no_state(monkeypatch):
+    """No scenario and no variables is a formatting hazard, not a failure."""
+    sim, model = make_simulator(
+        monkeypatch,
+        [
+            {"action": "speak", "content": "Call me back."},
+            {"action": "tool_call", "tool_name": "schedule_callback", "arguments": {}},
+            {"status": "queued"},
+            {"action": "speak", "content": "All set."},
+            {"action": "hangup", "reason": "done"},
+            {"action": "done"},
+        ],
+        definition={"user_prompt": "", "metrics": []},
+        variables=CallVariables({}),
+    )
+    transcript = await sim.run()
+    assert json.loads(transcript[3]["content"]) == {"status": "queued"}
+    assert "(nothing beyond the call so far)" in model.prompts[2]
+
+
+async def test_the_simulated_caller_is_held_to_the_scenario(monkeypatch):
+    """A caller who invents a motive grades the agent on a different case.
+
+    A scenario about paying on day 7 of a trial opened instead with "trying to
+    figure out if I want to keep the service going", the agent took the
+    cancellation branch it was right to take, and both criteria — about the
+    payment the call never reached — failed on the harness.
+    """
+    sim, model = make_simulator(
+        monkeypatch,
+        [
+            {"action": "speak", "content": "Hi Clara."},
+            {"action": "speak", "content": "Hello!"},
+            {"action": "hangup", "reason": "done"},
+            {"action": "done"},
+        ],
+        definition={
+            "user_prompt": "You are on day 7 of your trial. When asked about payment, "
+            "insist on using your phone's keypad.",
+            "metrics": [],
+        },
+    )
+    await sim.run()
+    caller = _flat(model.prompts[0])
+    assert "do not invent a motive, a complaint or a request it does not give you" in caller
+    assert 'a fact it frames as an answer ("when asked, …", "confirm that …") is yours' in caller
+
+
 async def test_unknown_tool_is_reported_back_as_an_error(monkeypatch):
     sim, _ = make_simulator(
         monkeypatch,
