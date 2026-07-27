@@ -64,14 +64,36 @@ def test_call_variables_resolve_the_call_scoped_placeholders():
     Prompts pass `{{call.call_id}}` straight into tool arguments; left literal
     it shows up as the placeholder in every mocked call an operator reads.
     """
-    variables = CallVariables({}, call_id="call_abc", direction="outbound")
-    text = "id={{call_id}} dotted={{call.call_id}} dir={{direction}} type={{call_type}}"
-    assert resolve_template(text, variables) == (
-        "id=call_abc dotted=call_abc dir=outbound type=phone_call"
-    )
+    variables = CallVariables({}, call_id="call_abc")
+    text = "id={{call_id}} dotted={{call.call_id}} type={{call_type}}"
+    assert resolve_template(text, variables) == "id=call_abc dotted=call_abc type=phone_call"
     assert resolve_deep({"retell_call_id": "{{call.call_id}}"}, variables) == {
         "retell_call_id": "call_abc"
     }
+
+
+def test_call_variables_answer_the_rest_of_the_dotted_family_empty():
+    """The worker stores all four `call.*` keys; a simulation has no phone leg.
+
+    Empty is what a live web call resolves them to, and it keeps placeholder
+    text out of the tool arguments an operator reads back.
+    """
+    variables = CallVariables({}, call_id="call_abc")
+    assert resolve_deep(
+        {"phone": "{{call.from_number}}", "dialled": "{{call.to_number}}"}, variables
+    ) == {"phone": "", "dialled": ""}
+
+
+def test_call_variables_do_not_invent_a_direction_or_numbers():
+    """`start_speaker` says who talks first, not who dialled — so guessing a
+    direction from it would test a prompt in the branch a live call never
+    takes, which is the failure this class exists to remove."""
+    text = "{{direction}} {{user_number}} {{agent_number}}"
+    variables = CallVariables({}, call_id="call_abc")
+    assert resolve_template(text, variables) == text
+    # A scenario that knows the answer can still set them.
+    variables["direction"] = "inbound"
+    assert resolve_template("{{direction}}", variables) == "inbound"
 
 
 def test_call_variables_answer_the_time_family_in_the_agents_zone():

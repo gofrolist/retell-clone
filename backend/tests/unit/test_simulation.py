@@ -308,6 +308,54 @@ async def test_a_hangup_still_lets_the_agent_finish_its_wrap_up_calls(monkeypatc
     assert "do NOT speak" in model.prompts[3]
 
 
+async def test_a_call_the_agent_never_spoke_on_gets_no_wrap_up_turn(monkeypatch):
+    """Nothing to finish: a free tool-only turn would let "the agent calls X"
+    pass for a call in which the agent did nothing at all."""
+    sim, model = make_simulator(
+        monkeypatch,
+        [{"action": "hangup", "reason": "wrong number"}],
+        start_speaker="user",
+    )
+    transcript = await sim.run()
+    assert transcript == []
+    assert len(model.prompts) == 1
+
+
+async def test_an_empty_user_reply_is_not_reported_as_a_hangup(monkeypatch):
+    """A harness glitch must not reach the judge dressed as a scenario fact."""
+    sim, _ = make_simulator(
+        monkeypatch,
+        [
+            {"action": "speak", "content": "Hello?"},
+            {"action": "speak", "content": "Hi there."},
+            {"action": "speak", "content": "   "},  # the simulator produced nothing
+        ],
+    )
+    await sim.run()
+    assert sim.ending == "the harness got no reply from the simulated caller"
+
+
+async def test_a_failed_wrap_up_turn_still_leaves_a_gradeable_run(monkeypatch):
+    """The conversation is already complete; one bad extra model call must not
+    turn its verdicts into an `error` row."""
+    sim, _ = make_simulator(
+        monkeypatch,
+        [
+            {"action": "speak", "content": "Cancel my subscription, please."},
+            {"action": "speak", "content": "Of course. Take care."},
+            {"action": "hangup", "reason": "goal met"},
+            "not json at all",  # the wrap-up call falls over
+        ],
+    )
+    transcript = await sim.run()
+    assert [t["content"] for t in transcript] == [
+        "Hi, this is Clara.",
+        "Cancel my subscription, please.",
+        "Of course. Take care.",
+    ]
+    assert sim.ending == "the caller hung up"
+
+
 async def test_an_agent_that_hangs_up_itself_gets_no_wrap_up_turn(monkeypatch):
     """It already ran what it meant to run — a second bite would let an agent
     that forgot the disposition log look like one that remembered."""
@@ -387,13 +435,15 @@ async def test_run_stops_at_the_turn_cap(monkeypatch):
         {"action": "speak", "content": "and another thing"},
         {"action": "speak", "content": "I see"},
     ] * simulation.MAX_TURNS
-    sim, _ = make_simulator(monkeypatch, [*chatter, {"action": "done"}])
+    sim, model = make_simulator(monkeypatch, chatter)
     transcript = await sim.run()
     # greeting + MAX_TURNS user/agent pairs, and nothing said after the cap.
     assert len(transcript) == 1 + 2 * simulation.MAX_TURNS
     # The judge is told, so a criterion the call never reached is not read as
-    # the agent declining to do it.
+    # the agent declining to do it. A call cut off mid-conversation gets no
+    # wrap-up turn either: it never reached an ending to wrap up.
     assert sim.ending == "the harness hit its turn limit before the call ended"
+    assert len(model.prompts) == 2 * simulation.MAX_TURNS
 
 
 # ------------------------------------------------------------------ judging

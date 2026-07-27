@@ -192,7 +192,11 @@ class _SystemVariables(dict):
         default_timezone: str | None = None,
     ) -> None:
         super().__init__(base)
-        self.update({k: v for k, v in (overrides or {}).items() if v})
+        # Overrides are stored verbatim, empty ones included: a session fact
+        # that is genuinely empty resolves to nothing, which is what the worker
+        # does with the numbers on a web call. A fallback with no value is
+        # dropped so the placeholder stays literal instead of resolving to "".
+        self.update(overrides or {})
         self._fallbacks = {k: v for k, v in (fallbacks or {}).items() if v}
         self._start_timestamp_ms = start_timestamp_ms
         # Agent "Current Time Awareness"; an unknown name falls back to the
@@ -268,14 +272,19 @@ class CallVariables(_SystemVariables):
 
     The simulation harness plays a phone call that no `calls` row and no worker
     ever back, so the call-scoped placeholders a live call resolves —
-    ``{{call_id}}``, Retell's dotted ``{{call.call_id}}``, ``{{direction}}``,
-    ``{{call_type}}`` — have to come from here instead. Prompts pass them
-    straight into tool arguments (``retell_call_id={{call.call_id}}``), so
-    leaving them literal is visible in every mocked tool call.
+    ``{{call_id}}``, ``{{call_type}}`` and Retell's dotted ``call.*`` family —
+    have to come from here instead. Prompts pass them straight into tool
+    arguments (``retell_call_id={{call.call_id}}``), so leaving them literal is
+    visible in every mocked tool call.
 
-    ``{{user_number}}`` / ``{{agent_number}}`` are deliberately absent: a
-    simulated call has no phone numbers, and inventing a pair would read as
-    real data in a transcript an operator is trying to trust.
+    The whole dotted family is answered, numbers included, because that is what
+    the worker stores; a simulated call has no phone leg, so they answer empty
+    exactly as they do on a web call. What is *not* answered is anything that
+    would amount to inventing a fact: ``{{direction}}`` (which way a simulated
+    call was placed is not knowable — `start_speaker` describes who talks
+    first, not who dialled) and ``{{user_number}}`` / ``{{agent_number}}``.
+    Those stay literal unless the scenario sets them, which is how every other
+    unknown behaves here.
 
     Precedence copies the worker exactly, including the asymmetry: the dotted
     ``call.*`` keys are stored on top of the scenario's variables, while the
@@ -289,18 +298,18 @@ class CallVariables(_SystemVariables):
         base: Mapping[str, Any],
         *,
         call_id: str = "",
-        direction: str = "",
         start_timestamp_ms: int | None = None,
         default_timezone: str | None = None,
     ) -> None:
         super().__init__(
             base,
-            overrides={"call.call_id": call_id, "call.direction": direction},
-            fallbacks={
-                "call_id": call_id,
-                "call_type": "phone_call",
-                "direction": direction,
+            overrides={
+                "call.call_id": call_id,
+                "call.direction": "",
+                "call.from_number": "",
+                "call.to_number": "",
             },
+            fallbacks={"call_id": call_id, "call_type": "phone_call"},
             start_timestamp_ms=start_timestamp_ms,
             default_timezone=default_timezone,
         )

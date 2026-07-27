@@ -510,8 +510,14 @@ class _Simulator:
             if not await self._invoke_tool(action):
                 return
 
-    async def _user_turn(self) -> bool:
-        """Let the simulated user speak. Returns False if they hung up."""
+    async def _user_turn(self) -> str | None:
+        """Let the simulated user speak. Returns why the call ended, or None.
+
+        A hang-up and a user simulator that produced nothing to say both end the
+        run, but they are not the same fact about the scenario: only one of them
+        is something the caller did, and only that one earns the agent a wrap-up
+        turn.
+        """
         action = await self._json_call(
             self._settings.analysis_model,
             _USER_PROMPT.format(
@@ -521,12 +527,12 @@ class _Simulator:
             0.7,
         )
         if action.get("action") == "hangup":
-            return False
+            return "the caller hung up"
         content = str(action.get("content") or "").strip()
         if not content:
-            return False
+            return "the harness got no reply from the simulated caller"
         self.transcript.append({"role": "user", "content": content})
-        return True
+        return None
 
     async def run(self) -> list[dict[str, Any]]:
         # Retell semantics: `start_speaker == "user"` means the agent waits for
@@ -539,15 +545,30 @@ class _Simulator:
                 return self.transcript
         self.ending = "the harness hit its turn limit before the call ended"
         for _ in range(MAX_TURNS):
-            if not await self._user_turn():
-                self.ending = "the caller hung up"
+            ended = await self._user_turn()
+            if ended is not None:
+                self.ending = ended
                 break
             if not await self._agent_turn():
                 # The agent hung up (or transferred) itself: it already ran
                 # whatever it meant to run, so there is nothing to finish.
                 self.ending = "the agent ended it"
                 return self.transcript
-        await self._wrap_up_turn()
+        # Only a caller who hung up on an agent that was talking leaves work
+        # unfinished. A run that ran out of turns was cut off mid-conversation,
+        # and one where the agent never spoke has nothing to wrap up — handing
+        # either a free tool-only turn would pass "the agent logs the outcome"
+        # for a call the agent never actually closed.
+        if self.ending == "the caller hung up" and any(
+            item["role"] == "agent" for item in self.transcript
+        ):
+            # Best-effort, like everything else here: the conversation is
+            # already complete and gradeable, so a failure on this one extra
+            # model call must not turn a finished run into `error`.
+            try:
+                await self._wrap_up_turn()
+            except Exception:
+                log.exception("simulation: the wrap-up turn failed; grading the call as it is")
         return self.transcript
 
     async def judge(self) -> tuple[str, list[dict[str, Any]]]:
@@ -668,14 +689,12 @@ async def _run_one(factory: Any, job_id: str) -> str:
         # literal placeholder. System variables come from CallVariables for the
         # same reason: a prompt that reads {{current_time}} has to be told the
         # time, or every branch behind it is tested in the one state a live call
-        # never runs in. Start speaker stands in for the direction a simulated
-        # call has no phone leg to report: the agent opening means it dialled.
+        # never runs in.
         start_speaker = str(llm.start_speaker or "agent")
         variables = {str(k): str(v) for k, v in (snapshot.get("dynamic_variables") or {}).items()}
         merged = CallVariables(
             {**(llm.default_dynamic_variables or {}), **variables},
             call_id=new_call_id(),
-            direction="inbound" if start_speaker == "user" else "outbound",
             start_timestamp_ms=now_ms(),
             default_timezone=agent.timezone if agent else None,
         )
