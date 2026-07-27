@@ -12,10 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import require_internal_token
 from ..db import get_session, session_factory
-from ..models import Agent, Call, Contact, PhoneNumber, now_ms
+from ..models import Agent, Call, Contact, KnowledgeBase, PhoneNumber, now_ms
 from ..schemas import agent_to_dict, coerce_dynamic_variables, llm_to_dict
 from ..services import inbound as inbound_svc
-from ..services import versions, webhooks
+from ..services import knowledge, versions, webhooks
 from ..services.analysis import analyze_call
 from ..services.metrics import CALL_DURATION, CALLS_ONGOING, CALLS_TOTAL
 from ..services.recordings import sign_recording_url
@@ -194,6 +194,57 @@ async def resolve_inbound(
     session.add(call)
     await session.commit()
     return await _call_config(call, session)
+
+
+class KnowledgeQueryRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    query: str
+    # The KBs the agent's tool config points at. Omitted (or empty) falls back
+    # to the knowledge bases attached to the LLM version this call is pinned
+    # to, which is where the dashboard's Knowledge Base section writes them.
+    knowledge_base_ids: list[str] | None = None
+    category: str | None = None
+    top_k: int | None = None
+
+
+@router.post("/calls/{call_id}/knowledge-base/query")
+async def query_knowledge_base(
+    call_id: str, body: KnowledgeQueryRequest, session: AsyncSession = Depends(get_session)
+):
+    """Retrieval behind the worker's kb_lookup tool (docs/INTERNAL_API.md).
+
+    Scoped by call_id rather than taking a workspace: the requested ids come
+    from user-editable tool config, so an unscoped lookup would let one
+    workspace read another's knowledge bases.
+    """
+    call = await session.get(Call, call_id)
+    if call is None:
+        raise HTTPException(404, detail="Call not found")
+
+    requested = [str(i) for i in (body.knowledge_base_ids or []) if i]
+    if not requested:
+        live = await session.get(Agent, call.agent_id)
+        if live is not None:
+            _, llm, _ = await versions.resolve(session, live, call.agent_version, strict=False)
+            if llm is not None:
+                requested = [str(i) for i in (llm.knowledge_base_ids or []) if i]
+    if not requested:
+        return {"query": body.query, "results": [], "skipped_sources": []}
+
+    rows = (
+        await session.scalars(
+            select(KnowledgeBase).where(
+                KnowledgeBase.workspace_id == call.workspace_id,
+                KnowledgeBase.knowledge_base_id.in_(requested),
+            )
+        )
+    ).all()
+    return knowledge.search(
+        rows,
+        body.query,
+        category=body.category,
+        top_k=body.top_k or knowledge.DEFAULT_TOP_K,
+    )
 
 
 class CallEventRequest(BaseModel):

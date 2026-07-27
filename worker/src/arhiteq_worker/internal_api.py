@@ -72,6 +72,36 @@ class InternalAPI:
             raise InternalAPIError(f"inbound resolve for {to_number} -> {resp.status_code}")
         return resp.json()
 
+    async def search_knowledge_base(
+        self,
+        call_id: str,
+        query: str,
+        *,
+        knowledge_base_ids: list[str] | None = None,
+        category: str | None = None,
+        top_k: int | None = None,
+    ) -> dict[str, Any]:
+        """Retrieval behind the kb_lookup tool (docs/INTERNAL_API.md).
+
+        call_id scopes the lookup to the call's workspace; the control plane
+        falls back to the LLM's attached knowledge bases when no ids are sent.
+        """
+        payload: dict[str, Any] = {"query": query}
+        if knowledge_base_ids:
+            payload["knowledge_base_ids"] = knowledge_base_ids
+        if category:
+            payload["category"] = category
+        if top_k:
+            payload["top_k"] = top_k
+        resp = await self._http.post(
+            f"{self._base_url}/internal/calls/{call_id}/knowledge-base/query",
+            json=payload,
+            headers=self._headers,
+        )
+        if resp.status_code != 200:
+            raise InternalAPIError(f"knowledge base query for {call_id} -> {resp.status_code}")
+        return resp.json()
+
     async def post_event(self, call_id: str, payload: dict[str, Any]) -> None:
         """Lifecycle/streaming event; failures are logged, never fatal."""
         try:

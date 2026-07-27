@@ -13,6 +13,7 @@ import {
   CalendarCheck,
   CalendarSearch,
   Hash,
+  Library,
   MessageSquareText,
   Pencil,
   PhoneForwarded,
@@ -37,6 +38,7 @@ const TOOL_KINDS = [
   "send_sms",
   "extract_dynamic_variable",
   "agent_swap",
+  "kb_lookup",
 ] as const;
 type ToolKind = (typeof TOOL_KINDS)[number];
 
@@ -50,6 +52,7 @@ const ICON_FOR_KIND: Record<ToolKind, LucideIcon> = {
   send_sms: MessageSquareText,
   extract_dynamic_variable: Variable,
   agent_swap: ArrowLeftRight,
+  kb_lookup: Library,
 };
 const iconFor = (t: Tool): LucideIcon => ICON_FOR_KIND[t.type as ToolKind] ?? Wrench;
 
@@ -508,6 +511,56 @@ function PressDigitForm({
   );
 }
 
+function KbLookupForm({
+  initial,
+  takenNames,
+  onSave,
+  onCancel,
+}: {
+  initial?: Tool;
+  takenNames: string[];
+  onSave: (tool: Tool) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(initial?.name ?? "kb_lookup");
+  const [description, setDescription] = useState(initial?.description ?? "");
+  const [error, setError] = useState<string | null>(null);
+
+  const save = () => {
+    const trimmedName = name.trim();
+    const nameErr = nameError(trimmedName, takenNames);
+    if (nameErr) return setError(nameErr);
+    onSave({
+      ...initial,
+      type: "kb_lookup",
+      name: trimmedName,
+      description: description.trim(),
+    });
+  };
+
+  return (
+    <FormShell
+      error={error}
+      saveLabel={initial ? "Save" : "Add function"}
+      onSave={save}
+      onCancel={onCancel}
+    >
+      <NameDescriptionFields
+        name={name}
+        setName={setName}
+        namePlaceholder="kb_lookup"
+        description={description}
+        setDescription={setDescription}
+        descriptionPlaceholder="Look up a factual answer in the knowledge base. Use for any factual question instead of answering from memory."
+      />
+      <p className="text-xs text-sub">
+        Searches every knowledge base attached in the Knowledge Base section above. Attach at least
+        one, or this function has nothing to search.
+      </p>
+    </FormShell>
+  );
+}
+
 function CalendarForm({
   kind,
   initial,
@@ -950,6 +1003,7 @@ function AddMenu({
       label: "Extract Dynamic Variables",
       icon: ICON_FOR_KIND.extract_dynamic_variable,
     },
+    { kind: "kb_lookup", label: "Knowledge Base Lookup", icon: ICON_FOR_KIND.kb_lookup },
   ];
 
   return (
@@ -1151,6 +1205,15 @@ export default function FunctionsSection({
       {form?.kind === "agent_swap" && (
         <AgentSwapForm
           key={`swap-${form.index ?? "new"}`}
+          initial={editing}
+          takenNames={takenNames}
+          onSave={saveTool}
+          onCancel={() => setForm(null)}
+        />
+      )}
+      {form?.kind === "kb_lookup" && (
+        <KbLookupForm
+          key={`kb-${form.index ?? "new"}`}
           initial={editing}
           takenNames={takenNames}
           onSave={saveTool}

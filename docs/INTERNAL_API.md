@@ -93,6 +93,24 @@ unknown agents, unknown calls, or agents outside the calling call's
 workspace (agent_id comes from user-editable tool config). The worker
 refuses to swap when `llm` is null (it would wipe the live prompt/tools).
 
+### `POST /internal/calls/{call_id}/knowledge-base/query`
+Retrieval behind the `kb_lookup` tool.
+Body: `{"query": "…", "knowledge_base_ids": ["know_…"]?, "category": "…"?,
+"top_k": 3?}` → `{"query", "results": [{"title", "content", "source_id",
+"knowledge_base_id", "knowledge_base_name", "score"}], "skipped_sources": […]}`.
+
+`knowledge_base_ids` omitted (or empty) falls back to the ids on the LLM
+version this call is pinned to. Like agent config, `call_id` scopes the
+lookup to the call's workspace — the ids arrive from user-editable tool
+config, so ids belonging to another workspace simply match nothing. `404`
+for an unknown call.
+
+Ranking is lexical BM25 over `type: "text"` sources, chunked per lookup
+(`services/knowledge.py`); URL and uploaded-document sources have no
+extracted text yet and come back under `skipped_sources`. `results` is empty
+when nothing matched, which the worker turns into an explicit
+"say you don't know" instruction rather than an error.
+
 On finalize the control plane: persists, fires `call_ended` (signed), runs
 Gemini post-call analysis (summary/call_summary, user_sentiment,
 call_successful, in_voicemail — worker AMD verdict wins if set), then fires

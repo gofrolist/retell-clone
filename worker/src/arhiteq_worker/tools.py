@@ -127,6 +127,21 @@ class CallControl(Protocol):
     async def agent_swap(self, agent_id: str, entry: Mapping[str, Any]) -> str: ...
 
 
+class KnowledgeSearch(Protocol):
+    """The slice of InternalAPI the kb_lookup tool needs (kept narrow so the
+    tool is testable without the control plane)."""
+
+    async def search_knowledge_base(
+        self,
+        call_id: str,
+        query: str,
+        *,
+        knowledge_base_ids: list[str] | None = None,
+        category: str | None = None,
+        top_k: int | None = None,
+    ) -> dict[str, Any]: ...
+
+
 def tool_timeout_s(entry: Mapping[str, Any]) -> float:
     """Per-tool timeout: Retell timeout_ms clamped to 1s..600s, else 10s."""
     raw = entry.get("timeout_ms")
@@ -861,6 +876,124 @@ def _make_agent_swap_tool(entry: dict[str, Any], *, control: CallControl, state:
     return function_tool(handler, raw_schema=schema)
 
 
+# Mirrors arhiteq_api.services.knowledge.NO_RESULTS_MESSAGE — the simulation
+# harness shapes kb_lookup results the same way, so a case graded there matches
+# what a live call feeds the model.
+KB_LOOKUP_NO_RESULTS = (
+    "No matching information in the knowledge base. Tell the user you don't have "
+    "that information rather than guessing."
+)
+
+
+def kb_lookup_parameters(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Argument schema for a kb_lookup tool.
+
+    A declared schema wins so a consumer's own narrowing survives — the imported
+    Retell specs constrain `category` to an enum, and dropping it would lose the
+    hint that steers retrieval. `query` is force-added when a declaration omits
+    it, since there is nothing to search without one.
+    """
+    declared = entry.get("parameters")
+    if isinstance(declared, Mapping) and declared.get("properties"):
+        schema = json.loads(json.dumps(declared))  # copy: the entry is shared config
+        properties = schema["properties"]
+        if "query" not in properties:
+            properties["query"] = {
+                "type": "string",
+                "description": "The question to look up, paraphrased if needed.",
+            }
+        required = [str(r) for r in (schema.get("required") or [])]
+        if "query" not in required:
+            required.append("query")
+        schema["required"] = required
+        schema.setdefault("type", "object")
+        return schema
+    return {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The question to look up, paraphrased if needed.",
+            },
+            "category": {
+                "type": "string",
+                "description": "Optional topic to narrow the search.",
+            },
+        },
+        "required": ["query"],
+    }
+
+
+def kb_lookup_result(payload: Mapping[str, Any]) -> str:
+    """Retrieval payload → the tool result string the model reads.
+
+    Scores and knowledge-base plumbing are dropped: the model only needs the
+    text and where it came from, and an empty hit list becomes an explicit
+    instruction not to invent an answer.
+    """
+    results = [r for r in (payload.get("results") or []) if isinstance(r, Mapping)]
+    if not results:
+        return json.dumps({"results": [], "message": KB_LOOKUP_NO_RESULTS})
+    return json.dumps(
+        {
+            "results": [
+                {"title": str(r.get("title") or ""), "content": str(r.get("content") or "")}
+                for r in results
+            ]
+        }
+    )
+
+
+def _make_kb_lookup_tool(
+    entry: dict[str, Any],
+    *,
+    knowledge: KnowledgeSearch,
+    call_id: str,
+    knowledge_base_ids: list[str],
+    variables: Mapping[str, Any],
+    state: CallState,
+) -> Any:
+    from livekit.agents import RunContext, function_tool
+
+    name = entry.get("name") or "kb_lookup"
+    # A tool may point at a subset of the workspace's knowledge bases; with
+    # none configured the control plane searches everything attached to the LLM.
+    configured = [
+        str(i) for i in (entry.get("knowledge_base_ids") or []) if i
+    ] or knowledge_base_ids
+    top_k = entry.get("top_k")
+    schema = {
+        "type": "function",
+        "name": name,
+        "description": resolve_template(entry.get("description") or "", variables)
+        or "Look up a factual answer in the knowledge base. Use this for any factual "
+        "question instead of answering from memory.",
+        "parameters": kb_lookup_parameters(entry),
+    }
+
+    async def handler(raw_arguments: dict[str, object], context: RunContext) -> str:
+        query = resolve_template(str(raw_arguments.get("query") or ""), variables).strip()
+        category = str(raw_arguments.get("category") or "").strip() or None
+
+        async def body() -> str:
+            if not query:
+                raise ToolConfigError("kb_lookup needs a query")
+            payload = await knowledge.search_knowledge_base(
+                call_id,
+                query,
+                knowledge_base_ids=list(configured),
+                category=category,
+                top_k=int(top_k)
+                if isinstance(top_k, int) and not isinstance(top_k, bool)
+                else None,
+            )
+            return kb_lookup_result(payload)
+
+        return await _run_tool(name, state, {"query": query, "category": category}, body)
+
+    return function_tool(handler, raw_schema=schema)
+
+
 def build_tools(
     general_tools: list[dict[str, Any]],
     *,
@@ -870,14 +1003,22 @@ def build_tools(
     control: CallControl,
     state: CallState,
     call_info: Mapping[str, Any] | None = None,
+    knowledge: KnowledgeSearch | None = None,
+    call_id: str = "",
+    knowledge_base_ids: list[str] | None = None,
 ) -> list[Any]:
     """Convert llm.general_tools declarations into livekit function tools.
 
     Dispatch: built-ins by declared ``type`` (Retell built-ins carry a type
     field); anything with a ``url`` is a customer HTTP tool — including
     customer tools *named* end_call that post to an endpoint
-    (RETELL_INTEGRATION_MAP.md quirk). Unsupported built-ins (kb_lookup, …)
-    are skipped with a log line.
+    (RETELL_INTEGRATION_MAP.md quirk). Unsupported built-ins are skipped with
+    a log line.
+
+    ``knowledge``/``call_id``/``knowledge_base_ids`` back the kb_lookup tool;
+    without a ``knowledge`` client (unit tests, chat sessions) a declared
+    kb_lookup is skipped rather than handed to the model as a tool that always
+    errors.
     """
     tools: list[Any] = []
     for entry in general_tools or []:
@@ -906,6 +1047,20 @@ def build_tools(
             )
         elif tool_type == "agent_swap":
             tools.append(_make_agent_swap_tool(entry, control=control, state=state))
+        elif tool_type == "kb_lookup":
+            if knowledge is None or not call_id:
+                logger.warning("skipping kb_lookup %r: no knowledge client", entry.get("name"))
+                continue
+            tools.append(
+                _make_kb_lookup_tool(
+                    entry,
+                    knowledge=knowledge,
+                    call_id=call_id,
+                    knowledge_base_ids=list(knowledge_base_ids or []),
+                    variables=variables,
+                    state=state,
+                )
+            )
         elif entry.get("url"):
             tools.append(
                 _make_http_tool(
@@ -918,7 +1073,6 @@ def build_tools(
                 )
             )
         else:
-            # TODO: kb_lookup → Arhiteq knowledge-base retrieval feature.
             logger.warning(
                 "skipping unsupported tool %r (type=%s, no url)",
                 entry.get("name"),

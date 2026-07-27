@@ -82,7 +82,11 @@ Execution contract:
   `log_churn_reason` specs REQUIRE `retell_call_id={{call.call_id}}`.
 - Feed the JSON response back to the model as the tool result.
 - `kb_lookup` is a Retell built-in KB tool (no URL) → Arhiteq knowledge-base
-  retrieval feature.
+  retrieval. The worker resolves it against our own knowledge bases via
+  `POST /internal/calls/{call_id}/knowledge-base/query` rather than posting to
+  a consumer endpoint; the declared `category` enum is kept because it steers
+  the search. Which bases it reads comes from the LLM's `knowledge_base_ids`
+  (dashboard → Knowledge Base), not from the tool declaration.
 - Quirks: `log_outcome` and `end_call` both post to `/end-call`;
   `set_evening_call_preference` posts to `/set-evening-preference`;
   schema drift between agent folders is intentional (keep per-agent copies).

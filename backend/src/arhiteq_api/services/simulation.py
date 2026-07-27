@@ -51,12 +51,14 @@ from ..ids import new_call_id
 from ..models import (
     TEST_RUN_TERMINAL_STATUSES,
     Agent,
+    KnowledgeBase,
     RetellLLM,
     TestCaseBatchJob,
     TestCaseDefinition,
     TestCaseJob,
     now_ms,
 )
+from . import knowledge
 from .gemini import build_genai_client, genai_credentials_available, is_live_model
 from .template_variables import (
     DEFAULT_TIMEZONE,
@@ -508,6 +510,7 @@ class _Simulator:
         begin_message: str | None,
         start_speaker: str,
         variables: Mapping[str, Any] | None = None,
+        knowledge_bases: list[knowledge.KnowledgeBaseView] | None = None,
     ) -> None:
         self._client = build_genai_client(settings)
         self._settings = settings
@@ -520,6 +523,9 @@ class _Simulator:
         # The same mapping the prompt was resolved from, kept so tool-call
         # arguments resolve too — a live call runs resolve_deep over them.
         self._variables: Mapping[str, Any] = variables or {}
+        # Loaded before the run so kb_lookup can be answered for real without a
+        # database session open for the length of a simulated call.
+        self._knowledge_bases = knowledge_bases or []
         self.transcript: list[dict[str, Any]] = []
         # How the call finished, in the judge's and the wrap-up prompt's words.
         # Set by run(); the default covers a transcript nothing ever ran.
@@ -582,6 +588,23 @@ class _Simulator:
             lines.extend(facts)
         return "\n".join(lines) if lines else "(nothing beyond the call so far)"
 
+    def _knowledge_lookup(self, args: dict[str, Any]) -> str:
+        """Real retrieval for a kb_lookup call, shaped like the worker's result."""
+        query = str(args.get("query") or "").strip()
+        if not query:
+            return json.dumps({"error": "kb_lookup needs a query"})
+        found = knowledge.search(
+            self._knowledge_bases,
+            query,
+            category=str(args.get("category") or "").strip() or None,
+        )
+        results = [
+            {"title": r["title"], "content": r["content"]} for r in found.get("results") or []
+        ]
+        if not results:
+            return json.dumps({"results": [], "message": knowledge.NO_RESULTS_MESSAGE})
+        return json.dumps({"results": results}, ensure_ascii=False)
+
     async def _tool_result(
         self, tool: dict[str, Any] | None, name: str, args: dict[str, Any]
     ) -> str:
@@ -589,6 +612,14 @@ class _Simulator:
         mock = match_tool_mock(self._definition.get("tool_mocks"), name, args)
         if mock is not None:
             return str(mock.get("output") or "")
+        if tool is not None and tool["type"] == "kb_lookup":
+            # The one tool that is run for real. It only reads, so it is as safe
+            # against a production config as a mock — and inventing its output
+            # would defeat the point: kb_lookup exists so the agent answers from
+            # the knowledge base instead of from memory, and a criterion about
+            # that can only be graded against what the knowledge base actually
+            # says. A case that wants a miss can still pin an explicit mock above.
+            return self._knowledge_lookup(args)
         if tool is None:
             # The agent invented a tool it does not have. Say so rather than
             # fabricating success — the judge should see the mistake.
@@ -846,6 +877,28 @@ def definition_snapshot(definition: TestCaseDefinition) -> dict[str, Any]:
     }
 
 
+async def _load_knowledge_bases(
+    session: Any, llm: RetellLLM | None
+) -> list[knowledge.KnowledgeBaseView]:
+    """The knowledge bases attached to `llm`, detached for use after the session.
+
+    Scoped by the LLM's own workspace, the same rows a live call's kb_lookup
+    would reach.
+    """
+    ids = [str(i) for i in ((llm.knowledge_base_ids if llm else None) or []) if i]
+    if not ids or llm is None:
+        return []
+    rows = (
+        await session.scalars(
+            select(KnowledgeBase).where(
+                KnowledgeBase.workspace_id == llm.workspace_id,
+                KnowledgeBase.knowledge_base_id.in_(ids),
+            )
+        )
+    ).all()
+    return [knowledge.KnowledgeBaseView.of(row) for row in rows]
+
+
 async def _run_one(factory: Any, job_id: str) -> str:
     """Execute one test run to a terminal status, committing as it goes."""
     settings = get_settings()
@@ -861,6 +914,7 @@ async def _run_one(factory: Any, job_id: str) -> str:
         batch = await session.get(TestCaseBatchJob, job.test_case_batch_job_id)
         llm = await session.get(RetellLLM, batch.llm_id) if batch and batch.llm_id else None
         agent = await session.get(Agent, batch.agent_id) if batch and batch.agent_id else None
+        knowledge_bases = await _load_knowledge_bases(session, llm)
 
     status: str = "error"
     results: list[dict[str, Any]] = []
@@ -918,6 +972,7 @@ async def _run_one(factory: Any, job_id: str) -> str:
             begin_message=begin_message,
             start_speaker=start_speaker,
             variables=merged,
+            knowledge_bases=knowledge_bases,
         )
         await simulator.run()
         status, results = await simulator.judge()

@@ -1,4 +1,7 @@
-"""Knowledge base CRUD. Storage only — retrieval/embedding is TODO.
+"""Knowledge base CRUD.
+
+Retrieval lives in `services/knowledge.py` and is reached through the
+worker's `kb_lookup` tool; these endpoints only store what it searches.
 
 Retell's create/add-sources endpoints are multipart (they accept file
 uploads); JSON bodies are also accepted for convenience since the shapes are
