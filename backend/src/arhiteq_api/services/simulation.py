@@ -66,8 +66,12 @@ log = logging.getLogger(__name__)
 # hangs up) can't burn tokens forever. Turns are user+agent exchanges.
 MAX_TURNS = 16
 # Consecutive tool calls the agent may make inside one turn before the harness
-# forces it to speak — guards against a tool-call loop.
-MAX_TOOL_CALLS_PER_TURN = 4
+# forces it to speak — guards against a tool-call loop. The last iteration is
+# spent on the spoken line, so a turn holds this many calls minus one and still
+# says something; the agent is asked to chain the calls one utterance earns, so
+# this sits above the number of per-fact loggers an agent plausibly fires at
+# once rather than at the loop-guard minimum.
+MAX_TOOL_CALLS_PER_TURN = 6
 # How many simulated calls run at once across the whole process. A batch may
 # hold up to 1000 cases and each case is dozens of model round-trips, so this
 # is what stops one POST — or ten — from saturating the Gemini quota.
@@ -88,7 +92,9 @@ NEXT action only — never write the user's lines, and never mention this harnes
 One action per reply, but your turn ends only when you speak, and the caller
 hears nothing until then: when the last thing they said calls for more than one
 tool, make each of those calls in its own reply first, and say your line after
-the last of them.
+the last of them. A call that hangs up or hands the call to someone else is the
+exception — it takes the line down, so say what you have to say before it, never
+after.
 {tools}
 Reply with STRICT JSON (no markdown), exactly one of:
 {{"action": "speak", "content": "<what the agent says next>"}}

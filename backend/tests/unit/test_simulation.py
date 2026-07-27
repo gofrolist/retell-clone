@@ -238,8 +238,25 @@ async def test_one_utterance_can_draw_several_tool_calls_before_the_agent_speaks
     transcript = await sim.run()
     assert [t["name"] for t in transcript if t["role"] == "tool_call_invocation"] == list(tools)
     assert transcript[-1] == {"role": "agent", "content": "Lovely — I've noted both."}
-    # Chaining is asked for in the agent's own prompt, not left to the model.
+    # Chaining is asked for in the agent's own prompt, not left to the model —
+    # including the one call it must not chain behind, since a turn that reaches
+    # end_call never comes back to say the line it was saving for afterwards.
     assert "turn ends only when you speak" in model.prompts[1]
+    assert "say what you have to say before it" in model.prompts[1]
+
+
+async def test_a_farewell_saved_until_after_end_call_would_never_be_spoken(monkeypatch):
+    """Why the chaining rule carves out the tools that take the line down."""
+    sim, _ = make_simulator(
+        monkeypatch,
+        [
+            {"action": "speak", "content": "No, that's all."},
+            {"action": "tool_call", "tool_name": "end_call", "arguments": {}},
+        ],
+    )
+    transcript = await sim.run()
+    assert [t["role"] for t in transcript][-2:] == ["tool_call_invocation", "tool_call_result"]
+    assert sim.ending == "the agent ended it"
 
 
 async def test_unmocked_tool_result_is_synthesized(monkeypatch):
