@@ -83,6 +83,10 @@ STALE_BATCH_MS = 60 * 60 * 1000
 # Tool types that hang up when called: reaching one ends the simulated call.
 _TERMINAL_TOOL_TYPES = ("end_call", "transfer_call", "agent_swap")
 
+# A prompt that reads any of the time family can be put at a chosen moment by
+# pinning {{current_time}}, so generation offers it that variable.
+_READS_THE_CLOCK = re.compile(r"\{\{\s*current_(?:time|hour|calendar)")
+
 _AGENT_PROMPT = """\
 {general_prompt}
 
@@ -719,6 +723,10 @@ async def _run_one(factory: Any, job_id: str) -> str:
             call_id=new_call_id(),
             start_timestamp_ms=now_ms(),
             default_timezone=agent.timezone if agent else None,
+            # Only a simulated call may pin its clock: a case that says it is
+            # testing the morning dose window has to be graded in the morning,
+            # whatever hour the operator pressed Run at.
+            pin_clock=True,
         )
         general_prompt = resolve_template(llm.general_prompt or "", merged)
         begin_message = resolve_template(llm.begin_message or "", merged) or None
@@ -902,14 +910,23 @@ async def generate_test_cases(llm: RetellLLM, count: int) -> list[dict[str, Any]
     names = dict.fromkeys(
         prompt_variables(llm.general_prompt or "") + prompt_variables(llm.begin_message or "")
     )
-    variables = (
-        "\n".join(
-            f"- {{{{{name}}}}}"
-            + (f' (agent default: "{str(defaults[name])[:60]}")' if name in defaults else "")
-            for name in names
+    lines = [
+        f"- {{{{{name}}}}}"
+        + (f' (agent default: "{str(defaults[name])[:60]}")' if name in defaults else "")
+        for name in names
+    ]
+    # `current_time` is settable but usually not *listed*: a prompt asks the
+    # time as {{current_time_{{user_timezone}}}}, and `prompt_variables` reports
+    # the inner name only. Without this line the clock instruction below names a
+    # key the model was told not to invent, which is exactly the prompt shape
+    # that needs it most.
+    if _READS_THE_CLOCK.search(f"{llm.general_prompt or ''}\n{llm.begin_message or ''}"):
+        lines.append(
+            "- {{current_time}} (settable: pins the clock the whole call is "
+            "read on, including the {{current_time_<zone>}} and {{current_hour}} "
+            "forms this prompt uses)"
         )
-        or "(none — this prompt reads no dynamic variables)"
-    )
+    variables = "\n".join(lines) or "(none — this prompt reads no dynamic variables)"
     client = build_genai_client(settings)
     resp = await client.aio.models.generate_content(
         model=settings.analysis_model,

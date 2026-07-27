@@ -14,11 +14,16 @@ ones (``{{chat_id}}``); :class:`CallVariables` adds the call-scoped ones
 (``{{call_id}}``, ``{{call.call_id}}``, ``{{direction}}``) for the simulation
 harness, which plays a voice call without a `calls` row behind it.
 
-Setting ``current_time`` to a timestamp *pins the clock*: the whole time family
-is then computed from that instant rather than from now. This is the one place
-the mirror is deliberately one-way — the worker computes the time family at
-lookup so a live ``{{current_time}}`` advances mid-call, which is right for a
-call that is really happening and useless for a simulation of one. A prompt
+A session built with ``pin_clock`` reads ``current_time`` as *the clock*: the
+whole time family is computed from that instant rather than from now. Only the
+simulation harness asks for it — a customer who sends ``current_time`` on a
+real chat or call means a string for ``{{current_time}}`` and keeps getting
+exactly that, because moving ``{{current_hour}}`` to a moment they never set
+would make one prompt read differently here than on the call the worker serves.
+The pin is also the one place the mirror is deliberately one-way: the worker
+computes the time family at lookup so a live ``{{current_time}}`` advances
+mid-call, which is right for a call that is really happening and useless for a
+simulation of one. A prompt
 branch gated on "within an hour of the 8am dose" is otherwise reachable only by
 running the case between 7 and 9 in the morning, so a case covering it fails on
 the hour it was run rather than on the agent. A value that is not a timestamp
@@ -126,12 +131,16 @@ def _utcnow() -> datetime:
 # Timestamps a pinned {{current_time}} may be written as. Seconds and the "T"
 # are optional so an operator can type the obvious thing; anything else is not
 # a clock and stays a plain string.
+#
+# A date alone is deliberately not one of them. It parses happily — to
+# midnight — and a pin at 00:00 puts every time-gated branch out of reach at
+# once, which is worse than not pinning: someone writing "2026-07-27" means
+# *the day*, and would get a call that happens in the middle of the night.
 _CLOCK_FORMATS = (
     "%Y-%m-%dT%H:%M:%S",
     "%Y-%m-%dT%H:%M",
-    "%Y-%m-%d %H:%M:%S",
     "%Y-%m-%d %H:%M",
-    "%Y-%m-%d",
+    "%Y-%m-%d %H:%M:%S",
 )
 
 
@@ -149,6 +158,11 @@ def parse_clock(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()
+    # `fromisoformat` takes a bare date too, so the time is required here rather
+    # than left to the format list — see `_CLOCK_FORMATS` on why midnight is the
+    # one reading a date-only pin must not get.
+    if ":" not in text:
+        return None
     try:
         return datetime.fromisoformat(text)
     except ValueError:
@@ -246,6 +260,7 @@ class _SystemVariables(dict):
         fallbacks: Mapping[str, str] | None = None,
         start_timestamp_ms: int | None = None,
         default_timezone: str | None = None,
+        pin_clock: bool = False,
     ) -> None:
         super().__init__(base)
         # Overrides are stored verbatim, empty ones included: a session fact
@@ -258,6 +273,11 @@ class _SystemVariables(dict):
         # Agent "Current Time Awareness"; an unknown name falls back to the
         # platform default rather than making every {{current_time}} literal.
         self._default_timezone = _known_zone(default_timezone) or DEFAULT_TIMEZONE
+        # Off unless a caller asks for it: a customer passing `current_time` on
+        # a real session means it as a string for {{current_time}}, and must
+        # keep getting exactly that — the worker would, and it is not this
+        # module's business to move {{current_hour}} to a moment nobody set.
+        self._pin_clock = pin_clock
 
     def _clock(self) -> datetime | None:
         """The instant the time family reads from, when one has been pinned.
@@ -268,8 +288,11 @@ class _SystemVariables(dict):
         only the exact key would leave the branch under test being judged
         against the real wall clock — which is what makes a time-gated case
         pass or fail on the hour it happened to be run. Anything that is not a
-        timestamp is left alone as an ordinary variable.
+        timestamp is left alone as an ordinary variable, and so is everything
+        unless the caller opted in — only a simulated session may pin.
         """
+        if not self._pin_clock:
+            return None
         return parse_clock(dict.get(self, "current_time"))
 
     def _system_value(self, key: str) -> str | None:
@@ -378,9 +401,11 @@ class CallVariables(_SystemVariables):
         call_id: str = "",
         start_timestamp_ms: int | None = None,
         default_timezone: str | None = None,
+        pin_clock: bool = False,
     ) -> None:
         super().__init__(
             base,
+            pin_clock=pin_clock,
             overrides={
                 "call.call_id": call_id,
                 "call.direction": "",

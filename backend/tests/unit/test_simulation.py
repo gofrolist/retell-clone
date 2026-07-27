@@ -745,6 +745,65 @@ async def test_generate_tells_the_model_which_variables_the_prompt_reads(monkeyp
     assert cases[0]["dynamic_variables"] == {"is_last_day_of_trial": "true", "phone": "+15551234"}
 
 
+async def test_generate_offers_the_clock_to_a_prompt_that_reads_the_time(monkeypatch):
+    """A time-gated prompt is told `current_time` is settable.
+
+    The variables block otherwise lists only names `prompt_variables` reports,
+    and a prompt asking the time as `{{current_time_{{user_timezone}}}}` reports
+    the inner name alone — so the instruction to pin the clock would be naming a
+    key the same bullet forbids inventing, for exactly the prompt shape that
+    needs the pin most.
+    """
+    client, model = fake_client(
+        [
+            {
+                "test_cases": [
+                    {
+                        "name": "Morning dose",
+                        "user_prompt": "You took your pills.",
+                        "metrics": ["The agent logs the dose"],
+                        "dynamic_variables": {"current_time": "2026-07-27T08:15"},
+                    }
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr(simulation, "build_genai_client", lambda _s: client)
+    monkeypatch.setattr(simulation, "genai_credentials_available", lambda _s: True)
+
+    cases = await simulation.generate_test_cases(_gated_llm(), 1)
+
+    assert "- {{current_time}} (settable: pins the clock" in model.prompts[0]
+    assert cases[0]["dynamic_variables"]["current_time"] == "2026-07-27T08:15"
+
+
+async def test_generate_does_not_offer_the_clock_to_a_prompt_that_ignores_time(monkeypatch):
+    client, model = fake_client(
+        [
+            {
+                "test_cases": [
+                    {
+                        "name": "Plain case",
+                        "user_prompt": "You want a callback.",
+                        "metrics": ["The agent books it"],
+                    }
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr(simulation, "build_genai_client", lambda _s: client)
+    monkeypatch.setattr(simulation, "genai_credentials_available", lambda _s: True)
+    llm = RetellLLM(
+        llm_id="llm_plain",
+        workspace_id="ws",
+        general_prompt="Book a callback for {{first_name}}.",
+    )
+
+    await simulation.generate_test_cases(llm, 1)
+
+    assert "settable: pins the clock" not in model.prompts[0]
+
+
 @pytest.mark.parametrize("returned", [None, [], "true", {}])
 async def test_generate_defaults_variables_to_an_empty_set(monkeypatch, returned):
     """A draft that names no variables is still usable — just unparameterized."""

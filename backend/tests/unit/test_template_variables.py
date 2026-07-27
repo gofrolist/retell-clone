@@ -7,8 +7,12 @@ is what makes a simulated call resolve the same system placeholders a live one
 does.
 """
 
+import pytest
+
 from arhiteq_api.services.template_variables import (
     CallVariables,
+    ChatVariables,
+    parse_clock,
     prompt_variables,
     resolve_deep,
     resolve_template,
@@ -128,6 +132,36 @@ def test_call_variables_keep_the_workers_precedence():
     assert resolve_template("{{call.call_id}}", variables) == "call_real"
 
 
+def test_only_a_session_that_asked_for_it_can_pin_the_clock():
+    """A real session's `current_time` stays the string the customer sent.
+
+    Chat sessions resolve customer-supplied variables through the same class,
+    and one passing a timestamp means it for {{current_time}} — moving
+    {{current_hour}} to a moment they never set would make the same prompt read
+    differently on chat than on the voice call the worker serves.
+    """
+    unpinned = CallVariables({"current_time": "2026-07-27T08:15"})
+    assert resolve_template("{{current_time}}", unpinned) == "2026-07-27T08:15"
+    assert resolve_template("{{current_hour}}", unpinned) != "8.25"
+    assert ChatVariables({"current_time": "2026-07-27T08:15"})["current_time"] == (
+        "2026-07-27T08:15"
+    )
+
+
+@pytest.mark.parametrize("pinned", ["2026-07-27", "2026-07-27T08", "next Tuesday", ""])
+def test_a_pin_with_no_time_of_day_is_not_a_clock(pinned):
+    """A bare date would pin midnight, which is the one reading nobody means.
+
+    Someone writing just the date means *the day*; taking it as 00:00 puts
+    every time-gated branch out of reach at once — deterministically worse than
+    the real clock this replaces, which at least lands in the window sometimes.
+    """
+    assert parse_clock(pinned) is None
+    # So it stays an ordinary variable: verbatim, and owning only its own key.
+    variables = CallVariables({"current_time": pinned}, pin_clock=True)
+    assert resolve_template("{{current_time}}", variables) == pinned
+
+
 def test_a_pinned_current_time_drives_the_whole_time_family():
     """One timestamp puts every time placeholder at the same moment.
 
@@ -136,7 +170,7 @@ def test_a_pinned_current_time_drives_the_whole_time_family():
     hour — so pinning only the exact key would leave the branch under test
     being judged against the real wall clock after all.
     """
-    variables = CallVariables({"current_time": "2026-07-27T08:15"})
+    variables = CallVariables({"current_time": "2026-07-27T08:15"}, pin_clock=True)
     assert resolve_template("{{current_time}}", variables) == (
         "Monday, July 27, 2026 at 8:15 AM PDT"
     )
@@ -153,20 +187,20 @@ def test_a_pinned_clock_without_an_offset_reads_the_same_in_every_zone():
     quarter past eight", not "at 15:15 in Tokyo because I happened to write it
     in California time".
     """
-    variables = CallVariables({"current_time": "2026-07-27 08:15"})
+    variables = CallVariables({"current_time": "2026-07-27 08:15"}, pin_clock=True)
     for zone in ("America/New_York", "Asia/Tokyo"):
         assert "at 8:15 AM" in resolve_template(f"{{{{current_time_{zone}}}}}", variables)
 
 
 def test_a_pinned_clock_with_an_offset_converts_between_zones():
-    variables = CallVariables({"current_time": "2026-07-27T08:15-07:00"})
+    variables = CallVariables({"current_time": "2026-07-27T08:15-07:00"}, pin_clock=True)
     tokyo = resolve_template("{{current_time_Asia/Tokyo}}", variables)
     assert "at 12:15 AM" in tokyo and "July 28" in tokyo
 
 
 def test_a_current_time_that_is_not_a_timestamp_stays_an_ordinary_variable():
     """The pin is opt-in: prose keeps the old behaviour rather than erroring."""
-    variables = CallVariables({"current_time": "Tuesday at 7 PM"})
+    variables = CallVariables({"current_time": "Tuesday at 7 PM"}, pin_clock=True)
     assert resolve_template("{{current_time}}", variables) == "Tuesday at 7 PM"
     # The rest of the family is unpinned, so it still reports a real clock.
     assert resolve_template("{{current_hour}}", variables).replace(".", "").isdigit()
@@ -179,7 +213,8 @@ def test_a_pinned_clock_reaches_a_nested_zone_placeholder():
     for this caller, and a dose-window branch is graded on the answer.
     """
     variables = CallVariables(
-        {"current_time": "2026-07-27T08:15", "user_timezone": "America/Los_Angeles"}
+        {"current_time": "2026-07-27T08:15", "user_timezone": "America/Los_Angeles"},
+        pin_clock=True,
     )
     resolved = resolve_template("{{current_time_{{user_timezone}}}}", variables)
     assert resolved == "Monday, July 27, 2026 at 8:15 AM PDT"
