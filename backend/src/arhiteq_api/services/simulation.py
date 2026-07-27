@@ -378,16 +378,28 @@ def _json_object(raw: str | None) -> dict[str, Any]:
     if text.startswith("```"):
         text = text.split("\n", 1)[-1] if "\n" in text else ""
         text = text.rsplit("```", 1)[0]
-    # Some models still prepend a sentence; fall back to the outermost braces.
-    if not text.startswith("{"):
-        start, end = text.find("{"), text.rfind("}")
-        if start < 0 or end <= start:
-            raise ValueError(f"no JSON object in model reply: {(raw or '')[:200]!r}")
-        text = text[start : end + 1]
-    data = json.loads(text)
-    if not isinstance(data, dict):
-        raise TypeError("model reply was not a JSON object")
-    return data
+    data: Any = None
+    with contextlib.suppress(json.JSONDecodeError):
+        data = json.loads(text)
+    if isinstance(data, dict):
+        return data
+    # Anything else — the object with text around it, or the object wrapped in
+    # a list — is answered by the same rule: the reply is the FIRST complete
+    # object in it. Models prepend a sentence, append one, and wrap a single
+    # action in a one-element array; each of those is a whole simulation run
+    # lost if it raises. Reading to the *last* brace instead would swallow
+    # trailing junk and fail on "Extra data" the moment a reply is
+    # pretty-printed, because then the last brace is the trailing junk's.
+    start = text.find("{")
+    if start < 0:
+        raise ValueError(f"no JSON object in model reply: {(raw or '')[:200]!r}")
+    try:
+        # Decoding from a `{` yields an object or raises, so the result needs
+        # no further type check.
+        obj, _ = json.JSONDecoder().raw_decode(text, start)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"no JSON object in model reply: {(raw or '')[:200]!r}") from exc
+    return obj
 
 
 def _variable_value(value: Any) -> str:
