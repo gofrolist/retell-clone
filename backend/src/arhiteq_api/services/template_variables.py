@@ -1,14 +1,18 @@
-"""Retell-style ``{{variable}}`` resolution for chat prompts.
+"""Retell-style ``{{variable}}`` resolution for prompts the API itself runs.
 
 Hand-kept mirror of worker/src/arhiteq_worker/variables.py (backend and
 worker are separate packages): same placeholder grammar — inner whitespace
 stripped, unknown names stay literal, one level of nesting resolved inside
 the key only, substituted values never re-scanned — and the same system
 variable formats, so one prompt behaves identically on voice calls and chat.
-Chat-session system variables per https://docs.retellai.com/build/dynamic-variables:
-``{{chat_id}}``, ``{{session_type}}`` (= "chat"), ``{{session_duration}}``,
-and the ``{{current_time}}`` / ``{{current_hour}}`` / ``{{current_calendar}}``
-family with ``_<IANA timezone>`` suffix variants.
+
+System variables per https://docs.retellai.com/build/dynamic-variables:
+the ``{{current_time}}`` / ``{{current_hour}}`` / ``{{current_calendar}}``
+family with ``_<IANA timezone>`` suffix variants, plus ``{{session_type}}``
+and ``{{session_duration}}``. :class:`ChatVariables` adds the chat-session
+ones (``{{chat_id}}``); :class:`CallVariables` adds the call-scoped ones
+(``{{call_id}}``, ``{{call.call_id}}``, ``{{direction}}``) for the simulation
+harness, which plays a voice call without a `calls` row behind it.
 """
 
 from __future__ import annotations
@@ -61,6 +65,23 @@ def resolve_template(text: str, variables: Mapping[str, Any]) -> str:
         return match.group(0) if resolved is None else resolved
 
     return _PLACEHOLDER.sub(_sub, text)
+
+
+def resolve_deep(value: Any, variables: Mapping[str, Any]) -> Any:
+    """Recursively resolve ``{{key}}`` in every string inside *value*.
+
+    Mirror of the worker's resolver of the same name, which is what a live call
+    runs over tool-call arguments — a prompt that tells the agent to pass
+    ``retell_call_id={{call.call_id}}`` must not leave the placeholder literal.
+    Dict keys are never rewritten; non-string scalars pass through.
+    """
+    if isinstance(value, str):
+        return resolve_template(value, variables)
+    if isinstance(value, list):
+        return [resolve_deep(item, variables) for item in value]
+    if isinstance(value, dict):
+        return {key: resolve_deep(item, variables) for key, item in value.items()}
+    return value
 
 
 def prompt_variables(text: str) -> list[str]:
@@ -145,33 +166,48 @@ _TIME_FORMATTERS = {
 }
 
 
-class ChatVariables(dict):
-    """User variables with Retell chat system variables as lazy fallback.
+class _SystemVariables(dict):
+    """User variables with Retell system variables as lazy fallback.
 
-    Stored (user-supplied) entries always win; system values are computed in
-    ``__missing__`` only when no stored entry matches.
+    Stored (user-supplied) entries win, and system values are computed in
+    ``__missing__`` only when no stored entry matches — the same precedence the
+    worker's ResolutionVariables applies, so a prompt reads the same way on a
+    live call as it does here. ``overrides`` are the exception: Retell's dotted
+    ``call.*`` keys are facts about the session, and the worker stores those on
+    top of the user's variables.
+
+    Subclasses supply ``_session_type`` plus their own keys; the time family and
+    ``{{session_duration}}`` are shared.
     """
+
+    _session_type = ""
 
     def __init__(
         self,
         base: Mapping[str, Any],
         *,
-        chat_id: str = "",
+        overrides: Mapping[str, str] | None = None,
+        fallbacks: Mapping[str, str] | None = None,
         start_timestamp_ms: int | None = None,
         default_timezone: str | None = None,
     ) -> None:
         super().__init__(base)
-        self._chat_id = chat_id
+        # Overrides are stored verbatim, empty ones included: a session fact
+        # that is genuinely empty resolves to nothing, which is what the worker
+        # does with the numbers on a web call. A fallback with no value is
+        # dropped so the placeholder stays literal instead of resolving to "".
+        self.update(overrides or {})
+        self._fallbacks = {k: v for k, v in (fallbacks or {}).items() if v}
         self._start_timestamp_ms = start_timestamp_ms
         # Agent "Current Time Awareness"; an unknown name falls back to the
         # platform default rather than making every {{current_time}} literal.
         self._default_timezone = _known_zone(default_timezone) or DEFAULT_TIMEZONE
 
     def _system_value(self, key: str) -> str | None:
-        if key == "chat_id" and self._chat_id:
-            return self._chat_id
-        if key == "session_type":
-            return "chat"
+        if key in self._fallbacks:
+            return self._fallbacks[key]
+        if key == "session_type" and self._session_type:
+            return self._session_type
         if key == "session_duration":
             if self._start_timestamp_ms is None:
                 return None
@@ -198,8 +234,82 @@ class ChatVariables(dict):
             raise KeyError(key)
         return value
 
+    def __contains__(self, key: object) -> bool:
+        if super().__contains__(key):
+            return True
+        return isinstance(key, str) and self._system_value(key) is not None
+
     def get(self, key: str, default: Any = None) -> Any:
         try:
             return self[key]
         except KeyError:
             return default
+
+
+class ChatVariables(_SystemVariables):
+    """Chat-session flavour: ``{{chat_id}}`` and ``session_type`` = "chat"."""
+
+    _session_type = "chat"
+
+    def __init__(
+        self,
+        base: Mapping[str, Any],
+        *,
+        chat_id: str = "",
+        start_timestamp_ms: int | None = None,
+        default_timezone: str | None = None,
+    ) -> None:
+        super().__init__(
+            base,
+            fallbacks={"chat_id": chat_id},
+            start_timestamp_ms=start_timestamp_ms,
+            default_timezone=default_timezone,
+        )
+
+
+class CallVariables(_SystemVariables):
+    """Voice-call flavour, for prompts the API runs without a live call.
+
+    The simulation harness plays a phone call that no `calls` row and no worker
+    ever back, so the call-scoped placeholders a live call resolves —
+    ``{{call_id}}``, ``{{call_type}}`` and Retell's dotted ``call.*`` family —
+    have to come from here instead. Prompts pass them straight into tool
+    arguments (``retell_call_id={{call.call_id}}``), so leaving them literal is
+    visible in every mocked tool call.
+
+    The whole dotted family is answered, numbers included, because that is what
+    the worker stores; a simulated call has no phone leg, so they answer empty
+    exactly as they do on a web call. What is *not* answered is anything that
+    would amount to inventing a fact: ``{{direction}}`` (which way a simulated
+    call was placed is not knowable — `start_speaker` describes who talks
+    first, not who dialled) and ``{{user_number}}`` / ``{{agent_number}}``.
+    Those stay literal unless the scenario sets them, which is how every other
+    unknown behaves here.
+
+    Precedence copies the worker exactly, including the asymmetry: the dotted
+    ``call.*`` keys are stored on top of the scenario's variables, while the
+    plain ones are fallbacks a scenario may override.
+    """
+
+    _session_type = "voice"
+
+    def __init__(
+        self,
+        base: Mapping[str, Any],
+        *,
+        call_id: str = "",
+        start_timestamp_ms: int | None = None,
+        default_timezone: str | None = None,
+    ) -> None:
+        super().__init__(
+            base,
+            overrides={
+                "call.call_id": call_id,
+                "call.direction": "",
+                "call.from_number": "",
+                "call.to_number": "",
+            },
+            fallbacks={"call_id": call_id, "call_type": "phone_call"},
+            start_timestamp_ms=start_timestamp_ms,
+            default_timezone=default_timezone,
+        )

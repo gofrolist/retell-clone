@@ -13,6 +13,14 @@ absent one, the harness synthesizes a plausible success payload. A simulation
 therefore can never book an appointment, send an SMS or dial a transfer, which
 is what makes it safe to run against a production agent config.
 
+Two details exist so a criterion measures the agent rather than the harness:
+the prompt and every tool argument resolve against `CallVariables`, so the
+system placeholders a live call fills in ({{current_time}}, {{call.call_id}})
+are not left literal here; and once the conversation is over the agent gets one
+final tool-only turn (`_wrap_up_turn`), because a prompt that says *say goodbye,
+log the disposition, then hang up* otherwise loses the logging whenever the
+simulated user hangs up on the goodbye.
+
 Everything here is best-effort: a model or credential failure marks the run
 `error` rather than raising, so one bad case can't sink a batch.
 """
@@ -23,11 +31,13 @@ import json
 import logging
 import re
 import secrets
+from collections.abc import Mapping
 from typing import Any
 
 from sqlalchemy import select
 
 from ..config import Settings, get_settings
+from ..ids import new_call_id
 from ..models import (
     TEST_RUN_TERMINAL_STATUSES,
     Agent,
@@ -38,7 +48,12 @@ from ..models import (
     now_ms,
 )
 from .gemini import build_genai_client, genai_credentials_available, is_live_model
-from .template_variables import prompt_variables, resolve_template
+from .template_variables import (
+    CallVariables,
+    prompt_variables,
+    resolve_deep,
+    resolve_template,
+)
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +88,23 @@ Reply with STRICT JSON (no markdown), exactly one of:
 Conversation so far:
 {history}"""
 
+_WRAP_UP_PROMPT = """\
+{general_prompt}
+
+--- SIMULATION HARNESS (not part of your persona) ---
+You are the agent described above. The call is over — {ending} — so nobody can
+hear you any more: do NOT speak. Make only the calls you would make while
+hanging up: disposition logging, saving notes, ending the call. Make none if
+your instructions call for none, and never repeat a call already in the
+transcript.
+{tools}
+Reply with STRICT JSON (no markdown), exactly one of:
+{{"action": "tool_call", "tool_name": "<name>", "arguments": {{<arguments object>}}}}
+{{"action": "done"}}
+
+Conversation so far:
+{history}"""
+
 _USER_PROMPT = """\
 You are role-playing a person on a phone call with an AI agent. Stay in
 character at all times and never reveal that this is a test.
@@ -83,6 +115,10 @@ Your character, situation and goal:
 Speak the way people actually speak on the phone: short turns, one idea at a
 time, and answer what you were asked. Hang up once your goal is met or is
 clearly unreachable — do not keep the call going out of politeness.
+
+One exception: while the agent is closing the call — saying goodbye, or asking
+whether there is anything else — answer it briefly ("no, that's all", "bye")
+and let the agent hang up. Hang up first only if it will not let the call end.
 
 Reply with STRICT JSON (no markdown), exactly one of:
 {{"action": "speak", "content": "<what you say next>"}}
@@ -101,6 +137,9 @@ The scenario the user was playing:
 
 Transcript:
 {transcript}
+
+How the call ended: {ending}. Tool calls that follow the agent's last spoken
+line are the work it does while hanging up, exactly as on a live call.
 
 Grade each criterion below independently, judging ONLY the agent's behaviour.
 A criterion passes only when the transcript clearly shows it was met; if the
@@ -168,7 +207,12 @@ For each case produce:
   a concrete string value for every variable this scenario depends on, chosen
   to put the agent in the state the scenario describes (the flags gating the
   branch under test, plus anything the prompt uses in tool arguments or the
-  greeting). Values must be strings. Use {{}} only if the prompt reads none.
+  greeting). Values must be strings, written in the shape the prompt reads them
+  in: if the prompt picks times, names or items out of a variable, write those
+  in ("Lipitor at 08:00, Metformin at 19:00", not "Lipitor"), following any
+  example the prompt gives. A criterion about a step the prompt only reaches
+  when a value is in a particular shape needs that shape, or it cannot pass.
+  Use {{}} only if the prompt reads none.
 * "tool_mocks": for each tool this scenario should reach, an entry
   {{"tool_name": "<name>", "input_match_rule": {{"type": "any"}},
   "output": "<JSON string the tool would return>"}} — pick outputs that force
@@ -315,6 +359,7 @@ class _Simulator:
         agent_model: str,
         begin_message: str | None,
         start_speaker: str,
+        variables: Mapping[str, Any] | None = None,
     ) -> None:
         self._client = build_genai_client(settings)
         self._settings = settings
@@ -324,7 +369,13 @@ class _Simulator:
         self._agent_model = agent_model
         self._begin_message = begin_message
         self._start_speaker = start_speaker
+        # The same mapping the prompt was resolved from, kept so tool-call
+        # arguments resolve too — a live call runs resolve_deep over them.
+        self._variables: Mapping[str, Any] = variables or {}
         self.transcript: list[dict[str, Any]] = []
+        # How the call finished, in the judge's and the wrap-up prompt's words.
+        # Set by run(); the default covers a transcript nothing ever ran.
+        self.ending = "the call did not get started"
 
     async def _json_call(self, model: str, prompt: str, temperature: float) -> dict[str, Any]:
         resp = await self._client.aio.models.generate_content(
@@ -368,6 +419,41 @@ class _Simulator:
             log.exception("simulation: could not synthesize a result for tool %s", name)
             return json.dumps({"success": True})
 
+    async def _invoke_tool(self, action: dict[str, Any]) -> bool:
+        """Record one tool call and its mocked result. False if the call ended.
+
+        Arguments are template-resolved first, the way the worker resolves them
+        before hitting a customer endpoint: a prompt that says to pass
+        ``retell_call_id={{call.call_id}}`` would otherwise put the literal
+        placeholder in the transcript, and mock `partial_match` rules would be
+        compared against it.
+        """
+        name = str(action.get("tool_name") or "")
+        args = action.get("arguments")
+        args = resolve_deep(args if isinstance(args, dict) else {}, self._variables)
+        call_id = f"tool_{secrets.token_hex(8)}"
+        self.transcript.append(
+            {
+                "role": "tool_call_invocation",
+                "name": name,
+                "arguments": json.dumps(args, ensure_ascii=False),
+                "tool_call_id": call_id,
+            }
+        )
+        tool = self._tool_by_name(name)
+        output = await self._tool_result(tool, name, args)
+        self.transcript.append(
+            {
+                "role": "tool_call_result",
+                "name": name,
+                "content": output,
+                "tool_call_id": call_id,
+            }
+        )
+        # end_call / transfer_call / agent_swap take the call away from this
+        # agent; nothing after them belongs in the transcript.
+        return tool is None or tool["type"] not in _TERMINAL_TOOL_TYPES
+
     async def _agent_turn(self) -> bool:
         """Let the agent act until it speaks. Returns False if the call ended."""
         for _ in range(MAX_TOOL_CALLS_PER_TURN):
@@ -385,32 +471,7 @@ class _Simulator:
                 if content:
                     self.transcript.append({"role": "agent", "content": content})
                 return True
-
-            name = str(action.get("tool_name") or "")
-            args = action.get("arguments")
-            args = args if isinstance(args, dict) else {}
-            call_id = f"tool_{secrets.token_hex(8)}"
-            self.transcript.append(
-                {
-                    "role": "tool_call_invocation",
-                    "name": name,
-                    "arguments": json.dumps(args, ensure_ascii=False),
-                    "tool_call_id": call_id,
-                }
-            )
-            tool = self._tool_by_name(name)
-            output = await self._tool_result(tool, name, args)
-            self.transcript.append(
-                {
-                    "role": "tool_call_result",
-                    "name": name,
-                    "content": output,
-                    "tool_call_id": call_id,
-                }
-            )
-            # end_call / transfer_call / agent_swap take the call away from this
-            # agent; nothing after them belongs in the transcript.
-            if tool is not None and tool["type"] in _TERMINAL_TOOL_TYPES:
+            if not await self._invoke_tool(action):
                 return False
         # Stuck in tool calls: force one spoken turn so the transcript shows it.
         self.transcript.append(
@@ -418,8 +479,45 @@ class _Simulator:
         )
         return True
 
-    async def _user_turn(self) -> bool:
-        """Let the simulated user speak. Returns False if they hung up."""
+    async def _wrap_up_turn(self) -> None:
+        """Let the agent finish the tool work a hang-up interrupted.
+
+        A live agent's closing sequence is speak-then-log: prompts routinely say
+        to say goodbye, log the disposition and only then end the call — and the
+        agent under test is told to produce one action at a time, so its turn is
+        over the moment it speaks. Without this turn, whether "the agent logs the
+        outcome" passes would come down to whether the simulated user happened to
+        answer the goodbye (agent gets another turn) or hang up on it (agent
+        never acts again) — a coin flip, not a verdict about the agent.
+
+        Speaking is not offered: the line is already down. The calls land in the
+        transcript in order, which is what the same wrap-up looks like on a real
+        call.
+        """
+        for _ in range(MAX_TOOL_CALLS_PER_TURN):
+            action = await self._json_call(
+                self._agent_model,
+                _WRAP_UP_PROMPT.format(
+                    general_prompt=self._general_prompt,
+                    ending=self.ending,
+                    tools=_tool_block(self._catalog),
+                    history=_history(self.transcript),
+                ),
+                0.0,
+            )
+            if action.get("action") != "tool_call":
+                return
+            if not await self._invoke_tool(action):
+                return
+
+    async def _user_turn(self) -> str | None:
+        """Let the simulated user speak. Returns why the call ended, or None.
+
+        A hang-up and a user simulator that produced nothing to say both end the
+        run, but they are not the same fact about the scenario: only one of them
+        is something the caller did, and only that one earns the agent a wrap-up
+        turn.
+        """
         action = await self._json_call(
             self._settings.analysis_model,
             _USER_PROMPT.format(
@@ -429,12 +527,12 @@ class _Simulator:
             0.7,
         )
         if action.get("action") == "hangup":
-            return False
+            return "the caller hung up"
         content = str(action.get("content") or "").strip()
         if not content:
-            return False
+            return "the harness got no reply from the simulated caller"
         self.transcript.append({"role": "user", "content": content})
-        return True
+        return None
 
     async def run(self) -> list[dict[str, Any]]:
         # Retell semantics: `start_speaker == "user"` means the agent waits for
@@ -443,12 +541,34 @@ class _Simulator:
             if self._begin_message:
                 self.transcript.append({"role": "agent", "content": self._begin_message})
             elif not await self._agent_turn():
+                self.ending = "the agent ended it"
                 return self.transcript
+        self.ending = "the harness hit its turn limit before the call ended"
         for _ in range(MAX_TURNS):
-            if not await self._user_turn():
+            ended = await self._user_turn()
+            if ended is not None:
+                self.ending = ended
                 break
             if not await self._agent_turn():
-                break
+                # The agent hung up (or transferred) itself: it already ran
+                # whatever it meant to run, so there is nothing to finish.
+                self.ending = "the agent ended it"
+                return self.transcript
+        # Only a caller who hung up on an agent that was talking leaves work
+        # unfinished. A run that ran out of turns was cut off mid-conversation,
+        # and one where the agent never spoke has nothing to wrap up — handing
+        # either a free tool-only turn would pass "the agent logs the outcome"
+        # for a call the agent never actually closed.
+        if self.ending == "the caller hung up" and any(
+            item["role"] == "agent" for item in self.transcript
+        ):
+            # Best-effort, like everything else here: the conversation is
+            # already complete and gradeable, so a failure on this one extra
+            # model call must not turn a finished run into `error`.
+            try:
+                await self._wrap_up_turn()
+            except Exception:
+                log.exception("simulation: the wrap-up turn failed; grading the call as it is")
         return self.transcript
 
     async def judge(self) -> tuple[str, list[dict[str, Any]]]:
@@ -466,6 +586,7 @@ class _Simulator:
             _JUDGE_PROMPT.format(
                 user_prompt=self._definition.get("user_prompt") or "",
                 transcript=_history(self.transcript),
+                ending=self.ending,
                 metrics="\n".join(f"{i + 1}. {m}" for i, m in enumerate(metrics)),
             ),
             0.0,
@@ -565,9 +686,18 @@ async def _run_one(factory: Any, job_id: str) -> str:
 
         # Dynamic variables resolve exactly as they do on a live call, so a
         # prompt that depends on {{name}} is tested with a value, not the
-        # literal placeholder.
+        # literal placeholder. System variables come from CallVariables for the
+        # same reason: a prompt that reads {{current_time}} has to be told the
+        # time, or every branch behind it is tested in the one state a live call
+        # never runs in.
+        start_speaker = str(llm.start_speaker or "agent")
         variables = {str(k): str(v) for k, v in (snapshot.get("dynamic_variables") or {}).items()}
-        merged = {**(llm.default_dynamic_variables or {}), **variables}
+        merged = CallVariables(
+            {**(llm.default_dynamic_variables or {}), **variables},
+            call_id=new_call_id(),
+            start_timestamp_ms=now_ms(),
+            default_timezone=agent.timezone if agent else None,
+        )
         general_prompt = resolve_template(llm.general_prompt or "", merged)
         begin_message = resolve_template(llm.begin_message or "", merged) or None
 
@@ -584,7 +714,8 @@ async def _run_one(factory: Any, job_id: str) -> str:
             definition=snapshot,
             agent_model=agent_model,
             begin_message=begin_message,
-            start_speaker=str(llm.start_speaker or "agent"),
+            start_speaker=start_speaker,
+            variables=merged,
         )
         await simulator.run()
         status, results = await simulator.judge()

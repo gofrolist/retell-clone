@@ -267,14 +267,27 @@ export default function SimulationTab({
   const allIds = cases.map((c) => c.test_case_definition_id);
   const selectedIds = allIds.filter((id) => selected.has(id));
 
+  // Summarize the verdicts the table is showing, not the last batch: running
+  // one case re-runs one batch, and "Last run: 1/1 passed" over a table with
+  // two red rows reads as a green suite.
+  const graded = allIds
+    .map((id) => runs[id]?.status)
+    .filter((s) => s === "pass" || s === "fail" || s === "error");
+  const passed = graded.filter((s) => s === "pass").length;
+
   return (
     <>
       <div className="flex min-w-[520px] flex-1 flex-col overflow-hidden rounded-xl border border-line bg-card">
         <div className="flex items-center gap-2 border-b border-line px-4 py-3">
           <h2 className="text-[15px] font-semibold">Test cases</h2>
-          {batch && batch.status === "complete" && (
-            <Badge tone={batch.fail_count + batch.error_count > 0 ? "red" : "green"}>
-              Last run: {batch.pass_count}/{batch.total_count} passed
+          {graded.length > 0 && (
+            <Badge tone={passed < graded.length ? "red" : "green"}>
+              {passed}/{graded.length} passing
+            </Badge>
+          )}
+          {running && (
+            <Badge tone="gray">
+              <Loader2 className="size-3 animate-spin" /> Running {batch?.total_count}
             </Badge>
           )}
           <div className="ml-auto flex items-center gap-2">
