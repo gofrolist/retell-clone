@@ -38,6 +38,16 @@ def fake_client(replies):
     return client, model
 
 
+def _flat(text: str) -> str:
+    """Prompt text with its line wrapping collapsed, for asserting on phrases.
+
+    Prompt paragraphs are wrapped to a fixed width, so a sentence an assertion
+    cares about is usually split across lines — and where it splits moves
+    whenever a word is edited or an interpolated list changes length.
+    """
+    return " ".join(text.split())
+
+
 def make_simulator(monkeypatch, replies, *, definition=None, **kwargs):
     client, model = fake_client(replies)
     monkeypatch.setattr(simulation, "build_genai_client", lambda _s: client)
@@ -744,6 +754,84 @@ async def test_generate_tells_the_model_which_variables_the_prompt_reads(monkeyp
     # A name with an agent default is shown as already having a value.
     assert '- {{first_name}} (agent default: "friend")' in sent
     assert cases[0]["dynamic_variables"] == {"is_last_day_of_trial": "true", "phone": "+15551234"}
+
+
+@pytest.mark.parametrize(
+    ("begin_message", "start_speaker"),
+    [
+        # The callee talks first, so the greeting is never played at all.
+        ("Good morning {{first_name}}!", "user"),
+        # No greeting: the agent improvises its opener, which IS behaviour and
+        # is fair to grade.
+        ("", "agent"),
+        ("   ", "agent"),
+    ],
+)
+def test_greeting_note_is_silent_when_the_agent_authors_its_own_opening(
+    begin_message, start_speaker
+):
+    assert simulation._greeting_note(begin_message, start_speaker) == ""
+
+
+def test_greeting_note_names_the_variables_the_first_line_is_built_from():
+    """A variable-built greeting is settable, so the note asks for it to be set.
+
+    The scenario supplies it the way the live caller-context lookup would;
+    dropping the criterion is offered second, because a greeting that varies is
+    worth covering.
+    """
+    # The note is wrapped to the prompt's width, so assert against it unwrapped
+    # rather than pinning where the line breaks happen to land.
+    note = _flat(simulation._greeting_note("Good {{time_of_day}} {{first_name}}!", "agent"))
+
+    assert "spoken verbatim" in note
+    assert "It is built from {{time_of_day}}, {{first_name}}" in note
+    assert "set it to the words this scenario should open with" in note
+
+
+def test_greeting_note_forbids_grading_a_greeting_nothing_can_vary():
+    """A fixed first line is a constant: no scenario can make it say otherwise."""
+    note = _flat(simulation._greeting_note("Hi, it's Clara.", "agent"))
+
+    assert "reads no variables" in note
+    assert "Never write a criterion about the greeting" in note
+
+
+async def test_generate_warns_that_a_greeting_is_not_the_agents_to_choose(monkeypatch):
+    """The two traps that make a case fail on its own setup reach the model.
+
+    Both come from one live failure: a scenario about an *inbound* paid
+    subscriber that left the greeting variable at its outbound default, then
+    graded the agent on a first line it never wrote and could not have changed.
+    """
+    client, model = fake_client(
+        [
+            {
+                "test_cases": [
+                    {
+                        "name": "Last day",
+                        "user_prompt": "You are on the last day of your trial.",
+                        "metrics": ["The agent says the trial is ending"],
+                        "dynamic_variables": {"is_last_day_of_trial": "true"},
+                    }
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr(simulation, "build_genai_client", lambda _s: client)
+    monkeypatch.setattr(simulation, "genai_credentials_available", lambda _s: True)
+
+    await simulation.generate_test_cases(_gated_llm(), 1)
+
+    sent = _flat(model.prompts[0])
+    # The greeting is `begin_message`, not behaviour, and it is built from a
+    # variable this prompt reads.
+    assert "The agent's first line is not its own." in sent
+    assert "It is built from {{first_name}}" in sent
+    assert "A criterion about the greeting therefore grades that value" in sent
+    # And an agent default is a value rather than an absence, so a scenario it
+    # contradicts is graded in the state it was written to avoid.
+    assert "it means *that* value" in sent
 
 
 async def test_generate_offers_the_clock_to_a_prompt_that_reads_the_time(monkeypatch):

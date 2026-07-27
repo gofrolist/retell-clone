@@ -36,6 +36,7 @@ import json
 import logging
 import re
 import secrets
+import textwrap
 from collections.abc import Mapping
 from datetime import date, datetime
 from typing import Any
@@ -283,9 +284,13 @@ Dynamic variables the prompt reads:
 A variable you leave unset stays the literal text `{{{{name}}}}` when the case
 runs, exactly as an unset variable would on a real call. Any branch the prompt
 gates on that variable is then unreachable, so a criterion about that branch
-fails no matter how well the agent behaves. Give every scenario the variables
-its branch needs.
-
+fails no matter how well the agent behaves. A variable shown with an agent
+default is the trap underneath that one: leaving it out does not mean "no
+value", it means *that* value, so a scenario the default contradicts still runs
+and still looks healthy — it is simply graded in the state it was written to
+avoid. Give every scenario the variables its branch needs, and override every
+default it disagrees with.
+{greeting_note}
 Write {count} DISTINCT test cases that together cover this agent's real risk
 surface: the happy path, each tool the agent has (including the conditions that
 should trigger it), and the awkward cases this specific prompt invites —
@@ -956,6 +961,54 @@ async def shutdown(factory: Any = None) -> None:
             log.exception("could not close out abandoned batch %s", batch_job_id)
 
 
+def _greeting_note(begin_message: str, start_speaker: str) -> str:
+    """What the model must know before writing a criterion about the greeting.
+
+    The agent's first line is not the agent's to choose. ``begin_message`` is
+    spoken verbatim before the model ever gets a turn — `_Simulator.run` appends
+    it, and the worker either `say()`s it or tells a realtime model to voice it
+    "word for word and nothing else first" — so a prompt section that says how
+    to open *this kind of* call is dead text, and "the agent greets you as a
+    paid subscriber" grades the greeting's source rather than the agent.
+
+    Which source it is decides what the model should do instead, so both are
+    named. A greeting built out of variables is settable: the scenario says what
+    it opens with, the same way the live caller-context lookup would. A fixed
+    one is not settable by anything, and a criterion about it can only ever be a
+    verdict on a constant.
+
+    Empty means there is nothing to warn about: a `start_speaker` of "user"
+    never plays the greeting, and with no `begin_message` at all the agent
+    improvises its opener — which *is* behaviour, and fair to grade.
+    """
+    if start_speaker == "user" or not begin_message.strip():
+        return ""
+    text = (
+        "The agent's first line is not its own. `begin_message` above is spoken "
+        "verbatim, on a real call and here, before the agent gets a turn — "
+        "nothing the prompt says about how to open a particular call can change "
+        "it. "
+    )
+    if names := prompt_variables(begin_message):
+        listed = ", ".join(f"{{{{{name}}}}}" for name in names)
+        text += (
+            f"It is built from {listed}, so the greeting is whatever the scenario "
+            "puts there. A criterion about the greeting therefore grades that "
+            "value rather than the agent: set it to the words this scenario "
+            "should open with, or write the criterion about a later turn instead."
+        )
+    else:
+        text += (
+            "It reads no variables, so every scenario opens with those exact "
+            "words. Never write a criterion about the greeting; grade the turns "
+            "the agent actually chooses."
+        )
+    # Wrapped to match the rest of the prompt, and wrapped here rather than
+    # written pre-broken because the variable list in the middle has no fixed
+    # width.
+    return "\n" + textwrap.fill(text, width=76) + "\n"
+
+
 async def generate_test_cases(llm: RetellLLM, count: int) -> list[dict[str, Any]]:
     """Write test cases from the agent's own prompt and tool catalog.
 
@@ -1017,6 +1070,7 @@ async def generate_test_cases(llm: RetellLLM, count: int) -> list[dict[str, Any]
             general_prompt=(llm.general_prompt or "(empty prompt)")[:20000],
             begin_message=llm.begin_message or "(none)",
             start_speaker=llm.start_speaker or "agent",
+            greeting_note=_greeting_note(llm.begin_message or "", llm.start_speaker or "agent"),
             tools=tools,
             variables=variables,
             count=count,
