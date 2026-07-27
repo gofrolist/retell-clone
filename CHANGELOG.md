@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.2](https://github.com/gofrolist/retell-clone/compare/v0.17.1...v0.17.2) (2026-07-27)
+
+
+### Bug Fixes
+
+* **simulation:** keep invented tool results and the caller inside the scenario ([#177](https://github.com/gofrolist/retell-clone/issues/177)) ([cef2ac5](https://github.com/gofrolist/retell-clone/commit/cef2ac5725b9ab5f3853d2f44d99ad09ac2c5f39))
+
 ## [0.17.1](https://github.com/gofrolist/retell-clone/compare/v0.17.0...v0.17.1) (2026-07-27)
 
 
