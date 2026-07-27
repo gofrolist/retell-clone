@@ -36,6 +36,7 @@ import json
 import logging
 import re
 import secrets
+import textwrap
 from collections.abc import Mapping
 from datetime import date, datetime
 from typing import Any
@@ -283,9 +284,13 @@ Dynamic variables the prompt reads:
 A variable you leave unset stays the literal text `{{{{name}}}}` when the case
 runs, exactly as an unset variable would on a real call. Any branch the prompt
 gates on that variable is then unreachable, so a criterion about that branch
-fails no matter how well the agent behaves. Give every scenario the variables
-its branch needs.
-
+fails no matter how well the agent behaves. A variable shown with an agent
+default is the trap underneath that one: leaving it out does not mean "no
+value", it means *that* value, so a scenario the default contradicts still runs
+and still looks healthy — it is simply graded in the state it was written to
+avoid. Give every scenario the variables its branch needs, and override every
+default it disagrees with.
+{greeting_note}
 Write {count} DISTINCT test cases that together cover this agent's real risk
 surface: the happy path, each tool the agent has (including the conditions that
 should trigger it), and the awkward cases this specific prompt invites —
@@ -956,6 +961,73 @@ async def shutdown(factory: Any = None) -> None:
             log.exception("could not close out abandoned batch %s", batch_job_id)
 
 
+def _greeting_note(begin_message: str, start_speaker: str) -> str:
+    """What the model must know before writing a criterion about the greeting.
+
+    The agent's first line is not the agent's to choose. ``begin_message`` is
+    spoken verbatim before the model ever gets a turn — `_Simulator.run` appends
+    it, and the worker either `say()`s it or tells a realtime model to voice it
+    "word for word and nothing else first" — so a prompt section that says how
+    to open *this kind of* call is dead text, and "the agent greets you as a
+    paid subscriber" grades the greeting's source rather than the agent.
+
+    Where it comes from decides what the model should do instead, so each case
+    is named. A greeting built out of variables is *steerable*: the scenario
+    chooses what they hold, the way the live caller-context lookup would.
+    Steerable rather than settable outright, and the wording says so — a
+    placeholder is as often one word inside a fixed sentence ("Good morning
+    {{first_name}}!") as it is the whole line ("{{bm_greeting}}"), and a model
+    told to "set it to the words this scenario opens with" would answer the
+    first shape by stuffing the entire greeting into `first_name`, which then
+    renders in every other sentence and tool argument that reads it. A fixed
+    greeting is not steerable by anything, and a criterion about it can only be
+    a verdict on a constant. A `start_speaker` of "user" never plays the
+    greeting at all, yet the prompt still prints it, so it is named too rather
+    than passed over — otherwise the one line the model is shown and told
+    nothing about is the one that is purely dead text.
+
+    Empty only when there is no `begin_message`: the agent improvises its own
+    opener, which *is* behaviour and fair to grade.
+    """
+    if not begin_message.strip():
+        return ""
+    if start_speaker == "user":
+        text = (
+            "The line shown above as the agent's first is never spoken: the "
+            "caller opens this call, so the agent's first move is a reply to "
+            "them. Do not write a criterion about the greeting."
+        )
+    else:
+        text = (
+            "The agent's first line is not its own. `begin_message` above is "
+            "spoken verbatim, on a real call and here, before the agent gets a "
+            "turn — nothing the prompt says about how to open a particular call "
+            "can change it. "
+        )
+        if names := prompt_variables(begin_message):
+            listed = ", ".join(f"{{{{{name}}}}}" for name in names)
+            text += (
+                f"It reads {listed}, so a criterion about the greeting grades "
+                "those values rather than the agent: give them values that make "
+                "it open the way this scenario needs — values that still read "
+                "correctly everywhere else the prompt uses them — or write the "
+                "criterion about a later turn instead."
+            )
+        else:
+            text += (
+                "It reads no variables, so every scenario opens with those exact "
+                "words. Never write a criterion about the greeting; grade the "
+                "turns the agent actually chooses."
+            )
+    # Wrapped to match the rest of the prompt, and wrapped here rather than
+    # written pre-broken because the variable list in the middle has no fixed
+    # width. Breaking is disabled on both axes a placeholder name can trip:
+    # names may contain hyphens and are arbitrarily long, and a name split
+    # across lines is one the model can copy into `dynamic_variables` wrong.
+    wrapped = textwrap.fill(text, width=76, break_long_words=False, break_on_hyphens=False)
+    return f"\n{wrapped}\n"
+
+
 async def generate_test_cases(llm: RetellLLM, count: int) -> list[dict[str, Any]]:
     """Write test cases from the agent's own prompt and tool catalog.
 
@@ -1017,6 +1089,7 @@ async def generate_test_cases(llm: RetellLLM, count: int) -> list[dict[str, Any]
             general_prompt=(llm.general_prompt or "(empty prompt)")[:20000],
             begin_message=llm.begin_message or "(none)",
             start_speaker=llm.start_speaker or "agent",
+            greeting_note=_greeting_note(llm.begin_message or "", llm.start_speaker or "agent"),
             tools=tools,
             variables=variables,
             count=count,
