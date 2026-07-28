@@ -189,6 +189,101 @@ def test_tool_catalog_reads_the_llm_tool_entries():
     assert simulation.tool_catalog(None) == []
 
 
+@pytest.mark.parametrize(
+    ("entry", "expected"),
+    [
+        ({"type": "custom", "name": "a"}, None),
+        ({"type": "custom", "name": "a", "speak_during_execution": False}, None),
+        # execution_message_type "prompt" would have the live LLM phrase its own
+        # filler; the worker approximates it with a generic line, and so do we.
+        (
+            {"type": "custom", "name": "a", "speak_during_execution": True},
+            "One moment, let me check that.",
+        ),
+        (
+            {
+                "type": "custom",
+                "name": "a",
+                "speak_during_execution": True,
+                "execution_message_type": "prompt",
+                "execution_message_description": "say something warm",
+            },
+            "One moment, let me check that.",
+        ),
+        (
+            {
+                "type": "custom",
+                "name": "a",
+                "speak_during_execution": True,
+                "execution_message_type": "static_text",
+                "execution_message_description": "Let me look that up for you.",
+            },
+            "Let me look that up for you.",
+        ),
+        # static_text with nothing to say still falls back rather than going mute
+        (
+            {
+                "type": "custom",
+                "name": "a",
+                "speak_during_execution": True,
+                "execution_message_type": "static_text",
+                "execution_message_description": "",
+            },
+            "One moment, let me check that.",
+        ),
+        # the worker only speaks for custom tools, whatever the flag says
+        ({"type": "end_call", "speak_during_execution": True}, None),
+    ],
+)
+def test_execution_filler_mirrors_the_worker(entry, expected):
+    assert simulation.execution_filler(entry) == expected
+
+
+@pytest.mark.anyio
+async def test_a_speaking_tool_puts_its_filler_in_the_transcript(monkeypatch):
+    """The filler is the platform speaking, so nothing else would record it."""
+    sim, _ = make_simulator(
+        monkeypatch,
+        [],
+        catalog=[
+            {
+                "name": "web_lookup",
+                "type": "custom",
+                "description": "",
+                "parameters": {},
+                "filler": "Let me check that for you, {{first_name}}.",
+            },
+            {
+                "name": "log_mood",
+                "type": "custom",
+                "description": "",
+                "parameters": {},
+                "filler": None,
+            },
+        ],
+        variables={"first_name": "Margaret"},
+    )
+
+    async def _result(tool, name, args):
+        return json.dumps({"ok": True})
+
+    monkeypatch.setattr(sim, "_tool_result", _result)
+
+    await sim._invoke_tool({"tool_name": "web_lookup", "arguments": {"query": "weather"}})
+    await sim._invoke_tool({"tool_name": "log_mood", "arguments": {}})
+
+    turns = [(t["role"], t.get("content") or t.get("name")) for t in sim.transcript]
+    # the filler is spoken before the call goes out, not after it returns
+    assert turns[0] == ("agent", "Let me check that for you, Margaret.")
+    assert [role for role, _ in turns[1:]] == [
+        "tool_call_invocation",
+        "tool_call_result",
+        # the silent tool contributes no spoken turn
+        "tool_call_invocation",
+        "tool_call_result",
+    ]
+
+
 # ------------------------------------------------------------------ kb_lookup
 
 KB_TOOL = {
