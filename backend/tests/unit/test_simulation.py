@@ -1539,3 +1539,13 @@ def test_variable_value_renders_a_flag_the_prompt_can_match():
     variables = {"is_last_day_of_trial": simulation._variable_value(True)}
     rendered = resolve_template('If {{is_last_day_of_trial}} = "true", say goodbye.', variables)
     assert rendered == 'If true = "true", say goodbye.'
+
+
+def test_the_live_model_stand_in_is_not_the_analysis_model():
+    """The stand-in plays the agent; `analysis_model` judges it.
+
+    Reusing the cheap judging model as the agent under test makes the suite
+    report prompt rules the live agent follows as agent defects.
+    """
+    settings = get_settings()
+    assert settings.simulation_agent_model != settings.analysis_model

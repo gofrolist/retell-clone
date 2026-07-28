@@ -365,6 +365,8 @@ export interface TestCaseDraft {
   metrics: string[];
   tool_mocks?: ToolMock[];
   dynamic_variables?: Record<string, string>;
+  /** Model to simulate the agent on. Null means "the agent's own". */
+  llm_model?: string | null;
 }
 
 function testCaseBody(draft: TestCaseDraft) {
@@ -377,6 +379,9 @@ function testCaseBody(draft: TestCaseDraft) {
     // set means "this case sets no variables" and must overwrite, not be
     // skipped. Callers that don't edit them pass the current set straight back.
     dynamic_variables: draft.dynamic_variables ?? {},
+    // Null, never omitted: clearing the picker back to "the agent's own model"
+    // has to overwrite a previously pinned one.
+    llm_model: draft.llm_model ?? null,
   };
 }
 

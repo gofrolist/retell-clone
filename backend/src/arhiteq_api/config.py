@@ -57,6 +57,13 @@ class Settings(BaseSettings):
         ),
     )
     analysis_model: str = "gemini-3.1-flash-lite"
+    # Stands in for the agent under simulation when its own model cannot serve
+    # text generation — Gemini Live models are realtime-audio only. It is the
+    # agent's understudy, so it wants to be the closest text sibling of what
+    # production actually runs, NOT the cheap model the platform uses for
+    # judging and summarising: a weaker stand-in fails prompt rules the live
+    # agent follows, and the suite reads that as an agent defect.
+    simulation_agent_model: str = "gemini-2.5-flash"
 
     # Webhook delivery
     webhook_timeout_seconds: float = 10.0
