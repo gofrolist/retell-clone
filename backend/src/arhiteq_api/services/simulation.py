@@ -57,7 +57,7 @@ from ..models import (
     TestCaseJob,
     now_ms,
 )
-from . import knowledge
+from . import knowledge, versions
 from .gemini import build_genai_client, genai_credentials_available, is_live_model
 from .template_variables import (
     DEFAULT_TIMEZONE,
@@ -89,7 +89,9 @@ RUN_CONCURRENCY = 4
 STALE_BATCH_MS = 60 * 60 * 1000
 
 # Tool types that hang up when called: reaching one ends the simulated call.
-_TERMINAL_TOOL_TYPES = ("end_call", "transfer_call", "agent_swap")
+# `agent_swap` is deliberately not here — it hands the call to another agent
+# rather than away, and the transcript continues under that agent's prompt.
+_TERMINAL_TOOL_TYPES = ("end_call", "transfer_call")
 
 # A prompt that reads any of the time family can be put at a chosen moment by
 # pinning {{current_time}}, so generation offers it that variable.
@@ -455,6 +457,10 @@ def tool_catalog(llm: RetellLLM | None) -> list[dict[str, Any]]:
 
     Mirrors how the worker names tools, so `tool_mocks` written against a
     simulation match the names the live agent actually calls.
+
+    `agent_id` rides along on `agent_swap` entries: the destination is fixed in
+    the tool config rather than chosen by the model (the worker gives that tool
+    an empty argument schema), so it has to reach the run some other way.
     """
     catalog: list[dict[str, Any]] = []
     for entry in (llm.general_tools if llm else None) or []:
@@ -462,16 +468,26 @@ def tool_catalog(llm: RetellLLM | None) -> list[dict[str, Any]]:
             continue
         tool_type = str(entry.get("type") or "custom")
         name = str(entry.get("name") or tool_type)
-        catalog.append(
-            {
-                "name": name,
-                "type": tool_type,
-                "description": str(entry.get("description") or ""),
-                "parameters": entry.get("parameters") or {"type": "object", "properties": {}},
-                "filler": execution_filler(entry),
-            }
-        )
+        tool: dict[str, Any] = {
+            "name": name,
+            "type": tool_type,
+            "description": str(entry.get("description") or ""),
+            "parameters": entry.get("parameters") or {"type": "object", "properties": {}},
+            "filler": execution_filler(entry),
+        }
+        if tool_type == "agent_swap":
+            tool["agent_id"] = str(entry.get("agent_id") or "")
+        catalog.append(tool)
     return catalog
+
+
+def swap_agent_ids(llm: RetellLLM | None) -> list[str]:
+    """Destination agent ids of this LLM's `agent_swap` tools, in order."""
+    return [
+        str(entry["agent_id"])
+        for entry in (llm.general_tools if llm else None) or []
+        if isinstance(entry, dict) and entry.get("type") == "agent_swap" and entry.get("agent_id")
+    ]
 
 
 def _tool_block(catalog: list[dict[str, Any]]) -> str:
@@ -546,6 +562,7 @@ class _Simulator:
         start_speaker: str,
         variables: Mapping[str, Any] | None = None,
         knowledge_bases: list[knowledge.KnowledgeBaseView] | None = None,
+        swap_destinations: Mapping[str, dict[str, Any]] | None = None,
     ) -> None:
         self._client = build_genai_client(settings)
         self._settings = settings
@@ -561,6 +578,9 @@ class _Simulator:
         # Loaded before the run so kb_lookup can be answered for real without a
         # database session open for the length of a simulated call.
         self._knowledge_bases = knowledge_bases or []
+        # Agents this run may hand the call to, keyed by agent id, loaded up
+        # front for the same reason (see `_load_swap_destinations`).
+        self._swap_destinations: Mapping[str, dict[str, Any]] = swap_destinations or {}
         self.transcript: list[dict[str, Any]] = []
         # How the call finished, in the judge's and the wrap-up prompt's words.
         # Set by run(); the default covers a transcript nothing ever ran.
@@ -576,6 +596,36 @@ class _Simulator:
 
     def _tool_by_name(self, name: str) -> dict[str, Any] | None:
         return next((t for t in self._catalog if t["name"] == name), None)
+
+    def _agent_swap(self, tool: dict[str, Any]) -> str:
+        """Re-point the run at another agent, and say so in the tool result.
+
+        Mirrors the worker's `_do_agent_swap`: the call, the transcript and the
+        variables all carry over — only the prompt, the tools and the knowledge
+        bases change. That is the whole point of grading a swap rather than
+        ending on it: the specialist answers with the router's conversation
+        already behind it, so a criterion about what the caller was asked twice,
+        or about a detail the router collected, is graded on the real thing.
+
+        A destination that could not be loaded (unknown, another workspace's, or
+        one with no LLM) leaves the run on the current agent and reports the
+        failure to the model, which is what the live tool returns.
+        """
+        agent_id = str(tool.get("agent_id") or "")
+        destination = self._swap_destinations.get(agent_id)
+        if destination is None:
+            return json.dumps({"error": "destination agent is not available"})
+        # The destination's own "Current Time Awareness" takes over for the rest
+        # of the call, and its prompt is resolved against it — the order the
+        # worker uses, so a specialist that reads {{current_time}} in its own
+        # zone is graded on the hour it would really have seen.
+        set_zone = getattr(self._variables, "set_default_timezone", None)
+        if callable(set_zone):
+            set_zone(destination["timezone"])
+        self._general_prompt = resolve_template(destination["general_prompt"], self._variables)
+        self._catalog = destination["catalog"]
+        self._knowledge_bases = destination["knowledge_bases"]
+        return json.dumps({"result": f"now acting as agent {agent_id}"})
 
     def _call_facts(self) -> str:
         """What an invented tool result has to agree with: scenario + variables.
@@ -713,7 +763,13 @@ class _Simulator:
                 "tool_call_id": call_id,
             }
         )
-        output = await self._tool_result(tool, name, args)
+        if tool is not None and tool["type"] == "agent_swap":
+            # Handled here rather than in `_tool_result` because a swap has no
+            # payload to mock — the destination agent's prompt *is* the result,
+            # so a `tool_mock` naming this tool has nothing to stand in for.
+            output = self._agent_swap(tool)
+        else:
+            output = await self._tool_result(tool, name, args)
         self.transcript.append(
             {
                 "role": "tool_call_result",
@@ -722,8 +778,9 @@ class _Simulator:
                 "tool_call_id": call_id,
             }
         )
-        # end_call / transfer_call / agent_swap take the call away from this
-        # agent; nothing after them belongs in the transcript.
+        # end_call / transfer_call take the call away from the agent; nothing
+        # after them belongs in the transcript. A swap keeps it (see
+        # `_agent_swap`) and the conversation goes on under the new prompt.
         return tool is None or tool["type"] not in _TERMINAL_TOOL_TYPES
 
     async def _agent_turn(self) -> bool:
@@ -936,6 +993,55 @@ async def _load_knowledge_bases(
     return await knowledge.load_views(session, ids, llm.workspace_id)
 
 
+async def _load_swap_destinations(
+    session: Any, llm: RetellLLM | None, workspace_id: str | None
+) -> dict[str, dict[str, Any]]:
+    """Every agent this one can hand the call to, followed transitively.
+
+    A router that swaps to a specialist which swaps on again is a single call in
+    production, so it has to be a single transcript here. Everything a
+    destination needs is read now, while the session is open, for the same
+    reason the knowledge bases are: a simulated call runs for minutes and must
+    not hold a connection for its length.
+
+    Destinations resolve to their published version and are scoped to the
+    workspace, matching `GET /internal/agents/{agent_id}/config` — the id comes
+    from user-editable tool config, so an unscoped lookup would pull another
+    tenant's prompt into this run.
+    """
+    destinations: dict[str, dict[str, Any]] = {}
+    if llm is None or not workspace_id:
+        return destinations
+    pending = swap_agent_ids(llm)
+    seen: set[str] = set()
+    while pending:
+        agent_id = pending.pop(0)
+        if agent_id in seen:
+            continue
+        seen.add(agent_id)
+        live = await session.get(Agent, agent_id)
+        if live is None or live.workspace_id != workspace_id:
+            # A live call gets a 404 here and keeps talking as the current
+            # agent. Leaving the destination out reproduces that.
+            continue
+        destination_agent, destination_llm, _ = await versions.resolve(session, live)
+        if destination_llm is None:
+            # The worker refuses a destination with no LLM — swapping to one
+            # would wipe the live prompt and tools — so this run must too.
+            continue
+        destinations[agent_id] = {
+            "agent_name": destination_agent.agent_name or agent_id,
+            # Kept unresolved: the destination's own time awareness takes over
+            # on arrival, and its prompt is read against that zone.
+            "general_prompt": destination_llm.general_prompt or "",
+            "catalog": tool_catalog(destination_llm),
+            "knowledge_bases": await _load_knowledge_bases(session, destination_llm),
+            "timezone": destination_agent.timezone,
+        }
+        pending.extend(swap_agent_ids(destination_llm))
+    return destinations
+
+
 async def _run_one(factory: Any, job_id: str) -> str:
     """Execute one test run to a terminal status, committing as it goes."""
     settings = get_settings()
@@ -952,6 +1058,9 @@ async def _run_one(factory: Any, job_id: str) -> str:
         llm = await session.get(RetellLLM, batch.llm_id) if batch and batch.llm_id else None
         agent = await session.get(Agent, batch.agent_id) if batch and batch.agent_id else None
         knowledge_bases = await _load_knowledge_bases(session, llm)
+        swap_destinations = await _load_swap_destinations(
+            session, llm, llm.workspace_id if llm else None
+        )
 
     status: str = "error"
     results: list[dict[str, Any]] = []
@@ -1014,6 +1123,7 @@ async def _run_one(factory: Any, job_id: str) -> str:
             start_speaker=start_speaker,
             variables=merged,
             knowledge_bases=knowledge_bases,
+            swap_destinations=swap_destinations,
         )
         await simulator.run()
         status, results = await simulator.judge()
