@@ -7,7 +7,7 @@ importantly — which ones must not.
 
 import arhiteq_api.db as db_module
 from arhiteq_api.models import Agent, RetellLLM
-from arhiteq_api.services import simulation
+from arhiteq_api.services import simulation, versions
 from tests.conftest import OTHER_WORKSPACE_ID, WORKSPACE_ID
 
 
@@ -116,3 +116,69 @@ async def test_an_agent_with_no_swap_tools_loads_nothing():
 
     assert await _load(llm) == {}
     assert await simulation._load_swap_destinations(None, None, WORKSPACE_ID) == {}
+
+
+async def test_a_destination_is_read_from_the_draft_not_the_published_snapshot():
+    """Simulation grades what you are editing, and that has to survive a swap.
+
+    A live call resolves a swap destination to its published version, because
+    that is what a real call would have run. A simulated one must not: the whole
+    point of the split-and-iterate loop this feature exists for is editing a
+    specialist and re-running the suite. Reading Published there would grade the
+    edits against text the operator had already replaced — and would read one
+    transcript off a draft before the swap and a snapshot after it.
+    """
+    specialist = await _seed_agent("agent_spec")
+    router = await _seed_agent("agent_router2", tools=[_swap("to_spec", "agent_spec")])
+
+    async with db_module.session_factory()() as session:
+        agent = await session.get(Agent, "agent_spec")
+        await versions.publish(session, agent, agent.version)
+        await session.commit()
+
+    # The editor's autosave: the live row moves on, the snapshot stays behind.
+    async with db_module.session_factory()() as session:
+        live = await session.get(RetellLLM, specialist.llm_id)
+        live.general_prompt = "the edit the operator is testing"
+        agent = await session.get(Agent, "agent_spec")
+        agent.version += 1
+        await session.commit()
+
+    destinations = await _load(router)
+    assert destinations["agent_spec"]["general_prompt"] == "the edit the operator is testing"
+
+
+async def test_destinations_sharing_a_knowledge_base_load_it_once():
+    """The blobs are capped per lookup, not per run.
+
+    Loading per destination re-reads the same megabytes for every case in a
+    batch, times the length of the swap chain.
+    """
+    calls = []
+    real = simulation._load_knowledge_bases
+
+    async def counting(session, llm):
+        calls.append(tuple(llm.knowledge_base_ids or []))
+        return await real(session, llm)
+
+    for name in ("agent_kb1", "agent_kb2"):
+        llm = await _seed_agent(name)
+        async with db_module.session_factory()() as session:
+            row = await session.get(RetellLLM, llm.llm_id)
+            row.knowledge_base_ids = ["know_shared"]
+            await session.commit()
+    router = await _seed_agent(
+        "agent_router3", tools=[_swap("a", "agent_kb1"), _swap("b", "agent_kb2")]
+    )
+
+    simulation._load_knowledge_bases = counting
+    try:
+        destinations = await _load(router)
+    finally:
+        simulation._load_knowledge_bases = real
+
+    assert set(destinations) == {"agent_kb1", "agent_kb2"}
+    assert calls == [("know_shared",)]
+    assert (
+        destinations["agent_kb1"]["knowledge_bases"] is destinations["agent_kb2"]["knowledge_bases"]
+    )

@@ -1004,16 +1004,28 @@ async def _load_swap_destinations(
     reason the knowledge bases are: a simulated call runs for minutes and must
     not hold a connection for its length.
 
-    Destinations resolve to their published version and are scoped to the
-    workspace, matching `GET /internal/agents/{agent_id}/config` — the id comes
-    from user-editable tool config, so an unscoped lookup would pull another
-    tenant's prompt into this run.
+    Destinations are read from the **live** rows, not the published ones. A live
+    call does the opposite — `GET /internal/agents/{agent_id}/config` lands on
+    the destination's published version, because that is what a real call would
+    have run — but simulation deliberately grades what you are editing
+    (`docs/AGENT_VERSIONING.md`), and that has to hold past the first agent.
+    Resolving destinations to Published instead would grade an operator's edits
+    to a specialist against text they had already replaced, which is exactly the
+    loop this feature exists to support; it would also read a single transcript
+    off a draft before the swap and a published snapshot after it.
+
+    Scoping is unchanged: the id comes from user-editable tool config, so an
+    unscoped lookup would pull another tenant's prompt into this run.
     """
     destinations: dict[str, dict[str, Any]] = {}
     if llm is None or not workspace_id:
         return destinations
     pending = swap_agent_ids(llm)
     seen: set[str] = set()
+    # Agents in a swap graph routinely share knowledge bases, and the blobs are
+    # capped per lookup rather than per run — loading them once per destination
+    # would re-read the same megabytes for every case in the batch.
+    loaded: dict[tuple[str, ...], list[knowledge.KnowledgeBaseView]] = {}
     while pending:
         agent_id = pending.pop(0)
         if agent_id in seen:
@@ -1024,18 +1036,23 @@ async def _load_swap_destinations(
             # A live call gets a 404 here and keeps talking as the current
             # agent. Leaving the destination out reproduces that.
             continue
-        destination_agent, destination_llm, _ = await versions.resolve(session, live)
+        destination_agent, destination_llm, _ = await versions.resolve(
+            session, live, versions.LATEST
+        )
         if destination_llm is None:
             # The worker refuses a destination with no LLM — swapping to one
             # would wipe the live prompt and tools — so this run must too.
             continue
+        key = tuple(str(i) for i in (destination_llm.knowledge_base_ids or []) if i)
+        if key not in loaded:
+            loaded[key] = await _load_knowledge_bases(session, destination_llm)
         destinations[agent_id] = {
             "agent_name": destination_agent.agent_name or agent_id,
             # Kept unresolved: the destination's own time awareness takes over
             # on arrival, and its prompt is read against that zone.
             "general_prompt": destination_llm.general_prompt or "",
             "catalog": tool_catalog(destination_llm),
-            "knowledge_bases": await _load_knowledge_bases(session, destination_llm),
+            "knowledge_bases": loaded[key],
             "timezone": destination_agent.timezone,
         }
         pending.extend(swap_agent_ids(destination_llm))
@@ -1054,21 +1071,20 @@ async def _run_one(factory: Any, job_id: str) -> str:
         await session.commit()
 
         snapshot = dict(job.test_case_definition_snapshot or {})
-        batch = await session.get(TestCaseBatchJob, job.test_case_batch_job_id)
-        llm = await session.get(RetellLLM, batch.llm_id) if batch and batch.llm_id else None
-        agent = await session.get(Agent, batch.agent_id) if batch and batch.agent_id else None
-        knowledge_bases = await _load_knowledge_bases(session, llm)
-        swap_destinations = await _load_swap_destinations(
-            session, llm, llm.workspace_id if llm else None
-        )
+        # Read while the session is open: `job` is detached below, and the
+        # config load that needs this now happens inside the error guard.
+        batch_job_id = job.test_case_batch_job_id
 
     status: str = "error"
     results: list[dict[str, Any]] = []
     explanation = ""
     # Held outside the try so a mid-call failure can still save the turns that
     # did happen — how far the call got is the most useful thing about a
-    # failed run, and discarding it leaves the drawer blank.
+    # failed run, and discarding it leaves the drawer blank. `agent` is read by
+    # the same write-back, and the config load that binds it is now inside the
+    # guard, so a run that fails before it must still find a name here.
     simulator: _Simulator | None = None
+    agent: Agent | None = None
     try:
         # Checked before anything else: a case with nothing to grade can only
         # ever end in `error`, so don't spend a whole simulated call finding out.
@@ -1078,6 +1094,19 @@ async def _run_one(factory: Any, job_id: str) -> str:
             raise RuntimeError(
                 "No Gemini credentials configured; simulation runs need GOOGLE_API_KEY "
                 "or Vertex ADC."
+            )
+
+        # Inside the guard, so a database error while reading the config leaves
+        # the run marked `error` with a reason. Outside it, the raise escapes
+        # before anything writes a terminal status and the row sits at
+        # `in_progress` forever under a batch the dashboard shows as complete.
+        async with factory() as session:
+            batch = await session.get(TestCaseBatchJob, batch_job_id)
+            llm = await session.get(RetellLLM, batch.llm_id) if batch and batch.llm_id else None
+            agent = await session.get(Agent, batch.agent_id) if batch and batch.agent_id else None
+            knowledge_bases = await _load_knowledge_bases(session, llm)
+            swap_destinations = await _load_swap_destinations(
+                session, llm, llm.workspace_id if llm else None
             )
         if llm is None:
             raise RuntimeError("The response engine for this test no longer exists.")

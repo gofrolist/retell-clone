@@ -69,12 +69,18 @@ reimplement it.
   override the default. The editor's Test Audio button passes the version being
   edited (`TestPanel` → `api.createWebCall`), so a draft can be voice-tested
   before it is published.
-- `agent_swap` (`GET /internal/agents/{id}/config`) lands on the destination
-  agent's published version.
+- `agent_swap` on a **live call** (`GET /internal/agents/{id}/config`) lands on
+  the destination agent's published version — the same config the call would
+  have run had it started there.
 - `GET /get-agent/{id}` still defaults to the **latest** version — what the
   editor shows. Pass `?version=latest_published` for what calls run.
 - Simulation and the inline test chat deliberately use the live rows: you test
-  what you are editing.
+  what you are editing. That holds **past a swap too**: a simulated
+  `agent_swap` reads the destination's live rows, not its published snapshot,
+  so editing a specialist and re-running the suite grades the edit. Resolving
+  destinations to Published instead would read one transcript off a draft
+  before the swap and a snapshot after it, and would make an operator's edits
+  look like they did nothing until Publish.
 
 ## Dashboard
 
