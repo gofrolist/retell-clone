@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/gofrolist/retell-clone/compare/v0.20.0...v0.21.0) (2026-07-28)
+
+
+### Features
+
+* **simulation:** follow an agent_swap instead of hanging up on it ([#189](https://github.com/gofrolist/retell-clone/issues/189)) ([038bf28](https://github.com/gofrolist/retell-clone/commit/038bf28b66e430c6e1accabd43d0f633e9b3c79a))
+
 ## [0.20.0](https://github.com/gofrolist/retell-clone/compare/v0.19.1...v0.20.0) (2026-07-28)
 
 
