@@ -58,12 +58,17 @@ class Settings(BaseSettings):
     )
     analysis_model: str = "gemini-3.1-flash-lite"
     # Stands in for the agent under simulation when its own model cannot serve
-    # text generation — Gemini Live models are realtime-audio only. It is the
-    # agent's understudy, so it wants to be the closest text sibling of what
-    # production actually runs, NOT the cheap model the platform uses for
-    # judging and summarising: a weaker stand-in fails prompt rules the live
-    # agent follows, and the suite reads that as an agent defect.
-    simulation_agent_model: str = "gemini-2.5-flash"
+    # text generation — Gemini Live models are realtime-audio only. Unset falls
+    # back to `analysis_model`, which is what this has always done.
+    #
+    # It is worth pointing somewhere else, but not blindly: which model plays
+    # the agent decides individual verdicts, and no model measured here
+    # dominates. Holding one prompt fixed across gemini-3.1-flash-lite and
+    # gemini-2.5-flash scored 71 and 70 of 98 — a tie — while disagreeing on
+    # roughly a fifth of the cases. Read-back criteria ("say the number back
+    # before you save it") are the clearest split: flash-lite fails them on
+    # prompts the others pass.
+    simulation_agent_model: str | None = None
 
     # Webhook delivery
     webhook_timeout_seconds: float = 10.0

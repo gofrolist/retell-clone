@@ -999,9 +999,10 @@ async def _run_one(factory: Any, job_id: str) -> str:
         # serve text generation, so those fall back to the configured stand-in
         # rather than to `analysis_model`: the stand-in plays the agent, and a
         # weaker one fails prompt rules the live agent follows.
-        agent_model = snapshot.get("llm_model") or llm.model or settings.simulation_agent_model
+        stand_in = settings.simulation_agent_model or settings.analysis_model
+        agent_model = snapshot.get("llm_model") or llm.model or stand_in
         if is_live_model(agent_model):
-            agent_model = settings.simulation_agent_model
+            agent_model = stand_in
 
         simulator = _Simulator(
             settings=settings,

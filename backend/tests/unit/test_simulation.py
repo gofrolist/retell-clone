@@ -1541,11 +1541,12 @@ def test_variable_value_renders_a_flag_the_prompt_can_match():
     assert rendered == 'If true = "true", say goodbye.'
 
 
-def test_the_live_model_stand_in_is_not_the_analysis_model():
-    """The stand-in plays the agent; `analysis_model` judges it.
+def test_the_stand_in_defaults_to_the_analysis_model():
+    """Unset changes nothing: the knob exists to be pointed, not to move on its own.
 
-    Reusing the cheap judging model as the agent under test makes the suite
-    report prompt rules the live agent follows as agent defects.
+    Which model plays the agent decides individual verdicts, and none of the
+    ones measured dominates — so the default must preserve behaviour rather
+    than pick a winner.
     """
     settings = get_settings()
-    assert settings.simulation_agent_model != settings.analysis_model
+    assert settings.simulation_agent_model is None
