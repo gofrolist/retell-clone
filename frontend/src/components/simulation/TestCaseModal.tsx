@@ -1,5 +1,6 @@
 "use client";
 
+import LlmModelSelect from "@/components/editor/LlmModelSelect";
 import { PairRows, fromPairs, toPairs, type Pair } from "@/components/editor/PairRows";
 import Button from "@/components/ui/Button";
 import { Field, TextInput, Textarea } from "@/components/ui/Field";
@@ -48,6 +49,7 @@ export default function TestCaseModal({
             user_prompt: initial.user_prompt,
             metrics: initial.metrics.length ? initial.metrics : [""],
             tool_mocks: initial.tool_mocks ?? [],
+            llm_model: initial.llm_model ?? null,
           }
         : EMPTY,
     );
@@ -286,6 +288,26 @@ export default function TestCaseModal({
                 />
               </div>
             ))}
+          </div>
+        </Field>
+
+        <Field
+          label="Model"
+          hint="Which model plays the agent in this simulation. Leave it on the agent's own unless you are comparing models — a realtime-audio model can't generate text, so those are stood in for automatically."
+        >
+          <div className="flex items-center gap-2">
+            <LlmModelSelect
+              value={draft.llm_model ?? ""}
+              onChange={(v) => setDraft({ ...draft, llm_model: v || null })}
+            />
+            {draft.llm_model && (
+              <button
+                onClick={() => setDraft({ ...draft, llm_model: null })}
+                className="text-xs font-medium text-accent-deep hover:underline cursor-pointer"
+              >
+                Use the agent&apos;s own
+              </button>
+            )}
           </div>
         </Field>
 

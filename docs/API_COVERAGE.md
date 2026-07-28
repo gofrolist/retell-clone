@@ -64,7 +64,14 @@ Known intentional deviations (all additive or dashboard-only):
   (`manual` | `generated`), batches carry `agent_id` (and
   `/v2/list-batch-tests` takes an optional `agent_id` filter, since several
   agents can share one LLM), and runs carry `metric_results` (per-criterion
-  verdicts behind `result_explanation`) — all additive. `create-batch-test`
+  verdicts behind `result_explanation`) — all additive. Test cases carry
+  `llm_model` (Retell's per-case "LLM Setting"): the model that plays the
+  agent for that case, `null` for the agent's own. A realtime-audio model
+  cannot generate text, so an agent on one is simulated on
+  `ARHITEQ_SIMULATION_AGENT_MODEL` instead (unset: `analysis_model`, the
+  long-standing behaviour). Which model plays the agent changes individual
+  verdicts — read-back criteria are the clearest split — so it is a knob, not
+  a default worth moving blindly. `create-batch-test`
   additionally 429s past 3 batches running concurrently per workspace: the
   background work is many model round-trips per case and request-level rate
   limiting never sees it.

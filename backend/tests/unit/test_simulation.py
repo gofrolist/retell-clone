@@ -1539,3 +1539,14 @@ def test_variable_value_renders_a_flag_the_prompt_can_match():
     variables = {"is_last_day_of_trial": simulation._variable_value(True)}
     rendered = resolve_template('If {{is_last_day_of_trial}} = "true", say goodbye.', variables)
     assert rendered == 'If true = "true", say goodbye.'
+
+
+def test_the_stand_in_defaults_to_the_analysis_model():
+    """Unset changes nothing: the knob exists to be pointed, not to move on its own.
+
+    Which model plays the agent decides individual verdicts, and none of the
+    ones measured dominates — so the default must preserve behaviour rather
+    than pick a winner.
+    """
+    settings = get_settings()
+    assert settings.simulation_agent_model is None

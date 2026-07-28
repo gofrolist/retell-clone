@@ -994,11 +994,15 @@ async def _run_one(factory: Any, job_id: str) -> str:
         general_prompt = resolve_template(llm.general_prompt or "", merged)
         begin_message = resolve_template(llm.begin_message or "", merged) or None
 
-        # The case may pin a model; Live (audio-only) models can't serve text
-        # generation, so those fall back to the platform analysis model.
-        agent_model = snapshot.get("llm_model") or llm.model or settings.analysis_model
+        # The case may pin a model (Retell's per-case "LLM Setting"); otherwise
+        # the agent is simulated on its own. Live (audio-only) models can't
+        # serve text generation, so those fall back to the configured stand-in
+        # rather than to `analysis_model`: the stand-in plays the agent, and a
+        # weaker one fails prompt rules the live agent follows.
+        stand_in = settings.simulation_agent_model or settings.analysis_model
+        agent_model = snapshot.get("llm_model") or llm.model or stand_in
         if is_live_model(agent_model):
-            agent_model = settings.analysis_model
+            agent_model = stand_in
 
         simulator = _Simulator(
             settings=settings,

@@ -277,7 +277,11 @@ async def update_test_case_definition(
         row.dynamic_variables = coerce_dynamic_variables(body.dynamic_variables)
     if body.tool_mocks is not None:
         row.tool_mocks = list(body.tool_mocks)
-    if body.llm_model is not None:
+    # `null` is a value here, not an absence: it means "simulate this case on
+    # the agent's own model", which is the only way back off a pinned one.
+    # Keyed on what the request actually sent, so omitting the field still
+    # leaves an existing pin alone.
+    if "llm_model" in body.model_fields_set:
         row.llm_model = body.llm_model
     row.user_modified_timestamp = now_ms()
     await session.commit()

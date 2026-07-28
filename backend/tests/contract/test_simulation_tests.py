@@ -485,3 +485,34 @@ async def test_generate_requires_an_engine_and_a_prompt(client):
     )
     assert res.status_code == 422
     assert "no prompt" in res.json()["detail"]
+
+
+async def test_llm_model_can_be_pinned_and_cleared(client):
+    """`null` clears the pin; omitting the field leaves it alone.
+
+    Without the distinction there is no way back off a pinned model — the only
+    escape would be deleting the case and writing it again.
+    """
+    case_id = (await _create_case(client, llm_model="gemini-2.5-flash"))["test_case_definition_id"]
+
+    # An unrelated edit must not disturb the pin.
+    res = await client.put(
+        f"/update-test-case-definition/{case_id}",
+        json={"name": "Renamed"},
+        headers=AUTH_HEADERS,
+    )
+    assert res.json()["llm_model"] == "gemini-2.5-flash"
+
+    res = await client.put(
+        f"/update-test-case-definition/{case_id}",
+        json={"llm_model": "gemini-3.5-flash"},
+        headers=AUTH_HEADERS,
+    )
+    assert res.json()["llm_model"] == "gemini-3.5-flash"
+
+    res = await client.put(
+        f"/update-test-case-definition/{case_id}",
+        json={"llm_model": None},
+        headers=AUTH_HEADERS,
+    )
+    assert res.json()["llm_model"] is None
