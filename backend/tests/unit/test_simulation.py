@@ -1550,3 +1550,181 @@ def test_the_stand_in_defaults_to_the_analysis_model():
     """
     settings = get_settings()
     assert settings.simulation_agent_model is None
+
+
+# ------------------------------------------------------- agent swap (routing)
+
+
+SWAP_CATALOG = [
+    {
+        "name": "transfer_to_pharmacy",
+        "type": "agent_swap",
+        "agent_id": "agent_pharmacy",
+        "description": "Hand the caller to the pharmacy specialist.",
+        "parameters": {"type": "object", "properties": {}},
+        "filler": None,
+    },
+    {
+        "name": "end_call",
+        "type": "end_call",
+        "description": "Hang up",
+        "parameters": {"type": "object", "properties": {}},
+        "filler": None,
+    },
+]
+
+PHARMACY_DESTINATION = {
+    "agent_pharmacy": {
+        "agent_name": "Pharmacy specialist",
+        "general_prompt": "You are the pharmacy specialist for {{first_name}}.",
+        "catalog": [
+            {
+                "name": "lookup_price",
+                "type": "custom",
+                "description": "Look up a drug price",
+                "parameters": {"type": "object", "properties": {}},
+                "filler": None,
+            }
+        ],
+        "knowledge_bases": [],
+        "timezone": "America/New_York",
+    }
+}
+
+
+def test_tool_catalog_carries_the_swap_destination():
+    """The model never chooses where a swap goes — the tool config does.
+
+    The worker gives `agent_swap` an empty argument schema, so the destination
+    has to travel on the catalog entry or the run cannot follow it.
+    """
+    llm = RetellLLM(
+        llm_id="llm_x",
+        workspace_id="ws",
+        general_tools=[
+            {"type": "agent_swap", "name": "to_pharmacy", "agent_id": "agent_p"},
+            {"type": "custom", "name": "book"},
+        ],
+    )
+    catalog = simulation.tool_catalog(llm)
+    assert catalog[0]["agent_id"] == "agent_p"
+    assert "agent_id" not in catalog[1]
+    assert simulation.swap_agent_ids(llm) == ["agent_p"]
+
+
+def test_swap_agent_ids_ignores_entries_without_a_destination():
+    llm = RetellLLM(
+        llm_id="llm_x",
+        workspace_id="ws",
+        general_tools=[
+            {"type": "agent_swap", "name": "broken"},  # never configured
+            {"type": "agent_swap", "name": "ok", "agent_id": "agent_a"},
+            "not a dict",
+        ],
+    )
+    assert simulation.swap_agent_ids(llm) == ["agent_a"]
+
+
+async def test_a_swap_continues_the_call_under_the_new_prompt(monkeypatch):
+    """The point of the whole feature: a handoff is one call, so one transcript.
+
+    A router that swapped and then hung up would grade every specialist
+    criterion as "the agent never did it".
+    """
+    sim, model = make_simulator(
+        monkeypatch,
+        [
+            {"action": "tool_call", "tool_name": "transfer_to_pharmacy", "arguments": {}},
+            {"action": "speak", "content": "Pharmacy here — which prescription?"},
+            {},  # the caller says nothing more, which ends the run
+        ],
+        catalog=list(SWAP_CATALOG),
+        swap_destinations=PHARMACY_DESTINATION,
+        variables=CallVariables({"first_name": "Margaret"}),
+        begin_message=None,
+    )
+    transcript = await sim.run()
+
+    assert [item["role"] for item in transcript] == [
+        "tool_call_invocation",
+        "tool_call_result",
+        "agent",
+    ]
+    assert json.loads(transcript[1]["content"]) == {"result": "now acting as agent agent_pharmacy"}
+    # The specialist answered with the router's conversation already behind it.
+    assert transcript[2]["content"] == "Pharmacy here — which prescription?"
+
+    # The turn after the swap was prompted with the destination's prompt and
+    # its tools — resolved against the call's variables, as a live swap is.
+    after_swap = model.prompts[1]
+    assert "You are the pharmacy specialist for Margaret." in after_swap
+    # The catalog is the destination's, so the router's own tools are gone.
+    # (The swap still shows in the history below it — that is the point.)
+    assert "- lookup_price:" in after_swap
+    assert "- transfer_to_pharmacy:" not in after_swap
+    assert "- end_call:" not in after_swap
+
+
+async def test_a_swap_adopts_the_destination_agents_timezone(monkeypatch):
+    """Mirrors the worker: the destination's own time awareness takes over."""
+    variables = CallVariables({}, default_timezone="America/Los_Angeles")
+    sim, _ = make_simulator(
+        monkeypatch,
+        [
+            {"action": "tool_call", "tool_name": "transfer_to_pharmacy", "arguments": {}},
+            {"action": "speak", "content": "Pharmacy here."},
+            {},
+        ],
+        catalog=list(SWAP_CATALOG),
+        swap_destinations=PHARMACY_DESTINATION,
+        variables=variables,
+        begin_message=None,
+    )
+    await sim.run()
+    assert variables["current_time_America/New_York"] == variables["current_time"]
+
+
+async def test_an_unavailable_destination_leaves_the_run_on_the_current_agent(monkeypatch):
+    """Unknown, cross-workspace or LLM-less destinations never load.
+
+    A live call gets an error back from the tool and keeps talking as the agent
+    it already was, so a run must not silently blank the prompt instead.
+    """
+    sim, model = make_simulator(
+        monkeypatch,
+        [
+            {"action": "tool_call", "tool_name": "transfer_to_pharmacy", "arguments": {}},
+            {"action": "speak", "content": "Let me help you with that myself."},
+            {"action": "hangup", "reason": "done"},
+        ],
+        catalog=list(SWAP_CATALOG),
+        swap_destinations={},
+        begin_message=None,
+    )
+    transcript = await sim.run()
+    assert json.loads(transcript[1]["content"]) == {"error": "destination agent is not available"}
+    assert "You are Clara, a scheduling assistant." in model.prompts[1]
+
+
+async def test_the_wrap_up_turn_runs_as_the_agent_that_holds_the_call(monkeypatch):
+    """A caller who hangs up on the specialist gets the specialist's closing work.
+
+    The wrap-up turn exists so "the agent logs the outcome" is gradeable; after
+    a swap it has to be the destination's prompt and tools that get that turn,
+    or a specialist's logging tool is unreachable.
+    """
+    sim, model = make_simulator(
+        monkeypatch,
+        [
+            {"action": "tool_call", "tool_name": "transfer_to_pharmacy", "arguments": {}},
+            {"action": "speak", "content": "Pharmacy here."},
+            {"action": "hangup", "reason": "the caller hung up"},
+            {"action": "tool_call", "tool_name": "lookup_price", "arguments": {}},
+            {"result": "ok"},  # the synthesized tool payload
+        ],
+        catalog=list(SWAP_CATALOG),
+        swap_destinations=PHARMACY_DESTINATION,
+        begin_message=None,
+    )
+    await sim.run()
+    assert "lookup_price" in model.prompts[-2]

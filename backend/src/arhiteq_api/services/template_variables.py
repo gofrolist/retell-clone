@@ -279,6 +279,15 @@ class _SystemVariables(dict):
         # module's business to move {{current_hour}} to a moment nobody set.
         self._pin_clock = pin_clock
 
+    def set_default_timezone(self, name: str | None) -> None:
+        """Adopt another agent's zone mid-session (`agent_swap`).
+
+        Mirrors ``arhiteq_worker.variables.CallVariables.set_default_timezone``,
+        including mutating in place: the tools of the session already hold this
+        object, so replacing it would strand the captured values on it.
+        """
+        self._default_timezone = _known_zone(name) or DEFAULT_TIMEZONE
+
     def _clock(self) -> datetime | None:
         """The instant the time family reads from, when one has been pinned.
 

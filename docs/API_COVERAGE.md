@@ -74,7 +74,15 @@ Known intentional deviations (all additive or dashboard-only):
   a default worth moving blindly. `create-batch-test`
   additionally 429s past 3 batches running concurrently per workspace: the
   background work is many model round-trips per case and request-level rate
-  limiting never sees it.
+  limiting never sees it. A run **follows an `agent_swap`** rather than ending
+  on it, so a router + specialists agent set is graded as the one call it is:
+  the destination's prompt, tools and knowledge bases take over mid-transcript
+  (its timezone too), and the conversation so far carries across, exactly as
+  the worker does it. Destinations are resolved to their published version and
+  scoped to the workspace, and the chain is followed transitively; one that
+  cannot load (unknown, another workspace's, or without an LLM) returns an
+  error to the model and leaves the run on the current agent, which is what a
+  live call does.
 - Auth additionally accepts Arhiteq dashboard session JWTs (Google Sign-In).
 - Not implemented (no consumer, dashboard-only in Retell): SIP-trunk
   self-serve endpoints, phone-number A/B tests, Retell billing endpoints.

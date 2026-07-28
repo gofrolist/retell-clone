@@ -516,3 +516,38 @@ async def test_llm_model_can_be_pinned_and_cleared(client):
         headers=AUTH_HEADERS,
     )
     assert res.json()["llm_model"] is None
+
+
+async def test_a_failed_config_load_ends_the_run_instead_of_stranding_it(client, monkeypatch):
+    """A database error while reading the agent config must reach the guard.
+
+    Loaded outside it, the raise escapes before anything writes a terminal
+    status: the run sits at `in_progress` forever under a batch the dashboard
+    reports as complete, and only the shutdown sweep ever clears it.
+    """
+
+    async def boom(*args, **kwargs):
+        raise OSError("connection reset while reading the swap destinations")
+
+    # The credential check sits ahead of the load and would short-circuit the
+    # run in this environment before the failure under test could happen.
+    monkeypatch.setattr(simulation, "genai_credentials_available", lambda _s: True)
+    monkeypatch.setattr(simulation, "_load_swap_destinations", boom)
+
+    case = await _create_case(client)
+    res = await client.post(
+        "/create-batch-test",
+        json={
+            "test_case_definition_ids": [case["test_case_definition_id"]],
+            "response_engine": ENGINE,
+        },
+        headers=AUTH_HEADERS,
+    )
+    batch_id = res.json()["test_case_batch_job_id"]
+    await _drain_batches()
+
+    run = (await client.get(f"/v2/list-test-runs/{batch_id}", headers=AUTH_HEADERS)).json()[
+        "items"
+    ][0]
+    assert run["status"] == "error"
+    assert "connection reset" in run["result_explanation"]
