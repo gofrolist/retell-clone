@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/gofrolist/retell-clone/compare/v0.18.0...v0.19.0) (2026-07-28)
+
+
+### Features
+
+* **kb:** search uploaded markdown and text files ([#183](https://github.com/gofrolist/retell-clone/issues/183)) ([4f998d0](https://github.com/gofrolist/retell-clone/commit/4f998d009e48cf7baa86afbfa66ecc62d5e820db))
+
 ## [0.18.0](https://github.com/gofrolist/retell-clone/compare/v0.17.2...v0.18.0) (2026-07-27)
 
 
