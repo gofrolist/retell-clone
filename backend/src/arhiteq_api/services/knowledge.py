@@ -13,10 +13,18 @@ thing deterministic and unit-testable. The cost is recall on pure paraphrase
 later only needs to replace `rank_chunks`, since chunking and the result shape
 live outside it.
 
-Only `type: "text"` sources are indexed today. URL sources store just a URL and
-uploaded documents are opaque blobs, so neither has text to search yet;
-`search` reports them in `skipped_sources` so the caller can tell "no answer in
-the KB" apart from "that source type isn't searchable yet".
+Indexed: `type: "text"` sources, and uploaded documents whose bytes are already
+text — markdown, plain text, CSV. Markdown gets two things beyond decoding,
+because "attach our handbook" is how a knowledge base actually gets built:
+sections are split on headings rather than blank lines (so a hit is titled
+"Pricing Snapshot › Current trial offer" instead of the filename), and YAML
+frontmatter is parsed so a `category:` field becomes an exact match for the
+caller's `category` argument instead of a guess at the text.
+
+Still opaque: PDF and Office documents (they need a parser dependency) and URL
+sources (nothing has fetched them). `search` reports those in
+`skipped_sources`, so the caller can tell "no answer in the KB" apart from
+"that source type isn't searchable yet".
 """
 
 import logging
@@ -24,8 +32,10 @@ import math
 import re
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
+
+from sqlalchemy import select
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +77,30 @@ BM25_B = 0.75
 # something our sources are tagged with, so a hard filter would mostly drop
 # the right answer for having the wrong label.
 CATEGORY_BOOST = 1.25
+# A frontmatter `category:` is the source declaring its own topic, so matching
+# it is evidence rather than the coincidence a substring hit represents. Worth
+# more than CATEGORY_BOOST for that reason, and the two never both apply.
+CATEGORY_EXACT_BOOST = 1.6
+
+# Uploaded documents we can index without a parser dependency. Content types
+# are checked first; browsers and CLI uploads frequently send
+# application/octet-stream for .md, so the suffix is a fallback rather than a
+# second opinion.
+TEXT_FILE_CONTENT_TYPES = frozenset(
+    {"text/markdown", "text/x-markdown", "text/plain", "text/csv", "text/tab-separated-values"}
+)
+TEXT_FILE_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".text", ".csv", ".tsv"})
+MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
+# Per-file ceiling on what we decode and index. Uploads are capped at 20MB
+# each, and chunking a corpus that size on every lookup would put seconds of
+# CPU inside a live call — the whole point of the per-lookup design is that a
+# voice agent's knowledge base is small.
+MAX_INDEXED_FILE_BYTES = 2 * 1024 * 1024
+# And a ceiling across everything one lookup will read and chunk. The per-file
+# cap alone bounds nothing in aggregate: attach enough 2MB files and each
+# kb_lookup re-reads all of them from Postgres and re-tokenizes them on the
+# event loop, inside a live call.
+MAX_INDEXED_BYTES_PER_LOOKUP = 8 * 1024 * 1024
 
 _TOKEN_RE = re.compile(r"[\w']+", re.UNICODE)
 # Dropped from queries only. These carry no signal in a question ("what is the
@@ -117,6 +151,151 @@ def query_terms(query: str) -> list[str]:
     return [_singular(t) for t in (meaningful or raw)]
 
 
+_FRONTMATTER_RE = re.compile(r"\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
+_FRONTMATTER_FIELD_RE = re.compile(r"^([A-Za-z_][\w-]*)\s*:\s*(.*)$")
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
+# CommonMark fences: up to three leading spaces, then ``` or ~~~ (an info
+# string like ```bash may follow).
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+
+def _suffix(filename: str) -> str:
+    _, dot, ext = filename.rpartition(".")
+    return f".{ext.lower()}" if dot else ""
+
+
+def is_indexable_file(filename: str, content_type: str) -> bool:
+    """True when an uploaded document's bytes are text we can read as-is."""
+    if (content_type or "").split(";")[0].strip().lower() in TEXT_FILE_CONTENT_TYPES:
+        return True
+    return _suffix(filename or "") in TEXT_FILE_SUFFIXES
+
+
+def decode_file(data: bytes) -> str | None:
+    """Uploaded bytes as text, or None when they are not text after all.
+
+    A declared text/* content type is the uploader's claim, not a fact — a
+    mislabelled PDF would otherwise be indexed as mojibake and pollute every
+    ranking. Strict UTF-8 is the check: real markdown passes, binary does not.
+    """
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    # A NUL byte survives UTF-8 decoding but never appears in a text document.
+    return None if "\x00" in text else text
+
+
+def split_frontmatter(text: str) -> tuple[dict[str, str], str]:
+    """(YAML frontmatter fields, body).
+
+    Scalar `key: value` lines only — enough for the `category:`/`title:` these
+    documents carry, and not a reason to take a YAML dependency. Nested blocks
+    and lists are simply not returned; the body is what gets indexed either way.
+    """
+    match = _FRONTMATTER_RE.match(text)
+    if not match:
+        return {}, text
+    fields: dict[str, str] = {}
+    for line in match.group(1).splitlines():
+        if line[:1].isspace() or line.lstrip().startswith("#"):
+            continue  # a nested value or a comment, not a scalar field
+        if field := _FRONTMATTER_FIELD_RE.match(line):
+            fields[field.group(1).strip().lower()] = field.group(2).strip().strip("\"'")
+    if not fields:
+        # A document that merely OPENS with a thematic break is not a document
+        # with frontmatter. Trusting the delimiters alone silently deleted
+        # everything up to the next `---` from the index — content that is
+        # present in the knowledge base, shown as complete in the dashboard,
+        # and unretrievable. No parsed field means no frontmatter.
+        return {}, text
+    return fields, text[match.end() :]
+
+
+def split_markdown_sections(text: str, root_title: str = "") -> list[tuple[str, str]]:
+    """[(heading path, section body)] for a markdown document.
+
+    Headings are the author's own boundaries, so they beat blank lines: a hit
+    comes back titled "Pricing Snapshot › Current trial offer" rather than
+    "pricing_snapshot.md", which is most of what tells the agent — and the
+    operator reading the transcript — where an answer came from.
+
+    Fenced code is skipped rather than scanned, because a `# comment` on the
+    first line of a shell or YAML block is not a heading — treating it as one
+    both splits the section mid-block and re-parents everything after it under
+    the comment's text, which is precisely the attribution this title exists to
+    give. The trail stores each heading's real depth instead of assuming
+    position implies level, so a document whose first heading is an `###`
+    followed by an `##` does not report the top-level section as nested inside
+    the deeper one.
+    """
+    sections: list[tuple[str, str]] = []
+    trail: list[tuple[int, str]] = []
+    title = root_title
+    body: list[str] = []
+    fence: str | None = None
+
+    def flush() -> None:
+        if content := "\n".join(body).strip():
+            sections.append((title, content))
+
+    for line in text.splitlines():
+        if marker := _FENCE_RE.match(line):
+            char = marker.group(1)[0]
+            if fence is None:
+                fence = char
+            elif char == fence:
+                fence = None
+            body.append(line)
+            continue
+        heading = None if fence is not None else _HEADING_RE.match(line)
+        if heading is None:
+            body.append(line)
+            continue
+        flush()
+        body = []
+        depth = len(heading.group(1))
+        while trail and trail[-1][0] >= depth:
+            trail.pop()
+        trail.append((depth, heading.group(2).strip()))
+        parts = ([root_title] if root_title else []) + [text for _, text in trail]
+        title = " › ".join(parts)
+    flush()
+    return sections
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeBaseFileView:
+    """An uploaded document's bytes, detached from the session."""
+
+    source_id: str
+    filename: str
+    content_type: str
+    data: bytes
+    # The stored size, which is NOT len(data): a blob too large to index is
+    # loaded as empty rather than read out of the database, and the reason it
+    # was skipped has to say "too large" rather than blame the caller.
+    size_bytes: int = -1
+    # Set when the whole knowledge base exceeds what one lookup will index.
+    over_budget: bool = False
+
+    @property
+    def stored_size(self) -> int:
+        return self.size_bytes if self.size_bytes >= 0 else len(self.data)
+
+    @classmethod
+    def of(cls, row: Any) -> KnowledgeBaseFileView:
+        data = bytes(getattr(row, "data", b"") or b"")
+        size = getattr(row, "size_bytes", None)
+        return cls(
+            source_id=str(getattr(row, "source_id", "")),
+            filename=str(getattr(row, "filename", "")),
+            content_type=str(getattr(row, "content_type", "")),
+            data=data,
+            size_bytes=int(size) if isinstance(size, int) else len(data),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class KnowledgeBaseView:
     """A KnowledgeBase row's searchable fields, detached from the session.
@@ -129,13 +308,26 @@ class KnowledgeBaseView:
     knowledge_base_id: str
     knowledge_base_name: str
     sources: list[Any]
+    # Uploaded blobs, keyed by source_id. Absent for a caller that only has the
+    # KnowledgeBase row; those knowledge bases simply index their text sources.
+    files: dict[str, KnowledgeBaseFileView] = field(default_factory=dict)
 
     @classmethod
-    def of(cls, kb: Any) -> KnowledgeBaseView:
+    def of(cls, kb: Any, files: Iterable[Any] = ()) -> KnowledgeBaseView:
         return cls(
             knowledge_base_id=str(getattr(kb, "knowledge_base_id", "")),
             knowledge_base_name=str(getattr(kb, "knowledge_base_name", "")),
             sources=list(getattr(kb, "sources", None) or []),
+            files={
+                view.source_id: view
+                for view in (
+                    # Already a view when it came from load_views; re-wrapping
+                    # would drop the fields getattr cannot see (over_budget).
+                    row if isinstance(row, KnowledgeBaseFileView) else KnowledgeBaseFileView.of(row)
+                    for row in files
+                )
+                if view.source_id
+            },
         )
 
 
@@ -146,6 +338,9 @@ class Chunk:
     source_id: str
     title: str
     text: str
+    # From a document's frontmatter, when it declares one. Empty for text
+    # sources and for markdown without frontmatter.
+    category: str = ""
 
     @property
     def tokens(self) -> list[str]:
@@ -208,40 +403,117 @@ def split_text(content: str) -> list[str]:
     return chunks
 
 
+def _document_text(
+    source: Mapping[str, Any], files: Mapping[str, KnowledgeBaseFileView]
+) -> tuple[str | None, str]:
+    """(decoded text, reason it was skipped) for an uploaded document source."""
+    source_id = str(source.get("source_id") or "")
+    blob = files.get(source_id)
+    if blob is None:
+        # The caller did not load blobs (or the row is gone). Not a format
+        # problem, so say so rather than blaming the file.
+        return None, "not loaded"
+    if not is_indexable_file(blob.filename, blob.content_type):
+        return None, blob.content_type or "unknown type"
+    if blob.stored_size > MAX_INDEXED_FILE_BYTES:
+        return None, f"larger than {MAX_INDEXED_FILE_BYTES // (1024 * 1024)}MB"
+    if blob.over_budget:
+        return None, "knowledge base is too large to index in one lookup"
+    text = decode_file(blob.data)
+    if text is None:
+        return None, "not valid UTF-8 text"
+    return text, ""
+
+
+def _chunk_document(
+    text: str, *, filename: str, is_markdown: bool
+) -> tuple[list[tuple[str, str]], str]:
+    """([(title, chunk text)], declared category) for one decoded document."""
+    fields, body = split_frontmatter(text) if is_markdown else ({}, text)
+    category = fields.get("category", "")
+    root = fields.get("title") or filename
+    pieces: list[tuple[str, str]] = []
+    sections = split_markdown_sections(body, root) if is_markdown else [(root, body)]
+    for title, section in sections:
+        # Sections still go through word packing: an author's heading says where
+        # a topic starts, not that it is short enough to hand a model whole.
+        pieces.extend((title, chunk) for chunk in split_text(section))
+    return pieces, category
+
+
 def chunk_sources(
-    knowledge_base_id: str, knowledge_base_name: str, sources: Iterable[Any]
+    knowledge_base_id: str,
+    knowledge_base_name: str,
+    sources: Iterable[Any],
+    files: Mapping[str, KnowledgeBaseFileView] | None = None,
 ) -> tuple[list[Chunk], list[dict[str, str]]]:
-    """(searchable chunks, sources skipped because they hold no text)."""
+    """(searchable chunks, sources skipped because they hold no readable text)."""
+    files = files or {}
     chunks: list[Chunk] = []
     skipped: list[dict[str, str]] = []
+
+    def add(source_id: str, title: str, text: str, category: str = "") -> None:
+        chunks.append(
+            Chunk(
+                knowledge_base_id=knowledge_base_id,
+                knowledge_base_name=knowledge_base_name,
+                source_id=source_id,
+                title=title,
+                text=text,
+                category=category,
+            )
+        )
+
     for source in sources or []:
         if not isinstance(source, Mapping):
             continue
         source_type = str(source.get("type") or "")
         source_id = str(source.get("source_id") or "")
-        if source_type != "text":
-            skipped.append(
-                {
-                    "source_id": source_id,
-                    "type": source_type,
-                    "title": str(
-                        source.get("title") or source.get("filename") or source.get("url") or ""
-                    ),
-                }
-            )
+        label = str(source.get("title") or source.get("filename") or source.get("url") or "")
+
+        if source_type == "text":
+            for text in split_text(str(source.get("content") or "")):
+                add(source_id, str(source.get("title") or ""), text)
             continue
-        title = str(source.get("title") or "")
-        content = str(source.get("content") or "")
-        for text in split_text(content):
-            chunks.append(
-                Chunk(
-                    knowledge_base_id=knowledge_base_id,
-                    knowledge_base_name=knowledge_base_name,
-                    source_id=source_id,
-                    title=title,
-                    text=text,
+
+        if source_type == "document":
+            text, reason = _document_text(source, files)
+            if text is None:
+                skipped.append(
+                    {"source_id": source_id, "type": source_type, "title": label, "reason": reason}
                 )
+                continue
+            filename = str(source.get("filename") or label)
+            pieces, category = _chunk_document(
+                text, filename=filename, is_markdown=_suffix(filename) in MARKDOWN_SUFFIXES
             )
+            if not pieces:
+                # Decoded, but there was nothing in it — a frontmatter-only
+                # file, or a 0-byte upload. Contributing neither a chunk nor a
+                # skip entry would make it indistinguishable from a source that
+                # simply didn't match, which is the ambiguity skipped_sources
+                # exists to remove.
+                skipped.append(
+                    {
+                        "source_id": source_id,
+                        "type": source_type,
+                        "title": label,
+                        "reason": "no readable text in the file",
+                    }
+                )
+                continue
+            for title, chunk in pieces:
+                add(source_id, title, chunk, category)
+            continue
+
+        skipped.append(
+            {
+                "source_id": source_id,
+                "type": source_type,
+                "title": label,
+                "reason": "no text has been extracted for this source type",
+            }
+        )
     return chunks, skipped
 
 
@@ -286,8 +558,17 @@ def rank_chunks(
             score += idf * (
                 freq * (BM25_K1 + 1) / (freq + BM25_K1 * (1 - BM25_B + BM25_B * doc_len / avg_len))
             )
-        if score and category_token and category_token in f"{chunk.title} {chunk.text}".casefold():
-            score *= CATEGORY_BOOST
+        if score and category_token:
+            if chunk.category:
+                # The source declared its own topic, so this is a real answer to
+                # the caller's category rather than a word that happened to
+                # appear. A chunk that declares a DIFFERENT category is left
+                # alone rather than penalised: categories are the caller's
+                # taxonomy, and the right answer is often filed elsewhere.
+                if chunk.category.strip().casefold() == category_token:
+                    score *= CATEGORY_EXACT_BOOST
+            elif category_token in f"{chunk.title} {chunk.text}".casefold():
+                score *= CATEGORY_BOOST
         if score > 0:
             scored.append((chunk, score))
     # Ties broken by title then text so the same query always returns the same
@@ -318,6 +599,103 @@ def _snippet(text: str, terms: Sequence[str]) -> str:
     return ("…" if start else "") + piece + ("…" if start + MAX_SNIPPET_CHARS < len(text) else "")
 
 
+async def load_views(session: Any, knowledge_base_ids: Sequence[str], workspace_id: str) -> list:
+    """Knowledge bases + their uploaded blobs, detached from the session.
+
+    The single place that decides what retrieval can see, so the live lookup
+    and the simulation harness cannot drift on it. Always workspace-scoped —
+    the ids reach here from user-editable tool config.
+    """
+    from ..models import KnowledgeBase, KnowledgeBaseFile
+
+    ids = [str(i) for i in knowledge_base_ids if i]
+    if not ids:
+        return []
+    rows = (
+        await session.scalars(
+            select(KnowledgeBase).where(
+                KnowledgeBase.workspace_id == workspace_id,
+                KnowledgeBase.knowledge_base_id.in_(ids),
+            )
+        )
+    ).all()
+    if not rows:
+        return []
+    found = [kb.knowledge_base_id for kb in rows]
+    # Metadata for EVERY file first, blobs second. Filtering the oversized ones
+    # out in SQL would keep them out of the result set entirely, and the source
+    # would then be reported as "not loaded" — the reason that means the caller
+    # forgot the blobs — instead of "too large", pointing an operator whose
+    # handbook is silently unsearchable at the wrong cause.
+    metas = (
+        await session.execute(
+            select(
+                KnowledgeBaseFile.source_id,
+                KnowledgeBaseFile.knowledge_base_id,
+                KnowledgeBaseFile.filename,
+                KnowledgeBaseFile.content_type,
+                KnowledgeBaseFile.size_bytes,
+            )
+            .where(
+                KnowledgeBaseFile.workspace_id == workspace_id,
+                KnowledgeBaseFile.knowledge_base_id.in_(found),
+            )
+            .order_by(KnowledgeBaseFile.source_id)
+        )
+    ).all()
+
+    # Per-file cap, then a budget across the whole lookup. The per-lookup design
+    # re-reads and re-chunks everything on every call, so without a total the
+    # per-file limit still allows an unbounded corpus: enough 2MB files put
+    # seconds of event-loop CPU inside a live call, which is the failure
+    # rank_chunks' docstring already records.
+    wanted: list[Any] = []
+    over_budget: set[str] = set()
+    budget = MAX_INDEXED_BYTES_PER_LOOKUP
+    for meta in metas:
+        if meta.size_bytes > MAX_INDEXED_FILE_BYTES:
+            continue  # reported as "larger than …" from its metadata alone
+        if meta.size_bytes > budget:
+            over_budget.add(meta.source_id)
+            continue
+        budget -= meta.size_bytes
+        wanted.append(meta.source_id)
+    if over_budget:
+        log.warning(
+            "knowledge base exceeds the %dMB per-lookup budget; %d file(s) not indexed",
+            MAX_INDEXED_BYTES_PER_LOOKUP // (1024 * 1024),
+            len(over_budget),
+        )
+
+    blobs: dict[str, bytes] = {}
+    if wanted:
+        blobs = {
+            source_id: bytes(data or b"")
+            for source_id, data in (
+                await session.execute(
+                    select(KnowledgeBaseFile.source_id, KnowledgeBaseFile.data).where(
+                        KnowledgeBaseFile.workspace_id == workspace_id,
+                        KnowledgeBaseFile.source_id.in_(wanted),
+                    )
+                )
+            ).all()
+        }
+
+    by_kb: dict[str, list[KnowledgeBaseFileView]] = {}
+    for meta in metas:
+        by_kb.setdefault(meta.knowledge_base_id, []).append(
+            KnowledgeBaseFileView(
+                source_id=meta.source_id,
+                filename=meta.filename,
+                content_type=meta.content_type,
+                data=blobs.get(meta.source_id, b""),
+                size_bytes=meta.size_bytes,
+                over_budget=meta.source_id in over_budget,
+            )
+        )
+    return [KnowledgeBaseView.of(kb, by_kb.get(kb.knowledge_base_id, ())) for kb in rows]
+
+
 def search(
     knowledge_bases: Iterable[Any],
     query: str,
@@ -339,6 +717,7 @@ def search(
             str(getattr(kb, "knowledge_base_id", "")),
             str(getattr(kb, "knowledge_base_name", "")),
             getattr(kb, "sources", None) or [],
+            getattr(kb, "files", None) or {},
         )
         chunks.extend(kb_chunks)
         skipped.extend(kb_skipped)

@@ -455,9 +455,12 @@ class KnowledgeBase(Base):
     workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id"), index=True)
     knowledge_base_name: Mapped[str] = mapped_column(String(255))
     # Sources are stored verbatim. Each item:
-    # {"type": "text"|"url"|"document", "source_id": "src_...", ...}. Only the
-    # "text" ones carry searchable content today — services/knowledge.py chunks
-    # and ranks them per kb_lookup, with no derived index to keep in sync.
+    # {"type": "text"|"url"|"document", "source_id": "src_...", ...}.
+    # services/knowledge.py chunks and ranks them per kb_lookup, with no derived
+    # index to keep in sync: "text" sources inline, plus "document" uploads
+    # whose bytes decode as text (markdown/plain/CSV, blob in
+    # knowledge_base_files). PDF/Office uploads and "url" sources have no
+    # extracted text yet and come back under skipped_sources.
     sources: Mapped[list[Any]] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(24), default="complete")
     enable_auto_refresh: Mapped[bool] = mapped_column(Boolean, default=False)

@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import select
 
 import arhiteq_api.db as db_module
-from arhiteq_api.models import KnowledgeBase, RetellLLM
+from arhiteq_api.models import KnowledgeBase, KnowledgeBaseFile, RetellLLM
 from arhiteq_api.services import knowledge
 
 from ..conftest import (
@@ -209,6 +209,259 @@ def test_chunk_sources_reports_unsearchable_types() -> None:
     assert [c.source_id for c in chunks] == ["src_pricing"]
     assert {s["type"] for s in skipped} == {"url", "document"}
     assert {s["title"] for s in skipped} == {"https://example.com/faq", "handbook.pdf"}
+
+
+# --- uploaded documents ----------------------------------------------------
+
+MARKDOWN = b"""---
+version: 0.2.0
+category: product
+nested:
+  key: value
+---
+
+# Pricing Snapshot
+
+Intro line about the plans.
+
+## Current trial offer
+
+- **7-day free trial:** $0, no card required
+- Trial includes daily morning calls
+
+### Fine print
+
+The trial converts unless cancelled.
+
+## Cancellation
+
+Cancel any time by calling us.
+"""
+
+
+def _file(
+    source_id="src_doc", filename="pricing_snapshot.md", data=MARKDOWN, ctype="text/markdown"
+):
+    return knowledge.KnowledgeBaseFileView(
+        source_id=source_id, filename=filename, content_type=ctype, data=data
+    )
+
+
+def _doc_kb(*files, sources=None):
+    srcs = sources or [
+        {"type": "document", "source_id": f.source_id, "filename": f.filename} for f in files
+    ]
+    return SimpleNamespace(
+        knowledge_base_id="know_docs",
+        knowledge_base_name="Docs",
+        sources=srcs,
+        files={f.source_id: f for f in files},
+    )
+
+
+def test_indexable_file_detection() -> None:
+    assert knowledge.is_indexable_file("a.md", "text/markdown; charset=utf-8")
+    assert knowledge.is_indexable_file("notes.txt", "text/plain")
+    # Uploaders routinely send octet-stream for markdown; the suffix decides.
+    assert knowledge.is_indexable_file("handbook.md", "application/octet-stream")
+    assert not knowledge.is_indexable_file("handbook.pdf", "application/pdf")
+    assert not knowledge.is_indexable_file("scan.png", "image/png")
+
+
+def test_decode_rejects_bytes_that_are_not_text() -> None:
+    assert knowledge.decode_file("héllo".encode()) == "héllo"
+    assert knowledge.decode_file(b"%PDF-1.4\n\x80\x81\x82") is None
+    # A declared text type is a claim, not a fact — a NUL means binary.
+    assert knowledge.decode_file(b"text\x00more") is None
+
+
+def test_frontmatter_is_parsed_and_stripped() -> None:
+    fields, body = knowledge.split_frontmatter(MARKDOWN.decode())
+    assert fields["category"] == "product"
+    assert fields["version"] == "0.2.0"
+    assert "nested" in fields  # the scalar line; its indented child is skipped
+    assert "key" not in fields
+    assert body.lstrip().startswith("# Pricing Snapshot")
+    # A document without frontmatter is returned untouched.
+    assert knowledge.split_frontmatter("# Title\n\nbody") == ({}, "# Title\n\nbody")
+
+
+def test_markdown_sections_carry_their_heading_path() -> None:
+    _fields, body = knowledge.split_frontmatter(MARKDOWN.decode())
+    sections = dict(knowledge.split_markdown_sections(body, "pricing_snapshot.md"))
+    assert "pricing_snapshot.md › Pricing Snapshot › Current trial offer" in sections
+    assert "pricing_snapshot.md › Pricing Snapshot › Current trial offer › Fine print" in sections
+    # Dropping back to ## resets the deeper trail rather than accumulating it.
+    assert "pricing_snapshot.md › Pricing Snapshot › Cancellation" in sections
+    assert "free trial" in sections["pricing_snapshot.md › Pricing Snapshot › Current trial offer"]
+
+
+def test_a_hash_inside_fenced_code_is_not_a_heading() -> None:
+    """A `# comment` in a shell block is not a section, and mis-taking it for
+    one both splits mid-block and re-parents everything after it under the
+    comment — corrupting the attribution the heading path exists to give."""
+    doc = (
+        "# Emergency Resources\n\nCall 911.\n\n"
+        "```bash\n# Poison control\ncurl x\n```\n\n"
+        "## Local hotlines\n\nDial 800-222-1222.\n"
+    )
+    titles = [t for t, _ in knowledge.split_markdown_sections(doc, "guide.md")]
+    assert titles == [
+        "guide.md › Emergency Resources",
+        "guide.md › Emergency Resources › Local hotlines",
+    ]
+    # Tilde fences count too, and an unclosed fence must not swallow the rest.
+    tilde = "# A\n\n~~~\n# not a heading\n~~~\n\n## B\n\nbody\n"
+    assert [t for t, _ in knowledge.split_markdown_sections(tilde, "f.md")] == [
+        "f.md › A",
+        "f.md › A › B",
+    ]
+
+
+def test_heading_depth_is_tracked_not_inferred_from_position() -> None:
+    """A document whose first heading is deeper than a later one must not
+    report the top-level section as nested inside the deeper one."""
+    titles = [
+        t
+        for t, _ in knowledge.split_markdown_sections(
+            "### Deep first\n\na\n\n## Later top\n\nb\n", "x.md"
+        )
+    ]
+    assert titles == ["x.md › Deep first", "x.md › Later top"]
+
+
+def test_a_leading_thematic_break_is_not_frontmatter() -> None:
+    """Trusting the `---` delimiters alone deleted real content from the index.
+
+    The text between the breaks is present in the knowledge base and shows as
+    complete in the dashboard, so losing it is silent.
+    """
+    text = "---\n\nSome intro\n\n---\n\nrest of doc\n"
+    fields, body = knowledge.split_frontmatter(text)
+    assert fields == {}
+    assert body == text, "no parsed field means it was never frontmatter"
+    assert (
+        "Some intro"
+        in knowledge.search([_doc_kb(_file(data=text.encode()))], "intro")["results"][0]["content"]
+    )
+    # Genuine frontmatter is still parsed and stripped.
+    assert knowledge.split_frontmatter("---\ncategory: faq\n---\nbody\n")[0] == {"category": "faq"}
+
+
+def test_a_document_with_no_readable_text_is_reported() -> None:
+    """Zero chunks AND zero skip entries reads as "the KB simply had no match"."""
+    empty = _file(source_id="src_empty", filename="stub.md", data=b"---\ncategory: faq\n---\n")
+    found = knowledge.search([_doc_kb(empty)], "anything")
+    assert found["results"] == []
+    assert found["skipped_sources"][0]["reason"] == "no readable text in the file"
+
+
+def test_oversized_is_reported_from_metadata_without_reading_the_blob() -> None:
+    """load_views deliberately leaves the bytes unread; the reason must still
+    say "too large" rather than blame the caller for not loading them."""
+    big = knowledge.KnowledgeBaseFileView(
+        source_id="src_big",
+        filename="handbook.md",
+        content_type="text/markdown",
+        data=b"",
+        size_bytes=5 * 1024 * 1024,
+    )
+    found = knowledge.search([_doc_kb(big)], "anything")
+    assert found["skipped_sources"][0]["reason"] == "larger than 2MB"
+
+
+def test_a_markdown_upload_becomes_searchable() -> None:
+    kb = _doc_kb(_file())
+    found = knowledge.search([kb], "is there a free trial")
+    assert found["results"], "an uploaded markdown file must be searchable"
+    top = found["results"][0]
+    assert "free trial" in top["content"]
+    # The heading path is what tells the agent where the answer came from.
+    assert "Current trial offer" in top["title"]
+    assert found["skipped_sources"] == []
+
+
+def test_a_pdf_upload_is_skipped_with_a_reason() -> None:
+    pdf = _file(
+        source_id="src_pdf",
+        filename="handbook.pdf",
+        data=b"%PDF-1.4\n\x80",
+        ctype="application/pdf",
+    )
+    found = knowledge.search([_doc_kb(pdf)], "anything at all")
+    assert found["results"] == []
+    assert found["skipped_sources"][0]["reason"] == "application/pdf"
+
+
+def test_a_mislabelled_binary_is_skipped_rather_than_indexed_as_mojibake() -> None:
+    fake = _file(source_id="src_fake", filename="notes.md", data=b"\xff\xfe\x00binary")
+    found = knowledge.search([_doc_kb(fake)], "binary")
+    assert found["results"] == []
+    assert found["skipped_sources"][0]["reason"] == "not valid UTF-8 text"
+
+
+def test_an_oversized_file_is_skipped() -> None:
+    huge = _file(source_id="src_big", filename="big.md", data=b"word " * 900_000)
+    assert len(huge.data) > knowledge.MAX_INDEXED_FILE_BYTES
+    found = knowledge.search([_doc_kb(huge)], "word")
+    assert found["results"] == []
+    assert "larger than" in found["skipped_sources"][0]["reason"]
+
+
+def test_documents_without_loaded_blobs_say_so() -> None:
+    """A caller that passed KnowledgeBase rows has no bytes to offer."""
+    kb = SimpleNamespace(
+        knowledge_base_id="k",
+        knowledge_base_name="n",
+        sources=[{"type": "document", "source_id": "src_x", "filename": "a.md"}],
+    )
+    found = knowledge.search([kb], "anything")
+    assert found["skipped_sources"][0]["reason"] == "not loaded"
+
+
+def test_declared_category_beats_a_coincidental_word() -> None:
+    """Frontmatter is the source naming its own topic; a substring is a guess."""
+    declared = _file(
+        source_id="src_declared",
+        filename="terms.md",
+        data=b"---\ncategory: product\n---\n\n# Terms\n\nThe plan renews monthly.\n",
+    )
+    coincidence = _file(
+        source_id="src_word",
+        filename="notes.md",
+        data=b"# Notes\n\nThe product plan renews monthly for everyone.\n",
+    )
+    found = knowledge.search([_doc_kb(declared, coincidence)], "plan renewal", category="product")
+    assert found["results"][0]["source_id"] == "src_declared"
+
+
+def test_a_different_declared_category_is_not_penalised() -> None:
+    """The right answer is often filed under a label the caller didn't guess."""
+    doc = _file(
+        source_id="src_meds",
+        filename="meds.md",
+        data=b"---\ncategory: meds\n---\n\n# Discounts\n\nPrescription discount cards are free.\n",
+    )
+    found = knowledge.search([_doc_kb(doc)], "prescription discount card", category="product")
+    assert found["results"], "a mismatched category must not filter out the answer"
+
+
+def test_csv_and_plain_text_uploads_are_indexed() -> None:
+    csv = _file(
+        source_id="src_csv",
+        filename="rates.csv",
+        data=b"drug,price\nLipitor,12.40\n",
+        ctype="text/csv",
+    )
+    txt = _file(
+        source_id="src_txt",
+        filename="hours.txt",
+        data=b"Support hours are nine to five.\n",
+        ctype="text/plain",
+    )
+    kb = _doc_kb(csv, txt)
+    assert knowledge.search([kb], "Lipitor price")["results"]
+    assert knowledge.search([kb], "support hours")["results"]
 
 
 # --- ranking ---------------------------------------------------------------
@@ -429,6 +682,93 @@ async def test_query_cannot_reach_another_workspaces_base(client, call_id, other
     )
     assert resp.status_code == 200
     assert resp.json()["results"] == []
+
+
+async def test_an_uploaded_markdown_file_is_searchable_end_to_end(client) -> None:
+    """The whole path: multipart upload -> attached KB -> kb_lookup query.
+
+    This is how a knowledge base is actually built ("attach our handbook"), and
+    it is the shape the production KB has: markdown files, not pasted text.
+    """
+    resp = await client.post(
+        "/create-knowledge-base",
+        files={"knowledge_base_files": ("pricing.md", MARKDOWN, "text/markdown")},
+        data={"knowledge_base_name": "Handbook"},
+        headers=AUTH_HEADERS,
+    )
+    assert resp.status_code == 201, resp.text
+    kb_id = resp.json()["knowledge_base_id"]
+    await _attach_to_llm([kb_id])
+
+    call_id = await _make_call(client)
+    resp = await client.post(
+        f"/internal/calls/{call_id}/knowledge-base/query",
+        json={"query": "is there a free trial", "category": "product"},
+        headers=INTERNAL_HEADERS,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["results"], "an uploaded markdown file must be reachable from a call"
+    assert "free trial" in body["results"][0]["content"]
+    assert "Current trial offer" in body["results"][0]["title"]
+
+
+async def test_load_views_reports_oversize_and_respects_the_lookup_budget() -> None:
+    """The DB path must distinguish "too large", "over budget" and loaded.
+
+    Filtering oversized rows out in SQL hid them entirely and they came back as
+    "not loaded" — the reason that means the caller forgot the blobs.
+    """
+    kb_id = "know_budget00000001"
+    async with db_module.session_factory()() as session:
+        session.add(
+            KnowledgeBase(
+                knowledge_base_id=kb_id,
+                workspace_id=WORKSPACE_ID,
+                knowledge_base_name="Budget",
+                sources=[
+                    {"type": "document", "source_id": "src_a_small", "filename": "small.md"},
+                    {"type": "document", "source_id": "src_b_huge", "filename": "huge.md"},
+                ],
+            )
+        )
+        session.add(
+            KnowledgeBaseFile(
+                source_id="src_a_small",
+                knowledge_base_id=kb_id,
+                workspace_id=WORKSPACE_ID,
+                filename="small.md",
+                content_type="text/markdown",
+                size_bytes=len(MARKDOWN),
+                data=MARKDOWN,
+            )
+        )
+        # Stored size over the per-file cap; the bytes must never be read.
+        session.add(
+            KnowledgeBaseFile(
+                source_id="src_b_huge",
+                knowledge_base_id=kb_id,
+                workspace_id=WORKSPACE_ID,
+                filename="huge.md",
+                content_type="text/markdown",
+                size_bytes=knowledge.MAX_INDEXED_FILE_BYTES + 1,
+                data=b"x" * 32,
+            )
+        )
+        await session.commit()
+
+    async with db_module.session_factory()() as session:
+        views = await knowledge.load_views(session, [kb_id], WORKSPACE_ID)
+    assert len(views) == 1
+    files = views[0].files
+    assert files["src_a_small"].data == MARKDOWN
+    assert files["src_b_huge"].data == b"", "an oversized blob must not be read"
+    assert files["src_b_huge"].stored_size > knowledge.MAX_INDEXED_FILE_BYTES
+
+    found = knowledge.search(views, "is there a free trial")
+    assert found["results"], "the small file is still searchable"
+    reasons = {s["source_id"]: s["reason"] for s in found["skipped_sources"]}
+    assert reasons["src_b_huge"] == "larger than 2MB"
 
 
 async def test_query_requires_the_internal_token(client, call_id) -> None:
