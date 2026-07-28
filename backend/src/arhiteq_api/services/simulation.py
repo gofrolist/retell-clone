@@ -427,8 +427,31 @@ def _metric_key(metric: str) -> str:
     return re.sub(r"\s+", " ", text).strip().rstrip(".").casefold()
 
 
+def execution_filler(entry: Mapping[str, Any]) -> str | None:
+    """The line a live call speaks while this tool runs, or None if it stays silent.
+
+    Mirrors ``tools._make_custom_tool`` in the worker, including its
+    approximation of ``execution_message_type == "prompt"`` with the same
+    generic sentence: a criterion about the filler has to grade the same
+    behaviour here as on a real call.
+
+    Only custom tools speak. The worker honours ``speak_during_execution``
+    nowhere else, so a built-in carrying the flag — Retell's editor lets you set
+    it on ``end_call`` — must stay silent here too, or the transcript would show
+    a filler line the caller never hears.
+    """
+    if str(entry.get("type") or "custom") != "custom":
+        return None
+    if not entry.get("speak_during_execution"):
+        return None
+    message = str(entry.get("execution_message_description") or "")
+    if entry.get("execution_message_type") == "static_text" and message:
+        return message
+    return "One moment, let me check that."
+
+
 def tool_catalog(llm: RetellLLM | None) -> list[dict[str, Any]]:
-    """The agent's tools as {name, type, description, parameters} entries.
+    """The agent's tools as {name, type, description, parameters, filler} entries.
 
     Mirrors how the worker names tools, so `tool_mocks` written against a
     simulation match the names the live agent actually calls.
@@ -445,6 +468,7 @@ def tool_catalog(llm: RetellLLM | None) -> list[dict[str, Any]]:
                 "type": tool_type,
                 "description": str(entry.get("description") or ""),
                 "parameters": entry.get("parameters") or {"type": "object", "properties": {}},
+                "filler": execution_filler(entry),
             }
         )
     return catalog
@@ -671,6 +695,15 @@ class _Simulator:
         name = str(action.get("tool_name") or "")
         args = action.get("arguments")
         args = resolve_deep(args if isinstance(args, dict) else {}, self._variables)
+        tool = self._tool_by_name(name)
+        # `speak_during_execution` is the platform speaking, not the model: the
+        # worker says this line itself before the tool runs, so the agent is
+        # never prompted to produce it and it would otherwise be missing here.
+        # A criterion like "does not leave the caller in silence" has to see it.
+        if tool and (filler := tool.get("filler")):
+            self.transcript.append(
+                {"role": "agent", "content": resolve_template(filler, self._variables)}
+            )
         call_id = f"tool_{secrets.token_hex(8)}"
         self.transcript.append(
             {
@@ -680,7 +713,6 @@ class _Simulator:
                 "tool_call_id": call_id,
             }
         )
-        tool = self._tool_by_name(name)
         output = await self._tool_result(tool, name, args)
         self.transcript.append(
             {
