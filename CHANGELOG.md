@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.1](https://github.com/gofrolist/retell-clone/compare/v0.19.0...v0.19.1) (2026-07-28)
+
+
+### Bug Fixes
+
+* **simulation:** speak the tool filler line the worker would say ([#185](https://github.com/gofrolist/retell-clone/issues/185)) ([7873983](https://github.com/gofrolist/retell-clone/commit/787398371614c0326dc4e1a51a7cd7830d61efc6))
+
 ## [0.19.0](https://github.com/gofrolist/retell-clone/compare/v0.18.0...v0.19.0) (2026-07-28)
 
 
