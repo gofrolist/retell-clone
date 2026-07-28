@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/gofrolist/retell-clone/compare/v0.19.1...v0.20.0) (2026-07-28)
+
+
+### Features
+
+* **simulation:** choose the model that plays the agent ([#187](https://github.com/gofrolist/retell-clone/issues/187)) ([1641d66](https://github.com/gofrolist/retell-clone/commit/1641d66209138829617be90ddfc8f29a8de53aad))
+
 ## [0.19.1](https://github.com/gofrolist/retell-clone/compare/v0.19.0...v0.19.1) (2026-07-28)
 
 
