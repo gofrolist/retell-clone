@@ -1,6 +1,8 @@
 // Retell-shaped resource types used across the dashboard.
 
-export type AgentType = "single-prompt" | "conversation-flow";
+// "chat" is Retell's text-only agent (backend: an Agent row flagged with the
+// CHAT_VOICE_ID sentinel); it shares the list with voice agents.
+export type AgentType = "single-prompt" | "conversation-flow" | "chat";
 
 export interface Agent {
   agent_id: string;

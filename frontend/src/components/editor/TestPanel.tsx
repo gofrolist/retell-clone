@@ -12,10 +12,13 @@ import { useEffect, useRef, useState } from "react";
 export default function TestPanel({
   agentId,
   agentVersion,
+  audio = true,
 }: {
   agentId: string;
   /** Version to dial; omitted would fall back to the published one. */
   agentVersion?: number;
+  /** False for chat agents: there is no voice to call, only the text test. */
+  audio?: boolean;
 }) {
   const [tab, setTab] = useState("llm");
   // Test dynamic variables ({} button): sent with the next test chat/call so
@@ -30,7 +33,7 @@ export default function TestPanel({
       <div className="flex items-center justify-between px-4 pt-3">
         <PillTabs
           tabs={[
-            { key: "audio", label: "Test Audio" },
+            ...(audio ? [{ key: "audio", label: "Test Audio" }] : []),
             { key: "llm", label: "Test LLM" },
           ]}
           active={tab}

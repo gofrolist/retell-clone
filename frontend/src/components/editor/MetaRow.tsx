@@ -65,9 +65,12 @@ function Chip({ label, value }: { label: string; value: string }) {
 export default function MetaRow({
   agentId,
   llm,
+  chat = false,
 }: {
   agentId: string;
   llm: RawLlm | null;
+  /** Chat agent: cost-per-minute and voice latency don't apply to text. */
+  chat?: boolean;
 }) {
   const tokens = estimateTokens(llm);
   const cost = estimateCost(llm, tokens);
@@ -79,20 +82,24 @@ export default function MetaRow({
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-sub">
       <span className="font-medium text-ink">Agent Details</span>
-      <HoverCard trigger={<Chip label="Cost" value={formatUsdPerMin(costTotal)} />}>
-        <Headline label="Estimated Cost per Minute" value={formatUsdPerMin(costTotal)} />
-        <Rows estimate={cost} format={(_, max) => formatUsdPerMin(max)} />
-      </HoverCard>
-      <span aria-hidden>·</span>
-      <HoverCard
-        trigger={<Chip label="Latency" value={msRange(latency.min, latency.max)} />}
-      >
-        <Headline
-          label="Estimated Latency"
-          value={msRange(latency.min, latency.max)}
-        />
-        <Rows estimate={latency} format={msRange} />
-      </HoverCard>
+      {!chat && (
+        <>
+          <HoverCard trigger={<Chip label="Cost" value={formatUsdPerMin(costTotal)} />}>
+            <Headline label="Estimated Cost per Minute" value={formatUsdPerMin(costTotal)} />
+            <Rows estimate={cost} format={(_, max) => formatUsdPerMin(max)} />
+          </HoverCard>
+          <span aria-hidden>·</span>
+          <HoverCard
+            trigger={<Chip label="Latency" value={msRange(latency.min, latency.max)} />}
+          >
+            <Headline
+              label="Estimated Latency"
+              value={msRange(latency.min, latency.max)}
+            />
+            <Rows estimate={latency} format={msRange} />
+          </HoverCard>
+        </>
+      )}
       {tokens ? (
         <>
           <span aria-hidden>·</span>

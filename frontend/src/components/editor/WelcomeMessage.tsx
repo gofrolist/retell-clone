@@ -15,16 +15,20 @@ export default function WelcomeMessage({
   onStartSpeaker: (v: "agent" | "user") => void;
   message: string;
   onMessage: (v: string) => void;
-  pause: number;
+  /** Seconds of silence before the greeting; omitted for chat agents, which
+   *  don't speak. */
+  pause?: number;
 }) {
   return (
     <section className="mt-5">
       <div className="mb-2 flex items-center justify-between">
         <h2 className="text-[14px] font-semibold">Welcome Message</h2>
-        <span className="inline-flex items-center gap-1 text-[13px] text-sub">
-          <Clock className="size-3.5" />
-          Pause Before Speaking: {pause}s
-        </span>
+        {pause !== undefined && (
+          <span className="inline-flex items-center gap-1 text-[13px] text-sub">
+            <Clock className="size-3.5" />
+            Pause Before Speaking: {pause}s
+          </span>
+        )}
       </div>
       <div className="space-y-2">
         <Select

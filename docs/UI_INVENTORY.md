@@ -32,8 +32,10 @@ FOOTER:   plan pill ("Pay As You Go"), account email row, Help | Updates
 1. **Agents list** — 3-pane: sidebar / secondary panel ("All Agents" +
    FOLDERS with "+") / content. Header: title, search, "Import",
    "Create an Agent" (dark, dropdown caret). Table: Agent Name | Agent Type
-   (Single Prompt | Conversation Flow) | Voice | Phone (pill) | Edited by.
-   Row kebab menu; pagination.
+   (Single Prompt | Conversation Flow | Chat) | Voice | Phone (pill) |
+   Edited by. Chat agents (no voice, no phone) share the list. Row kebab
+   menu: Copy agent ID (Arhiteq extra), Duplicate, Export, Convert to Chat
+   Agent (single-prompt only), Move to folder, Delete; pagination.
 2. **Create Agent modal** — type radio-cards ("Single prompt" — "Easy to
    start…", "Conversational flow" — "Production-ready…"), template category
    tabs (All | Receptionist | Outbound Sales & Reactivation | Appointment

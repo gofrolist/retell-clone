@@ -605,6 +605,7 @@ export function demoResponse<T>(path: string, init?: RequestInit): T {
   const route = path.split("?")[0];
 
   if (route === "/list-agents") return mockAgents.map(rawAgent) as T;
+  if (route === "/list-chat-agents") return [] as T; // no canned chat agents
   if (route === "/list-agent-folders")
     return [
       {

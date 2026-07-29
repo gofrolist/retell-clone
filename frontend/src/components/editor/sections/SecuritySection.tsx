@@ -234,7 +234,8 @@ function FallbackVoiceRow({
  * Falls back to the disabled stub when the agent has no editable LLM engine
  * (conversation-flow agents edit their engine elsewhere).
  */
-function DynamicVariablesRow({
+/** Also rendered on its own for chat agents, which have no security settings. */
+export function DynamicVariablesRow({
   value,
   onChange,
 }: {
