@@ -112,8 +112,14 @@ export default function Sidebar() {
         <Logo />
       </div>
 
+      {/* The switcher sits above both navs: workspace-scoped settings are
+          exactly where you most need to see (and change) which one you're in. */}
+      <div className="px-3 pb-1.5">
+        <WorkspaceSwitcher />
+      </div>
+
       {inSettings ? (
-        <nav className="grow overflow-y-auto px-3">
+        <nav className="grow overflow-y-auto px-3 pt-1.5">
           <Link
             href="/agents"
             className="mb-3 flex items-center gap-1.5 px-2 py-1.5 text-xs font-semibold tracking-wide text-sub hover:text-ink"
@@ -128,33 +134,28 @@ export default function Sidebar() {
           </div>
         </nav>
       ) : (
-        <>
-          <div className="px-3 pb-1.5">
-            <WorkspaceSwitcher />
-          </div>
-          <nav className="grow space-y-4 overflow-y-auto px-3 py-2.5">
-            {GROUPS.map((group) => (
-              <div key={group.label}>
-                <div className="mb-1 px-2.5 text-[11px] font-semibold tracking-wider text-faint">
-                  {group.label}
-                </div>
-                <div className="space-y-0.5">
-                  {group.items.map((item) => (
-                    <NavLink
-                      key={item.href}
-                      item={item}
-                      active={
-                        item.href === "/settings/limits"
-                          ? false
-                          : pathname === item.href || pathname.startsWith(item.href + "/")
-                      }
-                    />
-                  ))}
-                </div>
+        <nav className="grow space-y-4 overflow-y-auto px-3 py-2.5">
+          {GROUPS.map((group) => (
+            <div key={group.label}>
+              <div className="mb-1 px-2.5 text-[11px] font-semibold tracking-wider text-faint">
+                {group.label}
               </div>
-            ))}
-          </nav>
-        </>
+              <div className="space-y-0.5">
+                {group.items.map((item) => (
+                  <NavLink
+                    key={item.href}
+                    item={item}
+                    active={
+                      item.href === "/settings/limits"
+                        ? false
+                        : pathname === item.href || pathname.startsWith(item.href + "/")
+                    }
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        </nav>
       )}
 
       <SidebarFooter />

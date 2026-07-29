@@ -82,6 +82,7 @@ export default function LoginPage() {
             email: string;
             name?: string;
             picture?: string;
+            workspace_id?: string;
           };
           saveSession({
             token: data.token,
@@ -89,6 +90,7 @@ export default function LoginPage() {
             email: data.email,
             name: data.name,
             picture: data.picture,
+            workspace_id: data.workspace_id,
           });
           router.replace("/agents");
           return;

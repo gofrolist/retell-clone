@@ -24,6 +24,7 @@ from .api import (
     llms,
     phone_numbers,
     voices,
+    workspaces,
 )
 from .config import get_settings
 from .db import get_engine, session_factory
@@ -60,6 +61,7 @@ _COLUMN_BACKFILLS: tuple[tuple[str, str, str], ...] = (
     ("contacts", "custom_fields", "JSON"),
     ("phone_numbers", "fallback_number", "VARCHAR(20)"),
     ("workspaces", "settings", "JSON"),
+    ("workspace_members", "last_active_at_ms", "BIGINT"),
     ("alerts", "compare_to", "VARCHAR(16) DEFAULT 'value'"),
     ("batch_calls", "reserved_concurrency", "INTEGER"),
     ("batch_calls", "call_time_window", "JSON"),
@@ -144,6 +146,7 @@ app.include_router(chats.router)
 app.include_router(chat_agents.router)
 app.include_router(dashboard.router)
 app.include_router(agent_tests.router)
+app.include_router(workspaces.router)
 
 # Public, read-only assets (voice preview mp3s). No auth: previews must be
 # playable from a bare <audio> tag in the dashboard.

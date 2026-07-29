@@ -60,6 +60,7 @@ from ..sessions import email_from_authorization
 from ._deps import apply_patch, get_owned
 from .auth_google import _email_allowed
 from .concurrency import BASE_CONCURRENCY, CONCURRENCY_PURCHASE_LIMIT
+from .workspaces import WORKSPACE_TYPES
 
 router = APIRouter(tags=["dashboard"])
 
@@ -1129,6 +1130,12 @@ def _merged_settings_patch(stored: dict[str, Any], patch: dict[str, Any]) -> dic
         match key:
             case "billing_email":
                 out[key] = _validate_billing_email(value)
+            case "workspace_type":
+                if value is not None and value not in WORKSPACE_TYPES:
+                    raise HTTPException(
+                        422, detail=f"workspace_type must be one of {list(WORKSPACE_TYPES)}"
+                    )
+                out[key] = value
             case "purchased_concurrency":
                 out[key] = _require_int(value, key, 0, CONCURRENCY_PURCHASE_LIMIT)
             case "reserved_inbound_concurrency":
@@ -1498,6 +1505,155 @@ async def revoke_invite(
     await session.commit()
 
 
+# The role catalog, worded to match what the code actually enforces rather
+# than an aspirational permission matrix: the only gates today are
+# `require_workspace_admin` (API keys) and `require_member_manager`
+# (members, invites, workspace deletion), plus the owner-only rule below.
+ROLE_CATALOG: tuple[dict[str, str], ...] = (
+    {
+        "role": "owner",
+        "name": "Owner",
+        "type": "System",
+        "description": (
+            "Full control over the workspace: everything an admin can do, plus granting "
+            "and revoking the owner role. A workspace always keeps at least one owner."
+        ),
+    },
+    {
+        "role": "admin",
+        "name": "Admin",
+        "type": "System",
+        "description": (
+            "Builds and tests agents, and manages members, invites, API keys and workspace "
+            "settings, including deleting the workspace. Cannot grant or revoke the owner role."
+        ),
+    },
+    {
+        "role": "member",
+        "name": "Member",
+        "type": "System",
+        "description": (
+            "Full functional access to build and test agents, place calls, view all call "
+            "data and analytics, and change workspace settings. Cannot manage members, "
+            "invites or API keys, or delete the workspace."
+        ),
+    },
+)
+
+
+@router.get("/list-roles")
+async def list_roles(_: ApiKey = Depends(require_api_key)):
+    """Role reference for Settings → Workspace. Static: roles are system
+    roles, there are no custom ones."""
+    return list(ROLE_CATALOG)
+
+
+class UpdateMemberRoleRequest(CompatModel):
+    email: NormalizedEmail
+    role: str = Field(pattern="^(owner|admin|member)$")
+
+
+async def _lock_workspace_for_role_change(session: AsyncSession, workspace_id: str) -> None:
+    """Serialize owner-affecting mutations on one workspace.
+
+    `_assert_not_last_owner` is a check-then-act: two concurrent requests
+    demoting or removing *different* owners of a two-owner workspace each see
+    one owner remaining and both commit, leaving zero — a state nobody inside
+    the workspace can repair, since granting `owner` back requires an owner.
+    Taking a row lock on the workspace first makes the pair run in sequence.
+
+    Postgres only: SQLite has no FOR UPDATE (it would be a syntax error) and
+    needs none — it serializes writers on a database-level lock already.
+    """
+    stmt = select(Workspace.id).where(Workspace.id == workspace_id)
+    if session.get_bind().dialect.name == "postgresql":
+        stmt = stmt.with_for_update()
+    await session.scalar(stmt)
+
+
+async def _caller_is_owner(session: AsyncSession, workspace_id: str, email: str | None) -> bool:
+    """Whether the caller outranks admins for owner-affecting operations.
+
+    A raw API key (email None) is operator credentials, and an allowlisted
+    caller with no member row yet logs in as owner — both count.
+    """
+    if email is None:
+        return True
+    caller = await session.scalar(
+        select(WorkspaceMember).where(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.email == email,
+        )
+    )
+    return caller is None or caller.role == "owner"
+
+
+async def _assert_not_last_owner(session: AsyncSession, workspace_id: str, email: str) -> None:
+    """Refuse to strip the workspace's only owner.
+
+    Without an owner nobody inside the workspace can grant the role back —
+    `_caller_is_owner` gates that, and admins would all fail it.
+    """
+    remaining = await session.scalar(
+        select(func.count())
+        .select_from(WorkspaceMember)
+        .where(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.role == "owner",
+            WorkspaceMember.email != email,
+        )
+    )
+    if not remaining:
+        raise HTTPException(
+            409, detail="A workspace must keep at least one owner — promote someone first"
+        )
+
+
+@router.post("/update-member-role")
+async def update_member_role(
+    body: UpdateMemberRoleRequest,
+    manager: MemberManager = Depends(require_member_manager),
+    session: AsyncSession = Depends(get_session),
+):
+    """Change a member's role.
+
+    Three guards, each closing a real hole:
+    - no self-edit, so an admin can't promote themselves to owner and the last
+      owner can't demote themselves out of the workspace;
+    - only owners touch the owner role, so an admin can't mint a peer that
+      outranks them (or strip the owner who invited them);
+    - the last owner can't be demoted, which would leave the workspace with
+      nobody able to grant the role back.
+    """
+    workspace_id = manager.api_key.workspace_id
+    if manager.email is not None and manager.email == body.email:
+        raise HTTPException(403, detail="You can't change your own role")
+
+    await _lock_workspace_for_role_change(session, workspace_id)
+    member = await session.scalar(
+        select(WorkspaceMember).where(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.email == body.email,
+        )
+    )
+    if member is None:
+        raise HTTPException(404, detail="Member not found")
+    if member.role == body.role:
+        return _member_json(member)
+
+    if "owner" in (member.role, body.role) and not await _caller_is_owner(
+        session, workspace_id, manager.email
+    ):
+        raise HTTPException(403, detail="Only workspace owners can grant or revoke the owner role")
+
+    if member.role == "owner":
+        await _assert_not_last_owner(session, workspace_id, member.email)
+
+    member.role = body.role
+    await session.commit()
+    return _member_json(member)
+
+
 class RemoveMemberRequest(CompatModel):
     # No pattern check here on purpose: removing a member that was never a
     # valid email should 404, not 422.
@@ -1515,6 +1671,7 @@ async def remove_member(
     Existing sessions expire on their own TTL."""
     if manager.email is not None and manager.email == body.email:
         raise HTTPException(403, detail="You can't remove yourself from the workspace")
+    await _lock_workspace_for_role_change(session, manager.api_key.workspace_id)
     member = await session.scalar(
         select(WorkspaceMember).where(
             WorkspaceMember.workspace_id == manager.api_key.workspace_id,
@@ -1523,6 +1680,14 @@ async def remove_member(
     )
     if member is None:
         raise HTTPException(404, detail="Member not found")
+    if member.role == "owner":
+        # Removing an owner is revoking the owner role by another name, so it
+        # answers to the same two rules as update-member-role. Without the
+        # first check an admin blocked from *demoting* an owner could simply
+        # delete them instead.
+        if not await _caller_is_owner(session, manager.api_key.workspace_id, manager.email):
+            raise HTTPException(403, detail="Only workspace owners can remove another owner")
+        await _assert_not_last_owner(session, manager.api_key.workspace_id, member.email)
     await session.delete(member)
     await session.commit()
 

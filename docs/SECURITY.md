@@ -16,6 +16,36 @@ Fail-closed: with no `ARHITEQ_DASHBOARD_ALLOWED_EMAILS` /
 `ARHITEQ_DASHBOARD_ALLOWED_DOMAINS` configured, nobody can log in. Exact
 email match or exact domain match only (no suffix tricks).
 
+## Workspaces and roles
+
+A dashboard user (identified by their Google-verified email) can belong to
+several workspaces. The active one is the session JWT's `ws` claim, so
+`POST /switch-workspace` and `POST /create-workspace` work by re-issuing the
+token — there is no client-supplied workspace header to forge, and switching
+re-checks the `workspace_members` row rather than trusting the old token, so a
+removed member can't hop back in with a stale session. Those two endpoints plus
+`/list-workspaces` authenticate on identity alone (not `require_api_key`), so
+they still work when the active workspace has no key or was just deleted.
+Creating is open to any signed-in user (Retell parity) but capped per identity
+by `ARHITEQ_MAX_WORKSPACES_PER_USER` (default 10, `0` disables) — each new
+workspace provisions a live API key that can place billable calls.
+
+A plain login resumes the workspace you were last in
+(`workspace_members.last_active_at_ms`, stamped on login/create/switch). The
+allowlist's owner-grant on the oldest workspace is now **bootstrap-only** —
+it fires when the email has no membership anywhere, which is how the first
+operator gets in on a fresh deployment. It deliberately no longer overrides an
+existing membership: with a domain allowlist that silently promoted every
+invited employee to owner of workspace #1 on their next sign-in.
+
+Roles are `owner | admin | member`, enforced at three gates: API-key
+management and member/invite management and workspace deletion require
+owner/admin; only an owner grants or revokes `owner`; and a workspace always
+keeps at least one owner (the last one can't be demoted or removed). Nobody
+can change their own role — otherwise an admin self-promotes in one call.
+`GET /list-roles` returns the catalog the dashboard renders; keep its wording
+in step with what the code actually enforces.
+
 ## SSRF protection
 
 Customer-supplied URLs (agent/workspace webhook URLs, phone-number inbound

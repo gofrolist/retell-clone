@@ -16,7 +16,10 @@ toggles dark when on; thin sliders with round thumb + right-aligned value.
 
 ```
 [Arhiteq logo]
-[Workspace switcher: avatar + name + chevrons]
+[Workspace switcher: avatar + name + chevrons → dropdown: search (5+),
+ workspace list with a check on the current one, "Add another workspace"
+ → Create-workspace modal (name + Business/Agency/Developer/Other cards).
+ Rendered above the settings sub-nav too, unlike Retell's.]
 BUILD:    Agents (/agents), Knowledge Base (/knowledgeBase)
 DEPLOY:   Phone Numbers (/phoneNumbers), Batch Call (/batchCall)
 DATA:     Call History (/call-history), Chat History (stub), Contacts (/contacts)
@@ -152,6 +155,14 @@ FOOTER:   plan pill ("Pay As You Go"), account email row, Help | Updates
     Inbound Capacity), Concurrency Burst toggle, Conductor messages toggle,
     LLM Token Limit 32768, Telnyx CPS 1 / Twilio CPS 1 / Custom Telephony
     CPS 1 (Adjust Limit).
-    Sub-pages to build simply: Reliability, API Keys, Webhooks, Workspace.
-15. Stubs (nav item + empty state): Chat History, Live Monitoring,
+    Sub-pages to build simply: Reliability, API Keys, Webhooks.
+15. **Settings › Workspace** — one scrolling page rather than Retell's
+    General/Users/Roles sub-menu: Workspace Name + Save + Workspace ID (copy);
+    Members (avatar, email, role — a dropdown where the caller may change it,
+    a badge otherwise — Remove; pending invites with role + Pending badge +
+    Copy link/Revoke); Roles reference table (Owner/Admin/Member ·
+    description · System); Billing; Danger Zone → delete modal (type the name
+    to confirm; moves you to another workspace if you have one, else signs
+    you out).
+16. Stubs (nav item + empty state): Chat History, Live Monitoring,
     Integrations.

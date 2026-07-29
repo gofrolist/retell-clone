@@ -107,6 +107,10 @@ class Settings(BaseSettings):
     dashboard_allowed_domains: list[str] = []
     # How long a workspace invite link stays redeemable.
     invite_ttl_hours: int = 168
+    # How many workspaces one signed-in identity may own. Each provisions a
+    # live API key and can place billable calls, so this bounds what a single
+    # invited member can spin up. 0 disables the cap.
+    max_workspaces_per_user: int = 10
 
     @property
     def effective_public_livekit_url(self) -> str:

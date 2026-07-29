@@ -12,6 +12,8 @@ export interface Session {
   email: string;
   name?: string;
   picture?: string;
+  /** Active workspace — a claim inside the token, mirrored here for display. */
+  workspace_id?: string;
 }
 
 function parseSession(raw: string | null): Session | null {
@@ -69,6 +71,30 @@ export function isExpired(session: Session): boolean {
 export function getValidSession(): Session | null {
   const s = getSession();
   return s && !isExpired(s) ? s : null;
+}
+
+/**
+ * Adopt a session re-issued for another workspace, then hard-navigate.
+ *
+ * The active workspace is a claim in the token, so switching is purely
+ * "replace the stored session". A full page load (not a router push) is what
+ * makes the whole dashboard follow: every page holds workspace-scoped rows in
+ * component state that a client-side navigation would leave stale.
+ */
+export function enterWorkspace(
+  next: { token: string; expires_at: number; workspace_id: string },
+  href = "/agents",
+): void {
+  const current = getSession();
+  saveSession({
+    email: current?.email ?? "",
+    name: current?.name,
+    picture: current?.picture,
+    token: next.token,
+    expires_at: next.expires_at,
+    workspace_id: next.workspace_id,
+  });
+  window.location.href = href;
 }
 
 /** Clear the session and return to the login screen. */
