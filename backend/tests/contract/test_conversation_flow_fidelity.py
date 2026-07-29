@@ -75,3 +75,31 @@ async def test_patch_accepts_every_writable_field(client, name):
 
     ignored = sorted(k for k, v in payload.items() if body[k] != v)
     assert not ignored, f"{name}: fields ignored by PATCH: {ignored}"
+
+
+async def test_patch_writes_fields_absent_from_every_fixture(client):
+    """`mcps` and `is_transfer_llm` are in the allowlist but in no fixture.
+
+    Without this, the two entries in _MUTABLE_FIELDS would be unverified: the
+    fixture-driven tests above can only assert fields their payloads contain.
+    """
+    created = await client.post(
+        "/create-conversation-flow", headers=AUTH_HEADERS, json={"nodes": []}
+    )
+    assert created.status_code == 201, created.text
+    flow_id = created.json()["conversation_flow_id"]
+
+    mcps = [{"name": "docs", "url": "https://mcp.example.invalid/sse"}]
+    patched = await client.patch(
+        f"/update-conversation-flow/{flow_id}",
+        headers=AUTH_HEADERS,
+        json={"mcps": mcps, "is_transfer_llm": True},
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["mcps"] == mcps
+    assert patched.json()["is_transfer_llm"] is True
+
+    got = await client.get(f"/get-conversation-flow/{flow_id}", headers=AUTH_HEADERS)
+    assert got.status_code == 200, got.text
+    assert got.json()["mcps"] == mcps
+    assert got.json()["is_transfer_llm"] is True
