@@ -50,3 +50,28 @@ async def test_retell_flow_round_trips_unchanged(client, name):
 
     altered = sorted(k for k, v in payload.items() if body[k] != v)
     assert not altered, f"{name}: fields altered by the API: {altered}"
+
+
+@pytest.mark.parametrize("name", FIXTURE_NAMES)
+async def test_patch_accepts_every_writable_field(client, name):
+    """A PATCH carrying a whole flow must write every field, not a subset.
+
+    This is how the editor saves: it PATCHes the flow object it holds.
+    """
+    source = load_fixture(name)
+    payload = {k: v for k, v in source.items() if k not in SERVER_MANAGED}
+
+    created = await client.post(
+        "/create-conversation-flow", headers=AUTH_HEADERS, json={"nodes": []}
+    )
+    assert created.status_code == 201, created.text
+    flow_id = created.json()["conversation_flow_id"]
+
+    patched = await client.patch(
+        f"/update-conversation-flow/{flow_id}", headers=AUTH_HEADERS, json=payload
+    )
+    assert patched.status_code == 200, patched.text
+    body = patched.json()
+
+    ignored = sorted(k for k, v in payload.items() if body[k] != v)
+    assert not ignored, f"{name}: fields ignored by PATCH: {ignored}"

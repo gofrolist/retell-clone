@@ -18,6 +18,18 @@ _MUTABLE_FIELDS = {
     "model_choice",
     "tools",
     "default_dynamic_variables",
+    "components",
+    "notes",
+    "kb_config",
+    "knowledge_base_ids",
+    "mcps",
+    "begin_tag_display_position",
+    "model_temperature",
+    "tool_call_strict_mode",
+    "is_transfer_cf",
+    "is_transfer_llm",
+    "flex_mode",
+    "is_published",
 }
 
 
