@@ -21,7 +21,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import Agent, AgentVersion, RetellLLM, now_ms
+from ..models import Agent, AgentVersion, ConversationFlow, RetellLLM, now_ms
 
 LATEST = "latest"
 LATEST_PUBLISHED = "latest_published"
@@ -43,6 +43,15 @@ _AGENT_EXCLUDED = frozenset(
     }
 )
 _LLM_EXCLUDED = frozenset({"llm_id", "workspace_id", "version", "last_modification_timestamp"})
+_FLOW_EXCLUDED = frozenset(
+    {
+        "conversation_flow_id",
+        "workspace_id",
+        "version",
+        "last_modification_timestamp",
+        "created_at_ms",
+    }
+)
 
 
 def _snapshot(obj: Any, excluded: frozenset[str]) -> dict[str, Any]:
@@ -79,6 +88,13 @@ async def _load_llm(session: AsyncSession, agent: Agent) -> RetellLLM | None:
     if not llm_id:
         return None
     return await session.get(RetellLLM, llm_id)
+
+
+async def _load_flow(session: AsyncSession, agent: Agent) -> ConversationFlow | None:
+    flow_id = (agent.response_engine or {}).get("conversation_flow_id")
+    if not flow_id:
+        return None
+    return await session.get(ConversationFlow, flow_id)
 
 
 async def history(session: AsyncSession, agent_id: str) -> list[AgentVersion]:
@@ -118,6 +134,7 @@ async def ensure_seeded(session: AsyncSession, agent: Agent) -> None:
             agent.published_version = agent.version
         return
     llm = await _load_llm(session, agent)
+    flow = await _load_flow(session, agent)
     session.add(
         AgentVersion(
             agent_id=agent.agent_id,
@@ -128,6 +145,7 @@ async def ensure_seeded(session: AsyncSession, agent: Agent) -> None:
             version_description="Imported from live configuration",
             agent_snapshot=_snapshot(agent, _AGENT_EXCLUDED),
             llm_snapshot=_snapshot(llm, _LLM_EXCLUDED) if llm is not None else None,
+            flow_snapshot=_snapshot(flow, _FLOW_EXCLUDED) if flow is not None else None,
             created_timestamp=agent.last_modification_timestamp,
             last_modification_timestamp=agent.last_modification_timestamp,
             published_timestamp=agent.last_modification_timestamp,
@@ -145,6 +163,7 @@ async def record_initial(session: AsyncSession, agent: Agent) -> AgentVersion:
     immediately — matching the pre-versioning `is_published=True` default.
     """
     llm = await _load_llm(session, agent)
+    flow = await _load_flow(session, agent)
     version = AgentVersion(
         agent_id=agent.agent_id,
         version=agent.version,
@@ -153,6 +172,7 @@ async def record_initial(session: AsyncSession, agent: Agent) -> AgentVersion:
         is_published=True,
         agent_snapshot=_snapshot(agent, _AGENT_EXCLUDED),
         llm_snapshot=_snapshot(llm, _LLM_EXCLUDED) if llm is not None else None,
+        flow_snapshot=_snapshot(flow, _FLOW_EXCLUDED) if flow is not None else None,
         published_timestamp=agent.last_modification_timestamp,
     )
     session.add(version)
@@ -220,8 +240,10 @@ async def publish(
         raise HTTPException(404, detail=f"Agent version {version} not found")
     if not row.is_published:
         llm = await _load_llm(session, agent)
+        flow = await _load_flow(session, agent)
         row.agent_snapshot = _snapshot(agent, _AGENT_EXCLUDED)
         row.llm_snapshot = _snapshot(llm, _LLM_EXCLUDED) if llm is not None else None
+        row.flow_snapshot = _snapshot(flow, _FLOW_EXCLUDED) if flow is not None else None
         row.is_published = True
         row.published_timestamp = now_ms()
         agent.is_published = True
@@ -404,6 +426,39 @@ async def resolve(
     pinned.is_published = row.is_published
     pinned_llm = _detach(llm, row.llm_snapshot, _LLM_EXCLUDED) if llm is not None else None
     return pinned, pinned_llm, row.version
+
+
+async def resolve_with_flow(
+    session: AsyncSession,
+    agent: Agent,
+    ref: int | str | None = LATEST_PUBLISHED,
+    *,
+    strict: bool = True,
+) -> tuple[Agent, RetellLLM | None, ConversationFlow | None, int]:
+    """`resolve()` plus the conversation flow pinned at that version.
+
+    Split from resolve() rather than widening its tuple: only the internal
+    config endpoints need the flow, and the other eight call sites would all
+    have to grow an ignored slot.
+
+    Deliberately does NOT shortcut on `version == agent.version` the way the
+    agent/llm snapshot lookups implicitly do inside resolve(): that equality
+    only proves the *agent* row wasn't drafted since publish. A conversation
+    flow keeps its own independent version counter (see module docstring) and
+    `update-conversation-flow` never touches the owning agent's draft state,
+    so a flow can drift out from under a published, untouched agent. The
+    version's own row is always consulted; only a version with no row (a
+    fresh, still-open draft) or no flow_snapshot (pre-Task-5 history, or an
+    agent with no flow) falls back to serving the live flow.
+    """
+    pinned, llm, version = await resolve(session, agent, ref, strict=strict)
+    flow = await _load_flow(session, pinned)
+    if flow is None:
+        return pinned, llm, flow, version
+    row = await _get(session, agent.agent_id, version)
+    if row is None or row.flow_snapshot is None:
+        return pinned, llm, flow, version
+    return pinned, llm, _detach(flow, row.flow_snapshot, _FLOW_EXCLUDED), version
 
 
 async def published_version_of(session: AsyncSession, agent: Agent) -> int:

@@ -14,6 +14,7 @@ from ..auth import require_internal_token
 from ..db import get_session, session_factory
 from ..models import Agent, Call, Contact, PhoneNumber, now_ms
 from ..schemas import agent_to_dict, coerce_dynamic_variables, llm_to_dict
+from ..schemas_extra import conversation_flow_to_dict
 from ..services import inbound as inbound_svc
 from ..services import knowledge, versions, webhooks
 from ..services.analysis import analyze_call
@@ -40,7 +41,9 @@ async def _call_config(call: Call, session: AsyncSession) -> dict[str, Any]:
     # Serve the version pinned when the call was created, not the live rows:
     # editing (or publishing) mid-call must not swap config under a running
     # session, and the worker re-fetches config on reconnects.
-    agent, llm, _ = await versions.resolve(session, live, call.agent_version, strict=False)
+    agent, llm, flow, _ = await versions.resolve_with_flow(
+        session, live, call.agent_version, strict=False
+    )
     dyn: dict[str, str] = {}
     if llm is not None and llm.default_dynamic_variables:
         dyn.update(coerce_dynamic_variables(llm.default_dynamic_variables))
@@ -55,6 +58,7 @@ async def _call_config(call: Call, session: AsyncSession) -> dict[str, Any]:
         "call_type": call.call_type,
         "agent": agent_to_dict(agent),
         "llm": llm_to_dict(llm) if llm is not None else None,
+        "conversation_flow": conversation_flow_to_dict(flow) if flow is not None else None,
         "dynamic_variables": dyn,
         "metadata": call.metadata_ or {},
         "function_secret": _function_secret(),
@@ -89,10 +93,11 @@ async def get_agent_config(
         raise HTTPException(404, detail="Agent not found")
     # Swapping to another agent lands on its published version, same as if the
     # call had started there.
-    agent, llm, _ = await versions.resolve(session, live)
+    agent, llm, flow, _ = await versions.resolve_with_flow(session, live)
     return {
         "agent": agent_to_dict(agent),
         "llm": llm_to_dict(llm) if llm is not None else None,
+        "conversation_flow": conversation_flow_to_dict(flow) if flow is not None else None,
     }
 
 

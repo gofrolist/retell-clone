@@ -1,6 +1,6 @@
 """Agents whose response engine is a conversation flow."""
 
-from tests.conftest import AUTH_HEADERS, OTHER_AUTH_HEADERS
+from tests.conftest import AUTH_HEADERS, INTERNAL_HEADERS, OTHER_AUTH_HEADERS
 
 NODES = [
     {
@@ -105,3 +105,43 @@ async def test_create_agent_rejects_another_workspaces_flow(client, other_worksp
         },
     )
     assert resp.status_code == 404, resp.text
+
+
+async def test_published_version_freezes_the_flow(client):
+    """Editing a draft flow must not change what a published version serves."""
+    agent = await create_flow_agent(client)
+    agent_id = agent["agent_id"]
+    flow_id = agent["response_engine"]["conversation_flow_id"]
+
+    published = await client.post(f"/publish-agent/{agent_id}", headers=AUTH_HEADERS, json={})
+    assert published.status_code == 200, published.text
+    version = published.json()["version"]
+
+    # Pin a call to the published version before the flow is edited, then read
+    # its config back through the same route the worker uses
+    # (/internal/agents/{agent_id}/config needs a call_id to scope its
+    # cross-tenant check — see api/internal.py:get_agent_config — so this
+    # exercises resolve_with_flow through the plain call-config path instead,
+    # matching the pattern in test_agent_versions.py).
+    call = await client.post(
+        "/v2/register-phone-call",
+        headers=AUTH_HEADERS,
+        json={"agent_id": agent_id, "from_number": "+15551230000", "to_number": "+15559990000"},
+    )
+    assert call.status_code == 201, call.text
+    call_id = call.json()["call_id"]
+
+    edited = await client.patch(
+        f"/update-conversation-flow/{flow_id}",
+        headers=AUTH_HEADERS,
+        json={"global_prompt": "REWRITTEN AFTER PUBLISH"},
+    )
+    assert edited.status_code == 200, edited.text
+
+    config = await client.get(f"/internal/calls/{call_id}/config", headers=INTERNAL_HEADERS)
+    assert config.status_code == 200, config.text
+    served = config.json()["conversation_flow"]
+    assert served is not None
+    assert served["global_prompt"] != "REWRITTEN AFTER PUBLISH", (
+        f"published version {version} served the edited draft flow"
+    )

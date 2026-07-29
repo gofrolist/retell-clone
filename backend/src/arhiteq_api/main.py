@@ -55,6 +55,7 @@ _COLUMN_BACKFILLS: tuple[tuple[str, str, str], ...] = (
     ("agents", "call_screening_option", "JSON"),
     ("agents", "timezone", "VARCHAR(64)"),
     ("agents", "published_version", "INTEGER"),
+    ("agent_versions", "flow_snapshot", "JSON"),
     ("retell_llms", "mcps", "JSON"),
     ("conversation_flows", "components", "JSON"),
     ("conversation_flows", "notes", "JSON"),

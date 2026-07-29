@@ -348,6 +348,9 @@ class AgentVersion(Base):
     # NULL while this version is a draft (its content is the live rows).
     agent_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     llm_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    # Flow-backed agents freeze their whole graph here, same contract as
+    # llm_snapshot: NULL while the version is a draft.
+    flow_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     created_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
     last_modification_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
     published_timestamp: Mapped[int | None] = mapped_column(BigInteger)
