@@ -57,6 +57,15 @@ These fixtures are the shared source of truth for backend, worker and frontend
 tests. Refreshing them is a manual step against Retell's
 `GET /v2/list-conversation-flows`.
 
+**Fixtures pin what exists; Retell's OpenAPI spec pins what is possible.** The
+account's flows exercise only a subset of the schema — they contain no
+`equation` transition condition, no `extract_dynamic_variables` node and no
+`component` node, though all three are documented. Where the two sources
+disagree, the fixtures win for *shape* (they are what the live API actually
+returns) and the docs win for *coverage*. One known disagreement: the docs name
+a flag `is_transfer_llm`, the live API returns `is_transfer_cf`. Accept and
+store both.
+
 ### Flow object
 
 Nineteen top-level keys observed across the account:
@@ -74,7 +83,9 @@ Nineteen top-level keys observed across the account:
 | `model_temperature`, `tool_call_strict_mode` | model knobs |
 | `knowledge_base_ids`, `kb_config` | `kb_config` is `{top_k, filter_score}` |
 | `begin_tag_display_position` | canvas position of the Begin pill |
-| `is_published`, `is_transfer_cf`, `flex_mode` | flags |
+| `mcps` | MCP server configs (documented; absent from all account flows) |
+| `default_dynamic_variables` | documented flow field; already in our model |
+| `is_published`, `is_transfer_cf` / `is_transfer_llm`, `flex_mode` | flags |
 
 `tools[]` entries carry `tool_id`, `type` (`custom`), `name`, `description`,
 `url`, `method`, `headers`, `query_params`, `parameters`, `parameter_type`,
@@ -86,9 +97,10 @@ Nineteen top-level keys observed across the account:
 
 ### Node types
 
-Six types are in scope for v1 ("Core 6") — meaning the runtime accepts a graph
-containing them and the editor can author them. Every one is verified against a
-fixture. `subagent` is in scope by executing as `conversation` (see
+Seven types are in scope for v1 ("Core 7") — meaning the runtime accepts a graph
+containing them and the editor can author them. Six are verified against a
+fixture; `extract_dynamic_variables` is pinned by Retell's OpenAPI schema alone.
+`subagent` is in scope by executing as `conversation` (see
 [Per-node behaviour](#per-node-behaviour)); it gets no dedicated runtime or
 authoring affordance beyond that.
 
@@ -100,6 +112,11 @@ authoring affordance beyond that.
 | `transfer_call` | `transfer_destination`, `transfer_option`, `custom_sip_headers`, `ignore_e164_validation`, `edge`, `instruction`, `speak_during_execution`, `global_node_setting`, `name`, `id`, `display_position` |
 | `end` | `instruction`, `speak_during_execution`, `name`, `id`, `display_position` |
 | `subagent` | `instruction`, `edges`, `name`, `id`, `display_position` |
+| `extract_dynamic_variables` | `variables` (array of `AnalysisData`), `edges`, `else_edge`, `enable_typing_sound`, `finetune_transition_examples`, `name`, `id`, `display_position` |
+
+All node types additionally accept `finetune_transition_examples`, and
+`conversation` accepts `finetune_conversation_examples` — stored and
+round-tripped, but not consumed by the v1 runtime.
 
 `begin` is not a node — it is `start_node_id` plus
 `begin_tag_display_position`.
@@ -117,11 +134,20 @@ the "Prompt / Static Sentence" toggle in the dashboard.
 - `always_edge` / `skip_response_edge` — on `conversation`; unconditional next,
   and transition-without-speaking respectively.
 
-**`transition_condition` is always `{"type": "prompt", "prompt": "…"}`** — all
-63 transitions across all eight account flows. There is no deterministic
-equation form in practice; even a time-based branch condition is natural
-language (`"Current time {{current_time_America…}}"`). Every transition
-decision is therefore LLM-judged.
+**`transition_condition` has two forms**, and v1 supports both:
+
+- `{"type": "prompt", "prompt": "…"}` — LLM-judged. This is the only form the
+  account's flows use: all 63 transitions, including time-based branch
+  conditions written as natural language
+  (`"Current time {{current_time_America…}}"`).
+- `{"type": "equation", "equations": [Equation], "operator": "||" | "&&"}` —
+  deterministic, max 50 equations. Evaluated top-to-bottom, first true condition
+  wins. Only dynamic variables may appear; anything requiring LLM extraction
+  must use a prompt condition. Operators observed in the docs: `>`, `<`, `==`,
+  `!=`, `CONTAINS`, `NOT CONTAINS`, `exists`, combined with `AND`/`OR`.
+
+The mix matters for the runtime: equation edges cost nothing to evaluate, prompt
+edges need the model. See [Per-node behaviour](#per-node-behaviour).
 
 **Two shapes the parser must tolerate**, both present in older fixtures:
 
@@ -133,11 +159,14 @@ reachable from anywhere without an edge.
 
 ### Not in v1
 
-`press_digit`, `agent_transfer`, `in_call_sms`, `code`, `mcp` and
-`extract_dynamic_variables` are out. The first five are new runtime surface;
-the last is *unverifiable* — no flow in the account contains one, so its schema
-would be invented. Variable capture in practice happens through tool
-`response_variables` (e.g. `{"member_id": "memberId"}`), which v1 supports.
+Out: `press_digit`, `agent_swap`, `sms`, `mcp`, `code`, `component`,
+`bridge_transfer` and `cancel_transfer`. Each is new runtime surface —
+`component` needs subflow-invocation semantics plus the separate
+`conversation-flow-component` API, and `bridge_transfer`/`cancel_transfer` are
+warm-transfer machinery.
+
+A graph containing any of them is rejected at load with the offending node id
+(see [Graph loading](#graph-loading)), never half-executed.
 
 `note` is authoring-only and never reaches the worker.
 
@@ -201,12 +230,17 @@ the resolved text verbatim rather than prompting the model to phrase it.
 
 ### Transition mechanism
 
-One synthetic tool per node, `transition_to(edge_id)`, whose enum lists that
-node's edge ids and whose description carries each condition's `prompt` text.
-One tool with an enum — not one tool per edge — so `tool_call_strict_mode`
-remains meaningful. Global-node conditions are appended to every node's enum,
-which is precisely their "jump here without an edge" semantic. Dangling edges
-are omitted from the enum.
+Equation edges never reach the model. On every transition point the runtime
+first evaluates the node's `equation` edges in declaration order against the
+live variable map; the first true one wins.
+
+Only if no equation edge fires do the `prompt` edges go to the model, as a
+single synthetic tool per node, `transition_to(edge_id)`, whose enum lists that
+node's prompt-edge ids and whose description carries each condition's text. One
+tool with an enum — not one tool per edge — so `tool_call_strict_mode` remains
+meaningful. Global-node conditions are appended to every node's enum, which is
+precisely their "jump here without an edge" semantic. Dangling edges are omitted
+from the enum.
 
 ### Per-node behaviour
 
@@ -214,10 +248,19 @@ are omitted from the enum.
   unconditionally after a turn; `skip_response_edge` transitions without
   speaking. `start_speaker` and `interruption_sensitivity` override session
   defaults for that node.
-- **`branch`** — speaks nothing. On entry, a single cheap classification call
-  (flash-lite) scores the edge conditions against the transcript so far; no
-  match routes to `else_edge`. This is the only extra LLM call in the design and
-  it fires only on branch nodes.
+- **`branch`** — speaks nothing; pure routing. Equation edges resolve in code
+  with no model call at all, which is the common case for a branch. If the node
+  has prompt edges and no equation matched, one cheap classification call
+  (flash-lite) scores them against the transcript so far. No match routes to
+  `else_edge`. This is the only extra LLM call in the design, and an
+  all-equation branch avoids even that.
+- **`extract_dynamic_variables`** — runs a structured extraction over the
+  transcript using the node's `variables` spec, which is `AnalysisData` — the
+  same shape as `post_call_analysis_data` (`schemas.py:146`), so it follows the
+  pattern `services/analysis.py` already uses for post-call extraction, executed
+  worker-side mid-call. Extracted values merge into the live variable map, which
+  is what makes downstream equation conditions useful. Failure or empty
+  extraction routes to `else_edge`.
 - **`function`** — resolve `tool_id` against the flow's `tools[]` and hand the
   definition to the existing `build_tools()` (`tools.py:1011`), which already
   implements customer HTTP tools including flat-args and `X-Caller-Secret`.
@@ -238,8 +281,14 @@ are omitted from the enum.
 
 `FlowGraph.from_config()` indexes `nodes` *and* every `components[].nodes` into
 one id→node map, so any `destination_node_id` pointing into a subflow resolves.
-Components are preserved verbatim on write; there is no separate subflow-call
-semantic in v1.
+Components are preserved verbatim on write.
+
+What v1 does *not* implement is the `component` node — the documented
+subflow-invocation type (`component_id`, `component_type: local | shared`).
+Neither fixture contains one, and supporting it also means supporting the
+separate `conversation-flow-component` API for shared components. Until then a
+graph containing a `component` node is rejected at load like any other
+unsupported type.
 
 Validation runs once, at call start: an unsupported node type or an edge
 pointing at a missing node raises immediately, naming the node id. A malformed
@@ -281,6 +330,12 @@ handles). The four edge shapes render as visually distinct handles —
 `edge` and `always_edge`/`skip_response_edge` as marked variants — so the graph
 reads correctly instead of collapsing into one connector style.
 
+**Condition editor**: each edge's condition switches between the two forms — a
+textarea for `prompt`, and a row-per-equation builder (variable, operator,
+comparand) with an `||` / `&&` combinator for `equation`. Equation rows offer
+the flow's known dynamic variables, including any produced upstream by an
+`extract_dynamic_variables` node or a tool's `response_variables`.
+
 **Fidelity rule, client side:** the editor mutates a deep copy of the server's
 flow JSON and never reconstructs it from a typed model. Unknown keys survive by
 construction. With the backend fixture test, that is what stops `flex_mode`,
@@ -313,6 +368,12 @@ list gains "Conversation Flow" as an Agent Type value.
   `else_edge` fallback, `subagent`→`conversation` degradation, unknown node type
   raising at load, legacy `condition` and dangling-edge tolerance. Reads the same
   fixture files as the backend tests.
+- **Equation evaluation** — its own table-driven unit suite, since it is the one
+  piece of genuinely deterministic logic: every operator (`>`, `<`, `==`, `!=`,
+  `CONTAINS`, `NOT CONTAINS`, `exists`), both combinators (`||`, `&&`),
+  first-match-wins ordering, missing variables, and type coercion between string
+  variables and numeric comparands. Hand-written cases, not fixture-derived —
+  no account flow uses equations.
 - **Frontend** — reducer round-trip (load fixture, no-op edit, serialize, deep
   equal) plus `bun run build`.
 - **Manual** — the `/verify` recipe: local stack, create a flow agent, run a web
@@ -343,7 +404,10 @@ separate flag mechanism is needed.
 
 - Flow support in the Simulation suite — `services/simulation.py:1171` builds a
   `retell-llm` engine and would need a flow path.
-- The remaining node types, `extract_dynamic_variables` first, once a real
-  example can be captured.
+- The remaining node types: `component` (plus the `conversation-flow-component`
+  API for shared subflows), `press_digit`, `agent_swap`, `sms`, `mcp`, `code`,
+  `bridge_transfer` / `cancel_transfer`.
+- Consuming `finetune_transition_examples` /
+  `finetune_conversation_examples` at runtime; v1 stores them only.
 - Native chat-agent creation (backend is already complete).
 - Template catalogue expansion, including flow templates.
