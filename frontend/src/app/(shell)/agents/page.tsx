@@ -8,7 +8,7 @@ import { Field, TextInput } from "@/components/ui/Field";
 import Modal from "@/components/ui/Modal";
 import Pagination from "@/components/ui/Pagination";
 import SearchInput from "@/components/ui/SearchInput";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import type { AgentFolder } from "@/lib/types";
 import { useApiData } from "@/lib/useApiData";
 import { cn } from "@/lib/utils";
@@ -337,7 +337,11 @@ export default function AgentsPage() {
       // Retell exports may inline the LLM config; recreate it so the
       // response_engine points at an LLM that exists in this workspace.
       const embeddedLlm =
-        root.retellLlmData ?? root.retell_llm_data ?? root.llm_data ?? root.retell_llm;
+        root.retellLlmData ??
+        root.retell_llm_data ??
+        root.llm_data ??
+        root.retell_llm ??
+        root.llm; // Arhiteq's own Export writes { agent, llm }
       let responseEngine = rawAgent.response_engine as
         | { type?: string; llm_id?: string }
         | undefined;
@@ -353,7 +357,15 @@ export default function AgentsPage() {
       payload.response_engine = responseEngine;
       if (!payload.voice_id) payload.voice_id = "cartesia-sonic-english";
 
-      await api.createAgent(payload);
+      try {
+        await api.createAgent(payload);
+      } catch (e) {
+        if (!(e instanceof ApiError && e.status === 409)) throw e;
+        // The id is taken — this export came from this workspace. Keep the
+        // config and let the backend mint a fresh id instead of failing.
+        delete payload.agent_id;
+        await api.createAgent(payload);
+      }
       // Imported agents land in no folder — jump back to All Agents so the
       // new row is visible instead of silently filtered out.
       setSelectedFolderId(null);
@@ -469,6 +481,12 @@ export default function AgentsPage() {
                   ),
                 )
               }
+              onCreated={(agent) => {
+                // Duplicates land next to the row they came from; a converted
+                // chat agent has no folder, so show All Agents to keep it in view.
+                if (agent.folder_id !== selectedFolderId) setSelectedFolderId(null);
+                setAgents((prev) => [...(prev ?? []), agent]);
+              }}
             />
           )}
         </div>

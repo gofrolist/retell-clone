@@ -3,6 +3,7 @@
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import { PillTabs } from "@/components/ui/Tabs";
+import { downloadAgentJson, duplicateAgent, duplicateChatAgent } from "@/lib/agentTransfer";
 import { api, type RawAgent, type RawLlm } from "@/lib/api";
 import {
   Check,
@@ -10,6 +11,7 @@ import {
   Copy,
   Download,
   History,
+  MessageSquare,
   MoreHorizontal,
   Share2,
   Sparkles,
@@ -47,6 +49,7 @@ export default function EditorHeader({
   panelOpen,
   onTogglePanel,
   error,
+  chat = false,
 }: {
   name: string;
   onName: (v: string) => void;
@@ -66,6 +69,8 @@ export default function EditorHeader({
   panelOpen: boolean;
   onTogglePanel: () => void;
   error?: string | null;
+  /** Chat agent: no voice, no versions and no publish flow to show. */
+  chat?: boolean;
 }) {
   const router = useRouter();
   const [shared, setShared] = useState(false);
@@ -88,14 +93,7 @@ export default function EditorHeader({
   };
 
   const exportJson = () => {
-    const blob = new Blob([JSON.stringify({ agent, llm }, null, 2)], {
-      type: "application/json",
-    });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `${(agent.agent_name ?? agent.agent_id).replace(/[^\w.-]+/g, "_")}.json`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    downloadAgentJson(agent, llm);
     setMoreOpen(false);
   };
 
@@ -104,19 +102,9 @@ export default function EditorHeader({
     setBusy(true);
     setMenuError(null);
     try {
-      // Spread the full objects rather than hand-picking fields: the backend
-      // create endpoints keep only mutable fields, so every copyable setting
-      // (including ones added later) transfers without this list drifting.
-      let llmId: string | undefined;
-      if (llm) {
-        const copy = await api.createLlm({ ...llm });
-        llmId = copy.llm_id;
-      }
-      const created = await api.createAgent({
-        ...agent,
-        agent_name: `Copy of ${agent.agent_name ?? "Untitled agent"}`,
-        response_engine: llmId ? { type: "retell-llm", llm_id: llmId } : agent.response_engine,
-      });
+      const created = chat
+        ? await duplicateChatAgent(agent, llm)
+        : await duplicateAgent(agent, llm);
       router.push(`/agents/${created.agent_id}`);
     } catch (e) {
       setMenuError(e instanceof Error ? e.message : "Failed to duplicate agent");
@@ -130,7 +118,8 @@ export default function EditorHeader({
     setBusy(true);
     setMenuError(null);
     try {
-      await api.deleteAgent(agent.agent_id);
+      if (chat) await api.deleteChatAgent(agent.agent_id);
+      else await api.deleteAgent(agent.agent_id);
       router.push("/agents");
     } catch (e) {
       // Backend 409s when a phone number is still bound to this agent.
@@ -169,15 +158,16 @@ export default function EditorHeader({
         className="w-56 truncate rounded-md border border-transparent bg-transparent px-1.5 py-0.5 text-[15px] font-semibold outline-none transition-colors hover:border-line focus:border-accent read-only:hover:border-transparent"
       />
       <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-line bg-app px-2 py-0.5 text-xs font-medium text-sub">
-        <Tag className="size-3" />
-        {agent.is_published ? "Published" : "Draft"}
+        {chat ? <MessageSquare className="size-3" /> : <Tag className="size-3" />}
+        {chat ? "Chat agent" : agent.is_published ? "Published" : "Draft"}
       </span>
 
       <div className="mx-auto">
         <PillTabs
           tabs={[
             { key: "create", label: "Create" },
-            { key: "simulation", label: "Simulation" },
+            // Chat agents have no calls to simulate — the tab is the text test.
+            { key: "simulation", label: chat ? "Test" : "Simulation" },
           ]}
           active={tab}
           onChange={onTab}
@@ -240,28 +230,34 @@ export default function EditorHeader({
       >
         {shared ? <Check className="size-4 text-ok" /> : <Share2 className="size-4" />}
       </button>
-      <Button
-        size="sm"
-        onClick={onTogglePanel}
-        aria-pressed={panelOpen}
-        className={panelOpen ? "border-accent text-accent-deep" : undefined}
-        title="Version history"
-      >
-        <History className="size-3.5" />V{viewingVersion}
-      </Button>
-      {readOnly ? (
-        <Button size="sm" variant="primary" onClick={onBranch} disabled={publishing}>
-          Edit as new draft
-        </Button>
-      ) : (
-        <Button
-          size="sm"
-          variant="primary"
-          onClick={() => setPublishOpen(true)}
-          disabled={publishing}
-        >
-          {publishing ? "Publishing…" : "Publish"}
-        </Button>
+      {/* Versioning and publishing are voice-agent features: the chat-agent
+          API has no version history and saves go live immediately. */}
+      {!chat && (
+        <>
+          <Button
+            size="sm"
+            onClick={onTogglePanel}
+            aria-pressed={panelOpen}
+            className={panelOpen ? "border-accent text-accent-deep" : undefined}
+            title="Version history"
+          >
+            <History className="size-3.5" />V{viewingVersion}
+          </Button>
+          {readOnly ? (
+            <Button size="sm" variant="primary" onClick={onBranch} disabled={publishing}>
+              Edit as new draft
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={() => setPublishOpen(true)}
+              disabled={publishing}
+            >
+              {publishing ? "Publishing…" : "Publish"}
+            </Button>
+          )}
+        </>
       )}
       <Button
         size="sm"
@@ -333,8 +329,8 @@ export default function EditorHeader({
       >
         <p className="text-[13px] text-sub">
           This permanently deletes{" "}
-          <span className="font-medium text-ink">{agent.agent_name ?? "this agent"}</span>. Phone
-          numbers still routed to it must be re-pointed first.
+          <span className="font-medium text-ink">{agent.agent_name ?? "this agent"}</span>.
+          {chat ? "" : " Phone numbers still routed to it must be re-pointed first."}
         </p>
         {menuError && <p className="mt-2 text-[13px] text-bad">{menuError}</p>}
       </Modal>

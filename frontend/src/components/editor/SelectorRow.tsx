@@ -38,19 +38,23 @@ export default function SelectorRow({
   onModel?: (v: string) => void;
   temperature?: number;
   onTemperature?: (v: number) => void;
-  voiceId: string;
-  onVoice: (v: string) => void;
+  // Voice and timezone are voice-agent settings: chat agents omit the
+  // handlers and the two controls disappear with them.
+  voiceId?: string;
+  onVoice?: (v: string) => void;
   language: string;
   onLanguage: (v: string) => void;
   /** IANA zone for the agent's time variables; "" = no timezone set. */
-  timezone: string;
-  onTimezone: (v: string) => void;
+  timezone?: string;
+  onTimezone?: (v: string) => void;
   voices: Voice[];
 }) {
   const [voiceModalOpen, setVoiceModalOpen] = useState(false);
   const live = isLiveModel(model);
 
-  const voiceName = voices.find((v) => v.voice_id === voiceId)?.voice_name ?? voiceNameFromId(voiceId);
+  const voiceName = voiceId
+    ? (voices.find((v) => v.voice_id === voiceId)?.voice_name ?? voiceNameFromId(voiceId))
+    : "";
 
   const languageOptions = withValue(LANGUAGES, language);
   const flag = LANGUAGES.find((l) => l.value === language)?.flag ?? "🌐";
@@ -73,23 +77,27 @@ export default function SelectorRow({
         ) : (
           <LlmModelSelect value={model} onChange={onModel} />
         ))}
-      <button
-        onClick={() => setVoiceModalOpen(true)}
-        className="inline-flex h-9 items-center gap-2 rounded-lg border border-line bg-white pl-2 pr-2.5 text-[13px] font-medium transition-colors hover:bg-app cursor-pointer"
-        aria-haspopup="dialog"
-      >
-        <VoiceAvatar name={voiceName} index={0} />
-        {voiceName}
-        <ChevronDown className="size-3.5 text-faint" />
-      </button>
-      {voiceModalOpen && (
-        <SelectVoiceModal
-          voices={voices}
-          currentVoiceId={voiceId}
-          onSelect={onVoice}
-          onClose={() => setVoiceModalOpen(false)}
-          liveMode={live}
-        />
+      {onVoice && (
+        <>
+          <button
+            onClick={() => setVoiceModalOpen(true)}
+            className="inline-flex h-9 items-center gap-2 rounded-lg border border-line bg-white pl-2 pr-2.5 text-[13px] font-medium transition-colors hover:bg-app cursor-pointer"
+            aria-haspopup="dialog"
+          >
+            <VoiceAvatar name={voiceName} index={0} />
+            {voiceName}
+            <ChevronDown className="size-3.5 text-faint" />
+          </button>
+          {voiceModalOpen && (
+            <SelectVoiceModal
+              voices={voices}
+              currentVoiceId={voiceId ?? ""}
+              onSelect={onVoice}
+              onClose={() => setVoiceModalOpen(false)}
+              liveMode={live}
+            />
+          )}
+        </>
       )}
       <Select
         value={language}
@@ -106,7 +114,9 @@ export default function SelectorRow({
           <BookOpen className="size-4 text-sub" />
           Agent Handbook
         </button>
-        <CurrentTimeAwareness timezone={timezone} onTimezone={onTimezone} />
+        {onTimezone && (
+          <CurrentTimeAwareness timezone={timezone ?? ""} onTimezone={onTimezone} />
+        )}
       </div>
     </div>
   );

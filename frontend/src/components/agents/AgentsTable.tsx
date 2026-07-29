@@ -1,12 +1,35 @@
 "use client";
 
 import Badge from "@/components/ui/Badge";
-import { api } from "@/lib/api";
+import { api, uiAgentFromRaw, uiAgentFromRawChat } from "@/lib/api";
+import {
+  convertToChatAgent,
+  downloadAgentJson,
+  duplicateAgent,
+  duplicateChatAgent,
+} from "@/lib/agentTransfer";
 import { cn } from "@/lib/utils";
 import type { Agent, AgentFolder } from "@/lib/types";
-import { Bot, Check, Copy, Folder, FolderMinus, MoreVertical, Trash2 } from "lucide-react";
+import {
+  Bot,
+  Check,
+  Copy,
+  CopyPlus,
+  Folder,
+  FolderMinus,
+  MessageSquare,
+  MoreVertical,
+  Share,
+  Trash2,
+} from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
+
+const AGENT_TYPE_LABEL: Record<Agent["agent_type"], string> = {
+  "single-prompt": "Single Prompt",
+  "conversation-flow": "Conversation Flow",
+  chat: "Chat",
+};
 
 const AVATAR_COLORS = [
   "bg-emerald-100 text-emerald-700",
@@ -34,26 +57,30 @@ export default function AgentsTable({
   folders = [],
   onDeleted,
   onMoved,
+  onCreated,
 }: {
   agents: Agent[];
   folders?: AgentFolder[];
   onDeleted?: (agentId: string) => void;
   onMoved?: (agentId: string, folderId: string | null) => void;
+  /** A row action minted a new agent (Duplicate / Convert to Chat Agent). */
+  onCreated?: (agent: Agent) => void;
 }) {
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
+  // The row is mid-action (duplicating, converting, deleting) and frozen.
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const moveToFolder = async (agent: Agent, folderId: string | null) => {
     setMenuFor(null);
     if ((agent.folder_id ?? null) === folderId) return;
-    setDeleteError(null);
+    setActionError(null);
     try {
       await api.moveAgentToFolder(agent.agent_id, folderId);
       onMoved?.(agent.agent_id, folderId);
     } catch (e) {
-      setDeleteError(
+      setActionError(
         `Failed to move "${agent.agent_name}": ${e instanceof Error ? e.message : "unknown error"}`,
       );
     }
@@ -65,30 +92,70 @@ export default function AgentsTable({
     setTimeout(() => setCopiedId((prev) => (prev === agentId ? null : prev)), 1200);
   };
 
+  /** Run a row action that needs the agent's full config (and its LLM). */
+  const withDetail = async (
+    agent: Agent,
+    verb: string,
+    run: (detail: Awaited<ReturnType<typeof api.getAgentDetail>>) => Promise<void>,
+  ) => {
+    setMenuFor(null);
+    setBusyId(agent.agent_id);
+    setActionError(null);
+    try {
+      await run(await api.getAgentDetail(agent.agent_id));
+    } catch (e) {
+      setActionError(
+        `Failed to ${verb} "${agent.agent_name}": ${e instanceof Error ? e.message : "unknown error"}`,
+      );
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const duplicate = (agent: Agent) =>
+    withDetail(agent, "duplicate", async ({ agent: raw, llm, is_chat }) => {
+      onCreated?.(
+        is_chat
+          ? uiAgentFromRawChat(await duplicateChatAgent(raw, llm))
+          : uiAgentFromRaw(await duplicateAgent(raw, llm)),
+      );
+    });
+
+  const exportAgent = (agent: Agent) =>
+    withDetail(agent, "export", async ({ agent: raw, llm }) => {
+      downloadAgentJson(raw, llm);
+    });
+
+  const convertToChat = (agent: Agent) =>
+    withDetail(agent, "convert", async ({ agent: raw, llm }) => {
+      onCreated?.(uiAgentFromRawChat(await convertToChatAgent(raw, llm)));
+    });
+
   const deleteAgent = async (agent: Agent) => {
     setMenuFor(null);
     if (!window.confirm(`Delete "${agent.agent_name}"? This cannot be undone.`)) return;
-    setDeletingId(agent.agent_id);
-    setDeleteError(null);
+    setBusyId(agent.agent_id);
+    setActionError(null);
     try {
-      await api.deleteAgent(agent.agent_id);
+      if (agent.agent_type === "chat") await api.deleteChatAgent(agent.agent_id);
+      else await api.deleteAgent(agent.agent_id);
       onDeleted?.(agent.agent_id);
     } catch (e) {
-      setDeleteError(
+      setActionError(
         `Failed to delete "${agent.agent_name}": ${e instanceof Error ? e.message : "unknown error"}`,
       );
     } finally {
-      setDeletingId(null);
+      setBusyId(null);
     }
   };
 
   return (
     <div>
-      {deleteError && (
+      {actionError && (
         <div className="mb-2 flex items-center justify-between gap-3 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-[12.5px] text-red-600">
-          <span>{deleteError}</span>
+          <span>{actionError}</span>
           <button
-            onClick={() => setDeleteError(null)}
+            onClick={() => setActionError(null)}
             className="font-medium hover:underline cursor-pointer"
           >
             Dismiss
@@ -112,7 +179,7 @@ export default function AgentsTable({
               key={a.agent_id}
               className={cn(
                 "border-b border-line/70 transition-colors hover:bg-app/70",
-                deletingId === a.agent_id && "pointer-events-none opacity-50",
+                busyId === a.agent_id && "pointer-events-none opacity-50",
               )}
             >
               <td className="py-3 pl-4 pr-3">
@@ -127,15 +194,17 @@ export default function AgentsTable({
                 </Link>
               </td>
               <td className="px-3 py-3">
-                <Badge tone="gray">
-                  {a.agent_type === "single-prompt" ? "Single Prompt" : "Conversation Flow"}
-                </Badge>
+                <Badge tone="gray">{AGENT_TYPE_LABEL[a.agent_type]}</Badge>
               </td>
               <td className="px-3 py-3">
-                <span className="flex items-center gap-2">
-                  <VoiceAvatar name={a.voice_name} index={i} />
-                  <span className="truncate max-w-40">{a.voice_name}</span>
-                </span>
+                {a.agent_type === "chat" ? (
+                  <span className="text-sub">-</span>
+                ) : (
+                  <span className="flex items-center gap-2">
+                    <VoiceAvatar name={a.voice_name} index={i} />
+                    <span className="truncate max-w-40">{a.voice_name}</span>
+                  </span>
+                )}
               </td>
               <td className="px-3 py-3">
                 {a.phone_number ? (
@@ -167,7 +236,7 @@ export default function AgentsTable({
                       }}
                     />
                     <div
-                      className="absolute right-3 top-10 z-20 w-44 rounded-lg border border-line bg-white py-1 shadow-lg"
+                      className="absolute right-3 top-10 z-20 w-56 rounded-lg border border-line bg-white py-1 shadow-lg"
                       onClick={(e) => e.stopPropagation()}
                     >
                       <button
@@ -177,7 +246,34 @@ export default function AgentsTable({
                         <Copy className="size-3.5 text-sub" />
                         {copiedId === a.agent_id ? "Copied" : "Copy agent ID"}
                       </button>
-                      {folders.length > 0 && (
+                      <button
+                        onClick={() => void duplicate(a)}
+                        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-app cursor-pointer"
+                      >
+                        <CopyPlus className="size-3.5 text-sub" />
+                        Duplicate
+                      </button>
+                      <button
+                        onClick={() => void exportAgent(a)}
+                        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-app cursor-pointer"
+                      >
+                        <Share className="size-3.5 text-sub" />
+                        Export
+                      </button>
+                      {/* A chat agent is already text-only, and a
+                          conversation flow has no prompt to carry over. */}
+                      {a.agent_type === "single-prompt" && (
+                        <button
+                          onClick={() => void convertToChat(a)}
+                          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-app cursor-pointer"
+                        >
+                          <MessageSquare className="size-3.5 text-sub" />
+                          Convert to Chat Agent
+                        </button>
+                      )}
+                      {/* Folders are a voice-agent grouping; the chat-agent API
+                          has no folder_id. */}
+                      {folders.length > 0 && a.agent_type !== "chat" && (
                         <>
                           <div className="my-1 border-t border-line" />
                           <div className="px-3 pb-1 pt-1.5 text-[11px] font-semibold tracking-wider text-faint">

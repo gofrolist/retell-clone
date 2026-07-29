@@ -213,6 +213,26 @@ export interface RawAgent {
 }
 
 /**
+ * Sentinel voice_id the backend flags chat agents with (api/chat_agents.py).
+ * They are Agent rows served by the /…-chat-agent endpoints, not /…-agent.
+ */
+export const CHAT_VOICE_ID = "chat";
+
+/** GET /get-chat-agent — the agent shape minus voice/telephony concerns. */
+export interface RawChatAgent {
+  agent_id: string;
+  agent_name: string | null;
+  agent_type: "chat-agent";
+  response_engine: ResponseEngine;
+  version: number;
+  is_published: boolean;
+  language: string | null;
+  webhook_url: string | null;
+  last_modification_timestamp: number;
+  [key: string]: unknown;
+}
+
+/**
  * One entry of GET /get-agent-versions: the agent shape as of that version,
  * plus lineage and publish bookkeeping. Published versions are immutable
  * snapshots; at most one draft exists and it is always the highest version.
@@ -585,6 +605,33 @@ export function uiAgentFromRaw(a: RawAgent, phones: RawPhoneNumber[] = []): Agen
   };
 }
 
+/** Chat agents share the agents table; the voice/phone columns render as "-". */
+export function uiAgentFromRawChat(a: RawChatAgent): Agent {
+  return {
+    agent_id: a.agent_id,
+    agent_name: a.agent_name ?? "Untitled agent",
+    agent_type: "chat",
+    voice_id: CHAT_VOICE_ID,
+    voice_name: "-",
+    language: a.language ?? "en-US",
+    phone_number: null,
+    version: a.version,
+    last_modification_timestamp: a.last_modification_timestamp,
+    webhook_url: a.webhook_url ?? undefined,
+    folder_id: null, // chat agents aren't foldered (no folder_id on the chat API)
+  };
+}
+
+/**
+ * A chat agent seen through the RawAgent lens the editor works in. The
+ * voice-only fields are absent, not defaulted: chat mode hides every section
+ * that reads them, and inventing values here would save them back on the
+ * first PATCH.
+ */
+export function rawAgentFromChatAgent(a: RawChatAgent): RawAgent {
+  return { ...a, voice_id: CHAT_VOICE_ID } as unknown as RawAgent;
+}
+
 const SENTIMENTS = new Set(["Positive", "Negative", "Neutral", "Unknown"]);
 
 // Wire roles → UI roles; anything unrecognized renders as a user turn,
@@ -740,6 +787,9 @@ export interface ListCallsParams {
 export interface AgentDetail {
   agent: RawAgent;
   llm: RawLlm | null;
+  /** The agent is a chat agent: it has no voice, versions or telephony, and
+   *  edits go to /update-chat-agent instead of /update-agent. */
+  is_chat: boolean;
 }
 
 export interface CallTimeWindow {
@@ -780,14 +830,19 @@ function analyticsQuery(params: AnalyticsParams): string {
 
 export const api = {
   // ------------------------------------------------------------ agents
+  /** Voice agents and chat agents, in one list (the dashboard shows both). */
   listAgents: async (): Promise<Agent[]> => {
-    const [agents, phones] = await Promise.all([
+    const [agents, chatAgents, phones] = await Promise.all([
       request<RawAgent[]>("/list-agents"),
+      request<RawChatAgent[]>("/list-chat-agents"),
       request<RawPhoneNumber[]>("/list-phone-numbers").catch(() => [] as RawPhoneNumber[]),
     ]);
-    return agents
-      .filter((a) => a.voice_id !== "chat") // chat agents live on their own page
-      .map((a) => uiAgentFromRaw(a, phones));
+    return [
+      // /list-agents already excludes chat agents; the guard keeps a chat
+      // agent from showing twice if that ever changes.
+      ...agents.filter((a) => a.voice_id !== CHAT_VOICE_ID).map((a) => uiAgentFromRaw(a, phones)),
+      ...chatAgents.map(uiAgentFromRawChat),
+    ];
   },
 
   /** One agent. `version` accepts a number, "latest" or "latest_published". */
@@ -796,14 +851,29 @@ export const api = {
       `/get-agent/${encodeURIComponent(agentId)}${version === undefined ? "" : `?version=${version}`}`,
     ),
 
-  /** Agent + its Retell LLM (prompt lives on the LLM, not the agent). */
+  /**
+   * Agent + its Retell LLM (prompt lives on the LLM, not the agent).
+   *
+   * Chat agents are 404 on the voice-agent endpoints, so a miss retries on the
+   * chat-agent family — the editor takes one id and can't know which it is.
+   */
   getAgentDetail: async (agentId: string): Promise<AgentDetail> => {
-    const agent = await request<RawAgent>(`/get-agent/${encodeURIComponent(agentId)}`);
+    let agent: RawAgent;
+    let isChat = false;
+    try {
+      agent = await request<RawAgent>(`/get-agent/${encodeURIComponent(agentId)}`);
+    } catch (e) {
+      if (!(e instanceof ApiError && e.status === 404)) throw e;
+      agent = rawAgentFromChatAgent(
+        await request<RawChatAgent>(`/get-chat-agent/${encodeURIComponent(agentId)}`),
+      );
+      isChat = true;
+    }
     const llmId = agent.response_engine?.llm_id;
     const llm = llmId
       ? await request<RawLlm>(`/get-retell-llm/${encodeURIComponent(llmId)}`)
       : null;
-    return { agent, llm };
+    return { agent, llm, is_chat: isChat };
   },
 
   updateAgent: (agentId: string, body: Partial<RawAgent>) =>
@@ -915,6 +985,20 @@ export const api = {
 
   deleteAgent: (agentId: string) =>
     request<void>(`/delete-agent/${encodeURIComponent(agentId)}`, del),
+
+  // ------------------------------------------------------------ chat agents
+  // Text-only agents. They share the Agent table server-side but have no
+  // voice, telephony or version endpoints, so they get their own CRUD.
+  listChatAgents: () => request<RawChatAgent[]>("/list-chat-agents"),
+
+  createChatAgent: (body: Record<string, unknown>) =>
+    request<RawChatAgent>("/create-chat-agent", post(body)),
+
+  updateChatAgent: (agentId: string, body: Record<string, unknown>) =>
+    request<RawChatAgent>(`/update-chat-agent/${encodeURIComponent(agentId)}`, patch(body)),
+
+  deleteChatAgent: (agentId: string) =>
+    request<void>(`/delete-chat-agent/${encodeURIComponent(agentId)}`, del),
 
   publishAgent: (
     agentId: string,

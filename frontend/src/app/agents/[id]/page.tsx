@@ -12,17 +12,28 @@ import FunctionsSection from "@/components/editor/sections/FunctionsSection";
 import KnowledgeBaseSection from "@/components/editor/sections/KnowledgeBaseSection";
 import McpSection from "@/components/editor/sections/McpSection";
 import PostCallSection from "@/components/editor/sections/PostCallSection";
-import SecuritySection from "@/components/editor/sections/SecuritySection";
+import SecuritySection, {
+  DynamicVariablesRow,
+} from "@/components/editor/sections/SecuritySection";
 import SpeechSettingsSection from "@/components/editor/sections/SpeechSettingsSection";
 import TranscriptionSection from "@/components/editor/sections/TranscriptionSection";
 import WebhookSection from "@/components/editor/sections/WebhookSection";
+import TestPanel from "@/components/editor/TestPanel";
 import SimulationTab from "@/components/simulation/SimulationTab";
 import Accordion from "@/components/ui/Accordion";
-import { api, type RawAgent, type RawAgentVersion, type RawLlm } from "@/lib/api";
+import { Field, TextInput } from "@/components/ui/Field";
+import {
+  api,
+  rawAgentFromChatAgent,
+  type RawAgent,
+  type RawAgentVersion,
+  type RawLlm,
+} from "@/lib/api";
 import type { Voice } from "@/lib/types";
 import { DEFAULT_POST_CALL_ANALYSIS_MODEL } from "@/lib/models";
 import {
   AudioLines,
+  Braces,
   Captions,
   Headset,
   LayoutGrid,
@@ -53,6 +64,9 @@ export default function AgentEditorPage({
   const [llm, setLlm] = useState<RawLlm | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [voices, setVoices] = useState<Voice[]>([]);
+  // Chat agent: no voice, telephony, versions or call simulation. Everything
+  // it does have (prompt, tools, knowledge base, webhook) is edited here too.
+  const [isChat, setIsChat] = useState(false);
 
   // Edits the user has made but that haven't reached the draft yet. Displayed
   // values are `{...server, ...draft}`; the autosave timer PATCHes the drafts.
@@ -95,6 +109,9 @@ export default function AgentEditorPage({
         if (cancelled) return;
         setAgent(detail.agent);
         setLlm(detail.llm);
+        setIsChat(detail.is_chat);
+        // Chat agents have no version endpoints — asking would 404.
+        if (!detail.is_chat) void loadVersions();
       })
       .catch((e) => {
         if (!cancelled) {
@@ -105,7 +122,6 @@ export default function AgentEditorPage({
       .listVoices()
       .then((v) => !cancelled && setVoices(v))
       .catch(() => {}); // voice list failure degrades to showing the raw id
-    void loadVersions();
     return () => {
       cancelled = true;
     };
@@ -134,7 +150,9 @@ export default function AgentEditorPage({
     let saved: RawAgent | null = null;
     try {
       if (Object.keys(pendingAgent).length) {
-        saved = await api.updateAgent(id, pendingAgent);
+        saved = isChat
+          ? rawAgentFromChatAgent(await api.updateChatAgent(id, pendingAgent))
+          : await api.updateAgent(id, pendingAgent);
         setAgent(saved);
         // Only clear what we sent: edits made while the request was in flight
         // must survive for the next flush.
@@ -146,21 +164,22 @@ export default function AgentEditorPage({
         // A prompt edit forks the agent's draft server-side, so the agent's
         // version moved even though we didn't PATCH it. Without this refresh
         // the editor still thinks it is on the published version and locks
-        // itself read-only.
-        if (!Object.keys(pendingAgent).length) {
+        // itself read-only. Chat agents don't version, so there's nothing to
+        // re-read (and /get-agent would 404 on them anyway).
+        if (!isChat && !Object.keys(pendingAgent).length) {
           saved = await api.getAgent(id);
           setAgent(saved);
         }
       }
       setSaveState("saved");
       // The first edit after a publish opens a draft — reflect that in the panel.
-      void loadVersions();
+      if (!isChat) void loadVersions();
     } catch (e) {
       setSaveState("error");
       setActionError(e instanceof Error ? e.message : "Save failed");
     }
     return saved;
-  }, [id, loadVersions]);
+  }, [id, isChat, loadVersions]);
 
   const dirty = Object.keys(agentDraft).length > 0 || Object.keys(llmDraft).length > 0;
 
@@ -327,6 +346,7 @@ export default function AgentEditorPage({
         panelOpen={panelOpen}
         onTogglePanel={() => setPanelOpen((v) => !v)}
         error={actionError}
+        chat={isChat}
       />
       {readOnly && (
         <div className="flex shrink-0 items-center gap-2 border-b border-line bg-amber-50 px-4 py-1.5 text-[12px] text-amber-900">
@@ -336,12 +356,22 @@ export default function AgentEditorPage({
       )}
       <div className="flex min-h-0 grow gap-2 overflow-x-auto p-2">
         {tab === "simulation" ? (
-          <SimulationTab
-            agentId={agent.agent_id}
-            agentVersion={agent.version}
-            llm={llm}
-            dirty={dirty}
-          />
+          isChat ? (
+            // Nothing to simulate without calls — just the text test, in the
+            // slot the settings column occupies on the Create tab.
+            <div
+              className={`ml-auto ${SIDE_PANEL_WIDTH} overflow-hidden rounded-xl border border-line bg-card`}
+            >
+              <TestPanel agentId={agent.agent_id} audio={false} />
+            </div>
+          ) : (
+            <SimulationTab
+              agentId={agent.agent_id}
+              agentVersion={agent.version}
+              llm={llm}
+              dirty={dirty}
+            />
+          )
         ) : (
           <>
         {/* left: prompt column — takes whatever the fixed panel leaves.
@@ -351,19 +381,19 @@ export default function AgentEditorPage({
           disabled={readOnly}
           className="flex min-w-[420px] flex-1 flex-col overflow-y-auto rounded-xl border border-line bg-card p-4"
         >
-          <MetaRow agentId={agent.agent_id} llm={llmView} />
+          <MetaRow agentId={agent.agent_id} llm={llmView} chat={isChat} />
           <div className="mt-3">
             <SelectorRow
               model={llmView?.model ?? ""}
               onModel={llm ? (v) => setLlmField("model", v) : undefined}
               temperature={num(llmView?.model_temperature, 0)}
               onTemperature={llm ? (v) => setLlmField("model_temperature", v) : undefined}
-              voiceId={view.voice_id}
-              onVoice={(v) => setAgentField("voice_id", v)}
+              voiceId={isChat ? undefined : view.voice_id}
+              onVoice={isChat ? undefined : (v) => setAgentField("voice_id", v)}
               language={view.language}
               onLanguage={(v) => setAgentField("language", v)}
-              timezone={view.timezone ?? ""}
-              onTimezone={(v) => setAgentField("timezone", v || null)}
+              timezone={isChat ? undefined : (view.timezone ?? "")}
+              onTimezone={isChat ? undefined : (v) => setAgentField("timezone", v || null)}
               voices={voices}
             />
           </div>
@@ -381,7 +411,7 @@ export default function AgentEditorPage({
                 onStartSpeaker={(v) => setLlmField("start_speaker", v)}
                 message={llmView.begin_message ?? ""}
                 onMessage={(v) => setLlmField("begin_message", v)}
-                pause={num(view.begin_message_delay_ms, 0) / 1000}
+                pause={isChat ? undefined : num(view.begin_message_delay_ms, 0) / 1000}
               />
             </>
           ) : (
@@ -416,6 +446,11 @@ export default function AgentEditorPage({
               <p className="text-[13px] text-sub">Not available for conversation-flow agents.</p>
             )}
           </Accordion>
+          {/* Everything below is voice/telephony-only: a chat agent has no
+              audio, no call and no version to publish, and the chat-agent API
+              rejects these fields. */}
+          {!isChat && (
+            <>
           <Accordion icon={AudioLines} title="Speech Settings">
             <SpeechSettingsSection
               ambientSound={str(view.ambient_sound, "none")}
@@ -489,16 +524,38 @@ export default function AgentEditorPage({
               }
             />
           </Accordion>
+            </>
+          )}
+          {isChat && llm && (
+            <Accordion icon={Braces} title="Default Dynamic Variables">
+              <DynamicVariablesRow
+                value={llmView?.default_dynamic_variables ?? null}
+                onChange={(v) => setLlmField("default_dynamic_variables", v)}
+              />
+            </Accordion>
+          )}
           <Accordion icon={Webhook} title="Webhook Settings">
-            <WebhookSection
-              agentId={agent.agent_id}
-              url={view.webhook_url ?? ""}
-              onUrl={(v) => setAgentField("webhook_url", v || null)}
-              timeoutMs={num(view.webhook_timeout_ms, 5000)}
-              onTimeoutMs={(v) => setAgentField("webhook_timeout_ms", v)}
-              events={view.webhook_events ?? null}
-              onEvents={(v) => setAgentField("webhook_events", v)}
-            />
+            {isChat ? (
+              // The chat-agent API takes the URL only — no per-agent timeout,
+              // event filter or test send (those ride on call webhooks).
+              <Field label="Webhook URL">
+                <TextInput
+                  value={view.webhook_url ?? ""}
+                  placeholder="https://example.com/webhook"
+                  onChange={(e) => setAgentField("webhook_url", e.target.value || null)}
+                />
+              </Field>
+            ) : (
+              <WebhookSection
+                agentId={agent.agent_id}
+                url={view.webhook_url ?? ""}
+                onUrl={(v) => setAgentField("webhook_url", v || null)}
+                timeoutMs={num(view.webhook_timeout_ms, 5000)}
+                onTimeoutMs={(v) => setAgentField("webhook_timeout_ms", v)}
+                events={view.webhook_events ?? null}
+                onEvents={(v) => setAgentField("webhook_events", v)}
+              />
+            )}
           </Accordion>
           <Accordion icon={Plug} title="MCPs">
             {llmView ? (
