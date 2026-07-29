@@ -159,11 +159,13 @@ plan's assumptions need re-checking.
 
 ```bash
 git add backend/tests/contract/test_conversation_flow_fidelity.py
-git commit -m "test(flows): failing round-trip guard for real Retell flows" --no-verify
+SKIP=pytest git commit -m "test(flows): failing round-trip guard for real Retell flows"
 ```
 
-`--no-verify` is required here and only here: the pre-commit pytest hook would
-block a deliberately-red test. Every later commit runs the hooks normally.
+`SKIP=pytest` is required here and only here — the pre-commit pytest hook would
+block a deliberately-red test. Skip only that hook, not all of them: gitleaks,
+ruff check and ruff format still run. Do not use `--no-verify`. Every later
+commit runs the hooks normally.
 
 ---
 
