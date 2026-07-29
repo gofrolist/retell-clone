@@ -13,6 +13,7 @@ from ..models import (
     AgentFolder,
     AgentVersion,
     ApiKey,
+    ConversationFlow,
     PhoneNumber,
     Workspace,
     now_ms,
@@ -163,6 +164,21 @@ async def _validate_folder_id(session, folder_id, workspace_id: str) -> None:
         raise HTTPException(422, detail="folder_id does not reference a folder in this workspace")
 
 
+async def _validate_conversation_flow_id(
+    session: AsyncSession, flow_id: str | None, workspace_id: str
+) -> None:
+    """A flow-backed agent must point at a flow this workspace owns.
+
+    404 rather than 403: a foreign id must not be distinguishable from a
+    missing one, or the error leaks whether an id exists in another tenant.
+    """
+    if not flow_id:
+        return
+    flow = await session.get(ConversationFlow, flow_id)
+    if flow is None or flow.workspace_id != workspace_id:
+        raise HTTPException(404, detail="Conversation flow not found")
+
+
 @router.post("/create-agent", status_code=201)
 async def create_agent(
     body: CreateAgentRequest,
@@ -170,6 +186,9 @@ async def create_agent(
     session: AsyncSession = Depends(get_session),
 ):
     await _validate_folder_id(session, body.folder_id, api_key.workspace_id)
+    await _validate_conversation_flow_id(
+        session, body.response_engine.conversation_flow_id, api_key.workspace_id
+    )
     data = body.model_dump(exclude_none=True, exclude={"agent_id"})
     agent = Agent(
         workspace_id=api_key.workspace_id,
@@ -242,6 +261,11 @@ async def update_agent(
     payload = await request.json()
     _require_object_body(payload)
     _validate_webhook_patch(payload)
+    engine = payload.get("response_engine")
+    if isinstance(engine, dict):
+        await _validate_conversation_flow_id(
+            session, engine.get("conversation_flow_id"), api_key.workspace_id
+        )
     _validate_timezone_patch(payload)
     if "folder_id" in payload:
         await _validate_folder_id(session, payload["folder_id"], api_key.workspace_id)
