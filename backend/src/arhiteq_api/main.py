@@ -24,6 +24,7 @@ from .api import (
     llms,
     phone_numbers,
     voices,
+    workspaces,
 )
 from .config import get_settings
 from .db import get_engine, session_factory
@@ -144,6 +145,7 @@ app.include_router(chats.router)
 app.include_router(chat_agents.router)
 app.include_router(dashboard.router)
 app.include_router(agent_tests.router)
+app.include_router(workspaces.router)
 
 # Public, read-only assets (voice preview mp3s). No auth: previews must be
 # playable from a bare <audio> tag in the dashboard.

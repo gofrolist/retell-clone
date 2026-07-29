@@ -20,8 +20,15 @@ export function useApiData<T>(fetcher: () => Promise<T>) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Synced in an effect, not during render: a render can be discarded (Strict
+  // Mode, Suspense, a torn-up concurrent pass), and writing the ref there
+  // would publish a fetcher belonging to a render that never committed.
+  // Declared before the mount effect below so the ref is current by the time
+  // anything reads it — effects run in declaration order.
   const fetcherRef = useRef(fetcher);
-  fetcherRef.current = fetcher;
+  useEffect(() => {
+    fetcherRef.current = fetcher;
+  });
 
   const reload = useCallback(async (): Promise<T | undefined> => {
     setLoading(true);

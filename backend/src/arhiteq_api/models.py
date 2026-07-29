@@ -82,6 +82,9 @@ class Base(DeclarativeBase):
 # these defaults so old rows and new knobs never need a data migration.
 DEFAULT_WORKSPACE_SETTINGS: dict[str, Any] = {
     "billing_email": None,
+    # What the workspace is for, picked at creation (business | agency |
+    # developer | other). Descriptive only — nothing branches on it yet.
+    "workspace_type": None,
     # Concurrency (enforced by api/concurrency.py + call creation):
     "purchased_concurrency": 0,
     "reserved_inbound_concurrency": 0,

@@ -676,6 +676,7 @@ export function demoResponse<T>(path: string, init?: RequestInit): T {
       // Pages hard-deref ws.settings.* — keep this in step with WorkspaceSettings.
       settings: {
         billing_email: null,
+        workspace_type: null,
         purchased_concurrency: 0,
         reserved_inbound_concurrency: 0,
         concurrency_burst_enabled: false,
@@ -687,6 +688,44 @@ export function demoResponse<T>(path: string, init?: RequestInit): T {
         contact_field_definitions: [],
       },
     } as T;
+
+  // One workspace, so the switcher renders its real (single-entry) shape
+  // rather than an empty dropdown. Writes already 403 above, so there is no
+  // create/switch to mock.
+  if (route === "/list-workspaces")
+    return [
+      {
+        workspace_id: "ws_demo",
+        name: "Demo Workspace",
+        role: "owner",
+        created_at_ms: NOW,
+        is_current: true,
+      },
+    ] as T;
+  if (route === "/list-roles")
+    return [
+      {
+        role: "owner",
+        name: "Owner",
+        type: "System",
+        description:
+          "Full control over the workspace, including granting and revoking the owner role.",
+      },
+      {
+        role: "admin",
+        name: "Admin",
+        type: "System",
+        description:
+          "Manages members, invites, API keys and workspace settings. Cannot grant the owner role.",
+      },
+      {
+        role: "member",
+        name: "Member",
+        type: "System",
+        description:
+          "Builds and tests agents and views all call data. Cannot manage members or API keys.",
+      },
+    ] as T;
 
   throw new Error(`Demo mode: no canned data for ${path}`);
 }

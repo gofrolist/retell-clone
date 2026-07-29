@@ -514,8 +514,12 @@ export interface RawKnowledgeBase {
   [key: string]: unknown;
 }
 
+/** Persona picked in the create-workspace modal; descriptive only. */
+export type WorkspaceType = "business" | "agency" | "developer" | "other";
+
 export interface WorkspaceSettings {
   billing_email: string | null;
+  workspace_type: WorkspaceType | null;
   purchased_concurrency: number;
   reserved_inbound_concurrency: number;
   concurrency_burst_enabled: boolean;
@@ -546,6 +550,31 @@ export interface WorkspaceMember {
   name: string | null;
   role: string; // owner | admin | member
   created_at_ms: number;
+}
+
+/** One entry in the sidebar's workspace switcher. */
+export interface WorkspaceSummary {
+  workspace_id: string;
+  name: string;
+  /** The caller's role in *that* workspace. */
+  role: string;
+  created_at_ms: number;
+  is_current: boolean;
+}
+
+/** create/switch-workspace additionally return a session scoped to it. */
+export interface WorkspaceSession extends WorkspaceSummary {
+  token?: string;
+  expires_at?: number;
+  /** Only for API-key callers, who get no session to switch with. */
+  api_key?: string;
+}
+
+export interface WorkspaceRole {
+  role: string;
+  name: string;
+  type: string;
+  description: string;
 }
 
 export interface WorkspaceInvite {
@@ -1309,4 +1338,16 @@ export const api = {
   revokeInvite: (inviteId: string) =>
     request<void>(`/revoke-invite/${encodeURIComponent(inviteId)}`, post({})),
   removeMember: (email: string) => request<void>("/remove-member", post({ email })),
+  updateMemberRole: (email: string, role: string) =>
+    request<WorkspaceMember>("/update-member-role", post({ email, role })),
+  listRoles: () => request<WorkspaceRole[]>("/list-roles"),
+
+  // ------------------------------------------------------- workspaces
+  // Switching is "re-issue the session": the active workspace is a claim in
+  // the JWT, so these return a token the caller stores before reloading.
+  listWorkspaces: () => request<WorkspaceSummary[]>("/list-workspaces"),
+  createWorkspace: (body: { name: string; workspace_type?: WorkspaceType | null }) =>
+    request<WorkspaceSession>("/create-workspace", post(body)),
+  switchWorkspace: (workspaceId: string) =>
+    request<WorkspaceSession>("/switch-workspace", post({ workspace_id: workspaceId })),
 };
