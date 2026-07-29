@@ -201,8 +201,10 @@ function FoldersPanel({
   );
 }
 
-// Fields the backend's CreateAgentRequest accepts (backend/app/schemas.py).
-// Anything else in an imported Retell export is dropped instead of 422-ing.
+// Fields the backend's CreateAgentRequest accepts (schemas.py CreateAgentRequest
+// / agents._MUTABLE_FIELDS). Anything else in an imported Retell export is
+// dropped instead of 422-ing. Keep in step with those sets — a field missing
+// here is silently lost on an Export → Import round-trip.
 const AGENT_IMPORT_FIELDS = [
   "agent_id",
   "agent_name",
@@ -235,8 +237,20 @@ const AGENT_IMPORT_FIELDS = [
   "stt_mode",
   "denoising_mode",
   "opt_out_sensitive_data_storage",
+  "webhook_timeout_ms",
+  "webhook_events",
+  "pii_config",
+  "fallback_voice_ids",
+  "allow_user_dtmf",
+  "allow_dtmf_interruption",
+  "user_dtmf_options",
+  "opt_in_signed_url",
+  "ivr_option",
+  "call_screening_option",
+  "timezone",
 ] as const;
 
+// Mirrors llms._MUTABLE_FIELDS.
 const LLM_IMPORT_FIELDS = [
   "model",
   "model_temperature",
@@ -248,6 +262,7 @@ const LLM_IMPORT_FIELDS = [
   "start_speaker",
   "default_dynamic_variables",
   "knowledge_base_ids",
+  "mcps",
 ] as const;
 
 function pick(
@@ -263,7 +278,7 @@ function pick(
 
 export default function AgentsPage() {
   const { data, setData: setAgents, loading, error, reload } = useApiData(
-    () => api.listAgents(),
+    () => api.listAllAgents(),
   );
   const agents = useMemo(() => data ?? [], [data]);
   const {
@@ -278,6 +293,8 @@ export default function AgentsPage() {
   const [folderError, setFolderError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  // The import succeeded but not exactly as asked (agent id reassigned).
+  const [importNotice, setImportNotice] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [page, setPage] = useState(1);
@@ -322,6 +339,7 @@ export default function AgentsPage() {
   const handleImportFile = async (file: File) => {
     setImporting(true);
     setImportError(null);
+    setImportNotice(null);
     try {
       const parsed: unknown = JSON.parse(await file.text());
       if (typeof parsed !== "object" || parsed === null) {
@@ -361,10 +379,17 @@ export default function AgentsPage() {
         await api.createAgent(payload);
       } catch (e) {
         if (!(e instanceof ApiError && e.status === 409)) throw e;
-        // The id is taken — this export came from this workspace. Keep the
-        // config and let the backend mint a fresh id instead of failing.
+        // The id is already taken (importing an export back, or a second
+        // import of the same file). Keep the config and let the backend mint
+        // a fresh id — but say so: consumers hold agent ids in env vars, so a
+        // silently renumbered agent is exactly the surprise that breaks them.
+        const takenId = payload.agent_id;
         delete payload.agent_id;
-        await api.createAgent(payload);
+        const created = await api.createAgent(payload);
+        setImportNotice(
+          `Agent id ${takenId} is already in use, so the import was given a new id (${created.agent_id}). ` +
+            `Delete the existing agent first if you meant to restore it under its original id.`,
+        );
       }
       // Imported agents land in no folder — jump back to All Agents so the
       // new row is visible instead of silently filtered out.
@@ -442,6 +467,18 @@ export default function AgentsPage() {
                 setImportError(null);
                 setFolderError(null);
               }}
+              className="font-medium hover:underline cursor-pointer"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {importNotice && (
+          <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12.5px] text-amber-900">
+            <span>{importNotice}</span>
+            <button
+              onClick={() => setImportNotice(null)}
               className="font-medium hover:underline cursor-pointer"
             >
               Dismiss

@@ -830,19 +830,28 @@ function analyticsQuery(params: AnalyticsParams): string {
 
 export const api = {
   // ------------------------------------------------------------ agents
-  /** Voice agents and chat agents, in one list (the dashboard shows both). */
+  /**
+   * Voice agents only — what every caller that puts an agent on a phone
+   * number, a call filter or a QA cohort means by "agent". Chat agents have
+   * no voice and would break those; the agents list uses listAllAgents.
+   */
   listAgents: async (): Promise<Agent[]> => {
-    const [agents, chatAgents, phones] = await Promise.all([
+    const [agents, phones] = await Promise.all([
       request<RawAgent[]>("/list-agents"),
-      request<RawChatAgent[]>("/list-chat-agents"),
       request<RawPhoneNumber[]>("/list-phone-numbers").catch(() => [] as RawPhoneNumber[]),
     ]);
-    return [
-      // /list-agents already excludes chat agents; the guard keeps a chat
-      // agent from showing twice if that ever changes.
-      ...agents.filter((a) => a.voice_id !== CHAT_VOICE_ID).map((a) => uiAgentFromRaw(a, phones)),
-      ...chatAgents.map(uiAgentFromRawChat),
-    ];
+    return agents
+      .filter((a) => a.voice_id !== CHAT_VOICE_ID) // /list-agents excludes them; belt and braces
+      .map((a) => uiAgentFromRaw(a, phones));
+  },
+
+  /** Voice + chat agents, for the agents list page (the only page showing both). */
+  listAllAgents: async (): Promise<Agent[]> => {
+    const [agents, chatAgents] = await Promise.all([
+      api.listAgents(),
+      request<RawChatAgent[]>("/list-chat-agents"),
+    ]);
+    return [...agents, ...chatAgents.map(uiAgentFromRawChat)];
   },
 
   /** One agent. `version` accepts a number, "latest" or "latest_published". */
