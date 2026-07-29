@@ -65,6 +65,18 @@ class CreateConversationFlowRequest(CompatModel):
     start_node_id: str | None = None
     tools: list[dict[str, Any]] | None = None
     default_dynamic_variables: dict[str, Any] | None = None
+    components: list[dict[str, Any]] | None = None
+    notes: list[dict[str, Any]] | None = None
+    kb_config: dict[str, Any] | None = None
+    knowledge_base_ids: list[str] | None = None
+    mcps: list[dict[str, Any]] | None = None
+    begin_tag_display_position: dict[str, Any] | None = None
+    model_temperature: float | None = None
+    tool_call_strict_mode: bool | None = None
+    is_transfer_cf: bool | None = None
+    is_transfer_llm: bool | None = None
+    flex_mode: bool | None = None
+    is_published: bool | None = None
 
 
 class CreateChatRequest(CompatModel):
@@ -171,6 +183,18 @@ def conversation_flow_to_dict(cf: ConversationFlow) -> dict[str, Any]:
         "model_choice": cf.model_choice,
         "tools": cf.tools,
         "default_dynamic_variables": cf.default_dynamic_variables,
+        "components": cf.components,
+        "notes": cf.notes,
+        "kb_config": cf.kb_config,
+        "knowledge_base_ids": cf.knowledge_base_ids,
+        "mcps": cf.mcps,
+        "begin_tag_display_position": cf.begin_tag_display_position,
+        "model_temperature": cf.model_temperature,
+        "tool_call_strict_mode": cf.tool_call_strict_mode,
+        "is_transfer_cf": cf.is_transfer_cf,
+        "is_transfer_llm": cf.is_transfer_llm,
+        "flex_mode": cf.flex_mode,
+        "is_published": cf.is_published,
         "last_modification_timestamp": cf.last_modification_timestamp,
     }
 

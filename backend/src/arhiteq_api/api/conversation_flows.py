@@ -51,6 +51,18 @@ async def create_conversation_flow(
         model_choice=body.model_choice,
         tools=body.tools,
         default_dynamic_variables=body.default_dynamic_variables,
+        components=body.components,
+        notes=body.notes,
+        kb_config=body.kb_config,
+        knowledge_base_ids=body.knowledge_base_ids,
+        mcps=body.mcps,
+        begin_tag_display_position=body.begin_tag_display_position,
+        model_temperature=body.model_temperature,
+        tool_call_strict_mode=body.tool_call_strict_mode,
+        is_transfer_cf=body.is_transfer_cf,
+        is_transfer_llm=body.is_transfer_llm,
+        flex_mode=body.flex_mode,
+        is_published=body.is_published,
     )
     session.add(flow)
     await session.commit()
