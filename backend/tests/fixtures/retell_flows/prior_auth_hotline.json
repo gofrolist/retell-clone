@@ -1,0 +1,686 @@
+{
+  "begin_tag_display_position": {
+    "x": 6,
+    "y": 174
+  },
+  "components": [
+    {
+      "begin_tag_display_position": {
+        "x": 6,
+        "y": 102
+      },
+      "conversation_flow_component_id": "cf-component-1773864962750",
+      "flex_mode": true,
+      "name": "Get client information",
+      "nodes": [
+        {
+          "display_position": {
+            "x": 558,
+            "y": 54
+          },
+          "edges": [
+            {
+              "destination_node_id": "conversation-1773865063856",
+              "id": "conversation-1773864962750-edge-1773865165729-f9kdtfat8",
+              "transition_condition": {
+                "prompt": "Client hasn't provided first and last name",
+                "type": "prompt"
+              }
+            }
+          ],
+          "id": "conversation-1773864962750",
+          "instruction": {
+            "text": "Great! I'll be happy to assist you. In order to look up the right prior authorization case, I will need the member's name and date of birth.",
+            "type": "prompt"
+          },
+          "name": "Collect Member Name and Date of Birth",
+          "type": "conversation"
+        },
+        {
+          "display_position": {
+            "x": 2190,
+            "y": 102
+          },
+          "id": "component-end-1773864962750",
+          "instruction": {
+            "text": "Component completed",
+            "type": "static_text"
+          },
+          "name": "Exit Component",
+          "type": "end"
+        },
+        {
+          "display_position": {
+            "x": 1110,
+            "y": 54
+          },
+          "edges": [
+            {
+              "destination_node_id": "conversation-1773865087116",
+              "id": "edge-1773865063856",
+              "transition_condition": {
+                "prompt": "Client provided the last and first name",
+                "type": "prompt"
+              }
+            }
+          ],
+          "id": "conversation-1773865063856",
+          "instruction": {
+            "text": "Please provide the first and last name",
+            "type": "static_text"
+          },
+          "name": "Ask for First and Last Name",
+          "type": "conversation"
+        },
+        {
+          "display_position": {
+            "x": 1662,
+            "y": 6
+          },
+          "edges": [
+            {
+              "destination_node_id": "component-end-1773864962750",
+              "id": "edge-1773865087116",
+              "transition_condition": {
+                "prompt": "Confirmed the birthday is correct",
+                "type": "prompt"
+              }
+            }
+          ],
+          "id": "conversation-1773865087116",
+          "instruction": {
+            "text": "Great, now please provide the date of birth.\n\n<*Wait for customer response*>\n\nRead the full date of birth back to the customer before proceeding.\n\nProvide a natural variation of:\n\n> \"Just to confirm, the date of birth is [Month] [Day], [Year] — is that correct?\"\n\n<*Wait for customer response*>\n\n- If no, ask the customer to repeat the date of birth and read it back again.\n",
+            "type": "prompt"
+          },
+          "name": "Ask for Date of Birth",
+          "type": "conversation"
+        }
+      ],
+      "start_node_id": "conversation-1773864962750",
+      "tools": [],
+      "user_modified_timestamp": 1773865189440
+    }
+  ],
+  "conversation_flow_id": "conversation_flow_0fd5a7155ac9",
+  "global_prompt": "## Role\n\nYou are an AI phone agent for the Retell prior authorization hotline. Your job is to identify the caller type, verify member identity, look up prior authorization cases, and read the case status back to the caller.\n\n## Working Hours\n\n- **Office hours:** Monday to Friday, 8:30 AM to 5:00 PM PST",
+  "is_published": false,
+  "is_transfer_cf": false,
+  "kb_config": {
+    "filter_score": 0.6,
+    "top_k": 3
+  },
+  "last_modification_timestamp": 1785347539338,
+  "model_choice": {
+    "high_priority": true,
+    "model": "gpt-5.1",
+    "type": "cascading"
+  },
+  "nodes": [
+    {
+      "display_position": {
+        "x": 558,
+        "y": 54
+      },
+      "edges": [
+        {
+          "destination_node_id": "node-1775762962094",
+          "id": "edge-1",
+          "transition_condition": {
+            "prompt": "Provider office",
+            "type": "prompt"
+          }
+        },
+        {
+          "destination_node_id": "node-1775762962094",
+          "id": "edge-2",
+          "transition_condition": {
+            "prompt": "Pharmacy",
+            "type": "prompt"
+          }
+        },
+        {
+          "destination_node_id": "node-1773864774353",
+          "id": "edge-1773864920349-tdjbqin1x",
+          "transition_condition": {
+            "prompt": "Memebr",
+            "type": "prompt"
+          }
+        }
+      ],
+      "id": "start-node-1773864713478",
+      "instruction": {
+        "text": "Thank you for calling the Retell prior authorization hotline. To get started, please let me know where you are calling from: a provider's office, a pharmacy, or let me know if you are a member.",
+        "type": "static_text"
+      },
+      "name": "Welcome Node",
+      "start_speaker": "agent",
+      "type": "conversation"
+    },
+    {
+      "display_position": {
+        "x": 5142,
+        "y": 966
+      },
+      "edges": [
+        {
+          "destination_node_id": "node-1773866072406",
+          "id": "edge-1773864782723-zfoe8r9g9",
+          "transition_condition": {
+            "prompt": "Current time {{current_time_America/Los_Angeles}} is outside of office hour: Monday to Friday, 8:30 AM to 5:00 PM PST",
+            "type": "prompt"
+          }
+        }
+      ],
+      "else_edge": {
+        "destination_node_id": "node-1773866072757",
+        "id": "edge-1773864774353-xw229zm3k",
+        "transition_condition": {
+          "prompt": "Else",
+          "type": "prompt"
+        }
+      },
+      "global_node_setting": {
+        "condition": "Client would like to talk to a human agent"
+      },
+      "id": "node-1773864774353",
+      "name": "Working Hour Split Node",
+      "type": "branch"
+    },
+    {
+      "display_position": {
+        "x": 1854,
+        "y": 126
+      },
+      "edges": [
+        {
+          "destination_node_id": "node-1773865358553",
+          "id": "edge-1773865278073-xlfba5viz",
+          "transition_condition": {
+            "prompt": "Successfully get the member information",
+            "type": "prompt"
+          }
+        },
+        {
+          "destination_node_id": "node-1774302031808",
+          "id": "edge-1774301966232-s42kz6h47",
+          "transition_condition": {
+            "prompt": "get_member has failed twice to get information",
+            "type": "prompt"
+          }
+        }
+      ],
+      "else_edge": {
+        "id": "node-1773865257897-else-edge",
+        "transition_condition": {
+          "prompt": "Else",
+          "type": "prompt"
+        }
+      },
+      "id": "node-1773865257897",
+      "name": "Get Member",
+      "speak_during_execution": false,
+      "tool_id": "tool-1773865256630",
+      "tool_type": "local",
+      "type": "function",
+      "wait_for_result": true
+    },
+    {
+      "display_position": {
+        "x": 2406,
+        "y": 150
+      },
+      "edges": [
+        {
+          "destination_node_id": "node-1773865454857",
+          "id": "edge-1773865366189-tq0bpqx96",
+          "transition_condition": {
+            "prompt": "Successfully get the PA cases",
+            "type": "prompt"
+          }
+        }
+      ],
+      "else_edge": {
+        "destination_node_id": "node-1773865396835",
+        "id": "node-1773865358553-else-edge",
+        "transition_condition": {
+          "prompt": "Else",
+          "type": "prompt"
+        }
+      },
+      "id": "node-1773865358553",
+      "name": "Get Pa Cases",
+      "speak_during_execution": false,
+      "tool_id": "tool-1773865356953",
+      "tool_type": "local",
+      "type": "function",
+      "wait_for_result": true
+    },
+    {
+      "display_position": {
+        "x": 4590,
+        "y": 942
+      },
+      "edges": [],
+      "id": "node-1773865396835",
+      "instruction": {
+        "text": "I'm seeing that member, but I'm not seeing any case information for them. Let me transfer you to a specialist to help you further",
+        "type": "static_text"
+      },
+      "name": "No Case",
+      "skip_response_edge": {
+        "destination_node_id": "node-1773864774353",
+        "id": "skip-response-edge-1774301890286-re428n6s7",
+        "transition_condition": {
+          "prompt": "Skip response",
+          "type": "prompt"
+        }
+      },
+      "type": "conversation"
+    },
+    {
+      "display_position": {
+        "x": 2958,
+        "y": 102
+      },
+      "edges": [
+        {
+          "destination_node_id": "node-1773865644082",
+          "id": "edge-1773865454857-qqze7bzc8",
+          "transition_condition": {
+            "prompt": "If the medication name matches any case",
+            "type": "prompt"
+          }
+        }
+      ],
+      "id": "node-1773865454857",
+      "instruction": {
+        "text": "Provide a natural variation of:\n\n> Great, I found the member. Please provide me with the medication name for the prior authorization case.\n\nIf we couldn't find the medication, let them provide the name again",
+        "type": "prompt"
+      },
+      "name": "Ask for Medication Name",
+      "type": "conversation"
+    },
+    {
+      "display_position": {
+        "x": 3510,
+        "y": 78
+      },
+      "edges": [
+        {
+          "destination_node_id": "node-1773865693216",
+          "id": "edge-1773865644082-qpnxaup0f",
+          "transition_condition": {
+            "prompt": "Client confirmed it is correct",
+            "type": "prompt"
+          }
+        },
+        {
+          "destination_node_id": "node-1773865454857",
+          "id": "edge-1773865678993-et6gqejxg",
+          "transition_condition": {
+            "prompt": "Client said it is not correct",
+            "type": "prompt"
+          }
+        }
+      ],
+      "id": "node-1773865644082",
+      "instruction": {
+        "text": "Provide a natural variation of:\n\n> \"Okay, just to make sure I have everything correctly, you are calling about [drug name] for [first name] [last name], is that correct?\"\n",
+        "type": "prompt"
+      },
+      "name": "Confirm Medication Case",
+      "type": "conversation"
+    },
+    {
+      "display_position": {
+        "x": 4062,
+        "y": 54
+      },
+      "edges": [
+        {
+          "destination_node_id": "node-1773865712958",
+          "id": "edge-1773865693216-4yignd2r2",
+          "transition_condition": {
+            "prompt": "Client has no question",
+            "type": "prompt"
+          }
+        },
+        {
+          "destination_node_id": "node-1773865855589",
+          "id": "edge-1773865833947-fghlvyoel",
+          "transition_condition": {
+            "prompt": "Client has questions",
+            "type": "prompt"
+          }
+        }
+      ],
+      "id": "node-1773865693216",
+      "instruction": {
+        "text": "Provide a natural variation of:\n\n> \"The status for that medication is [status]. Whenever a final decision is issued on an approval, a fax is sent automatically to the provider number we have on file. Do you have any questions about this case, or are you all set?\"",
+        "type": "prompt"
+      },
+      "name": "Read Status",
+      "type": "conversation"
+    },
+    {
+      "display_position": {
+        "x": 4590,
+        "y": 102
+      },
+      "edges": [
+        {
+          "destination_node_id": "node-1773865762237",
+          "id": "edge-1773865712958-flfluqrwg",
+          "transition_condition": {
+            "prompt": "Client confirmed no other help is needed",
+            "type": "prompt"
+          }
+        },
+        {
+          "destination_node_id": "node-1773864774353",
+          "id": "edge-1773865753601-92unqnb9s",
+          "transition_condition": {
+            "prompt": "Client needs more help",
+            "type": "prompt"
+          }
+        }
+      ],
+      "id": "node-1773865712958",
+      "instruction": {
+        "text": "Is there anything else I can help you with today?",
+        "type": "static_text"
+      },
+      "name": "Wrap up",
+      "type": "conversation"
+    },
+    {
+      "display_position": {
+        "x": 5142,
+        "y": 174
+      },
+      "id": "node-1773865762237",
+      "instruction": {
+        "text": "Thank you for calling Retell and have a wonderful day!\"",
+        "type": "static_text"
+      },
+      "name": "End Call",
+      "speak_during_execution": true,
+      "type": "end"
+    },
+    {
+      "display_position": {
+        "x": 4590,
+        "y": 582
+      },
+      "edges": [],
+      "id": "node-1773865855589",
+      "instruction": {
+        "text": "I don't have additional information beyond what is in the system. Let me transfer you to a specialist to help you further.",
+        "type": "static_text"
+      },
+      "name": "Conversation",
+      "skip_response_edge": {
+        "destination_node_id": "node-1773864774353",
+        "id": "skip-response-edge-1774301913578-ukutv5rkm",
+        "transition_condition": {
+          "prompt": "Skip response",
+          "type": "prompt"
+        }
+      },
+      "type": "conversation"
+    },
+    {
+      "display_position": {
+        "x": 5694,
+        "y": 894
+      },
+      "edges": [
+        {
+          "destination_node_id": "node-1773866107454",
+          "id": "edge-1773866072406-h0b23pwzq",
+          "transition_condition": {
+            "prompt": "Client has provided the phone number",
+            "type": "prompt"
+          }
+        }
+      ],
+      "id": "node-1773866072406",
+      "instruction": {
+        "text": "Our office is currently closed. Our hours are Monday to Friday, eight thirty AM to five PM Pacific. Let me make sure someone calls you back. Can I have your phone number?",
+        "type": "static_text"
+      },
+      "name": "Callback",
+      "type": "conversation"
+    },
+    {
+      "display_position": {
+        "x": 5694,
+        "y": 1374
+      },
+      "edges": [],
+      "id": "node-1773866072757",
+      "instruction": {
+        "text": "Please stay on the line while I transfer you",
+        "type": "static_text"
+      },
+      "name": "Conversation",
+      "skip_response_edge": {
+        "destination_node_id": "node-1773866123876",
+        "id": "skip-response-edge-1773866132012-90a5j639d",
+        "transition_condition": {
+          "prompt": "Skip response",
+          "type": "prompt"
+        }
+      },
+      "type": "conversation"
+    },
+    {
+      "display_position": {
+        "x": 6246,
+        "y": 966
+      },
+      "id": "node-1773866107454",
+      "instruction": {
+        "text": "Politely end the call",
+        "type": "prompt"
+      },
+      "name": "End Call",
+      "speak_during_execution": true,
+      "type": "end"
+    },
+    {
+      "custom_sip_headers": {},
+      "display_position": {
+        "x": 6246,
+        "y": 1374
+      },
+      "edge": {
+        "id": "edge-1773866123876-do56tcpx3",
+        "transition_condition": {
+          "prompt": "Transfer failed",
+          "type": "prompt"
+        }
+      },
+      "id": "node-1773866123876",
+      "ignore_e164_validation": false,
+      "name": "Transfer Call",
+      "speak_during_execution": false,
+      "transfer_destination": {
+        "number": "+15555550101",
+        "type": "predefined"
+      },
+      "transfer_option": {
+        "show_transferee_as_caller": false,
+        "type": "cold_transfer"
+      },
+      "type": "transfer_call"
+    },
+    {
+      "display_position": {
+        "x": 4590,
+        "y": 1326
+      },
+      "edges": [],
+      "id": "node-1774302031808",
+      "instruction": {
+        "text": "It looks like we couldn't get your case information right now. Let me transfer you to a specialist to help you further.",
+        "type": "static_text"
+      },
+      "name": "Transfer",
+      "skip_response_edge": {
+        "destination_node_id": "node-1773864774353",
+        "id": "skip-response-edge-1774302063001-7qf8g5p16",
+        "transition_condition": {
+          "prompt": "Skip response",
+          "type": "prompt"
+        }
+      },
+      "type": "conversation"
+    },
+    {
+      "display_position": {
+        "x": 1110,
+        "y": -258
+      },
+      "edges": [
+        {
+          "destination_node_id": "node-1773865257897",
+          "id": "edge-1775762962094-xixwi43d4",
+          "transition_condition": {
+            "prompt": "User confirmed the information is correct",
+            "type": "prompt"
+          }
+        }
+      ],
+      "id": "node-1775762962094",
+      "instruction": {
+        "text": "## Step 1: Greet the user\n\nRespond exactly with:\n\"Great! I'll be happy to assist you. In order to look up the right prior authorization case, I will need the member's name and date of birth. Please provide the first and last name\"\n\n## Step 2: Ask for birthday\n\nProvide a natural variation of:\n\"Great, now please provide the date of birth.\"\n\n## Step 3: Confirm information\n\nRead the full date of birth back to the customer before proceeding.\n\nProvide a natural variation of:\n\n> \"Just to confirm, the date of birth is [Month] [Day], [Year] — is that correct?\"\n\n<*Wait for customer response*>\n\n- If no, ask the customer to repeat the date of birth and read it back again.",
+        "type": "prompt"
+      },
+      "name": "Subagent",
+      "type": "subagent"
+    },
+    {
+      "display_position": {
+        "x": 1326,
+        "y": 294
+      },
+      "edges": [
+        {
+          "id": "edge-1785347159284-am1enej25",
+          "transition_condition": {
+            "prompt": "Describe the transition condition",
+            "type": "prompt"
+          }
+        }
+      ],
+      "id": "node-1785347159284",
+      "instruction": {
+        "text": "",
+        "type": "prompt"
+      },
+      "name": "Subagent",
+      "type": "subagent"
+    }
+  ],
+  "notes": [
+    {
+      "content": "A subagent can manage ambiguous user responses while guiding the conversation toward a single outcome: capture the user's name and birthday correctly",
+      "display_position": {
+        "x": 1110,
+        "y": -402
+      },
+      "id": "note-1775763167442",
+      "size": {
+        "height": 118.27673468689926,
+        "width": 345.4894581600827
+      }
+    },
+    {
+      "content": "A global node to handle escalation",
+      "display_position": {
+        "x": 5142,
+        "y": 846
+      },
+      "id": "note-1775763195463",
+      "size": {
+        "height": 80,
+        "width": 211.4988403741154
+      }
+    }
+  ],
+  "start_node_id": "start-node-1773864713478",
+  "start_speaker": "agent",
+  "tool_call_strict_mode": true,
+  "tools": [
+    {
+      "args_at_root": false,
+      "description": "Get member detail",
+      "headers": {},
+      "method": "POST",
+      "name": "get_member",
+      "parameter_type": "json",
+      "parameters": {
+        "properties": {
+          "call_dob": {
+            "description": "Date of birth of the member, formatted as YYYY-MM-DD.",
+            "type": "string"
+          },
+          "call_first_name": {
+            "description": "First name of the member, confirmed via NATO phonetic spelling.",
+            "type": "string"
+          },
+          "call_last_name": {
+            "description": "Last name of the member, confirmed via NATO phonetic spelling.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "call_first_name",
+          "call_last_name",
+          "call_dob"
+        ],
+        "type": "object"
+      },
+      "query_params": {},
+      "response_variables": {
+        "member_id": "memberId"
+      },
+      "speak_after_execution": true,
+      "speak_during_execution": false,
+      "timeout_ms": 120000,
+      "tool_id": "tool-1773865256630",
+      "type": "custom",
+      "url": "https://template-agents-api.onrender.com/api/get_member"
+    },
+    {
+      "args_at_root": false,
+      "description": "Get the PA cases",
+      "headers": {},
+      "method": "POST",
+      "name": "get_pa_cases",
+      "parameter_type": "json",
+      "parameters": {
+        "properties": {
+          "member_id": {
+            "description": "The unique member ID returned from the member lookup {{member_id}}, used to retrieve prior authorization cases.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "member_id"
+        ],
+        "type": "object"
+      },
+      "query_params": {},
+      "response_variables": {},
+      "speak_after_execution": true,
+      "speak_during_execution": false,
+      "timeout_ms": 120000,
+      "tool_id": "tool-1773865356953",
+      "type": "custom",
+      "url": "https://template-agents-api.onrender.com/get_member/get_pa_cases"
+    }
+  ],
+  "version": 0
+}
