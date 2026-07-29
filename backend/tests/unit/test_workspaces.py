@@ -307,6 +307,38 @@ async def test_only_owners_grant_or_revoke_the_owner_role(client, monkeypatch):
     ).status_code == 200
 
 
+async def test_admins_cannot_evict_an_owner(client, monkeypatch):
+    """Removing an owner is revoking the owner role by another name.
+
+    With a second owner present the last-owner guard doesn't fire, so without
+    an explicit check an admin blocked from *demoting* an owner could just
+    delete them instead.
+    """
+    owner = await _login(client, monkeypatch)  # admin@example.com, sole owner
+    admin = await _invite_and_accept(client, monkeypatch, "admin2@example.com", role="admin")
+    await _invite_and_accept(client, monkeypatch, "second@example.com")
+    await client.post(
+        "/update-member-role",
+        json={"email": "second@example.com", "role": "owner"},
+        headers=owner,
+    )
+
+    resp = await client.post("/remove-member", json={"email": "second@example.com"}, headers=admin)
+    assert resp.status_code == 403
+    emails = {m["email"] for m in (await client.get("/list-members", headers=AUTH_HEADERS)).json()}
+    assert "second@example.com" in emails
+
+    # An owner may still remove a fellow owner.
+    assert (
+        await client.post("/remove-member", json={"email": "second@example.com"}, headers=owner)
+    ).status_code == 204
+    # ...and admins keep removing non-owners.
+    await _invite_and_accept(client, monkeypatch, "plain@example.com")
+    assert (
+        await client.post("/remove-member", json={"email": "plain@example.com"}, headers=admin)
+    ).status_code == 204
+
+
 async def test_last_owner_cannot_be_demoted_or_removed(client, monkeypatch):
     await _login(client, monkeypatch)  # admin@example.com becomes the sole owner
     admin = await _invite_and_accept(client, monkeypatch, "admin2@example.com", role="admin")

@@ -37,6 +37,7 @@ export default function CreateWorkspaceModal({
     setName("");
     setPersona(null);
     setError(null);
+    setSaving(false);
     onClose();
   };
 
@@ -49,9 +50,11 @@ export default function CreateWorkspaceModal({
         // API-key (dev) mode: the backend can't mint a session, so there is
         // nothing to switch into. Say so instead of silently doing nothing.
         setError("Workspace created, but switching needs a Google sign-in session.");
+        setSaving(false);
         return;
       }
-      // Leaves this page — no need to unwind the saving state.
+      // Leaves this page — deliberately leaves `saving` set so the button
+      // can't be pressed twice while the navigation is in flight.
       enterWorkspace({
         token: ws.token,
         expires_at: ws.expires_at,

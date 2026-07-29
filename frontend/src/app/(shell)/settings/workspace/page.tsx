@@ -233,7 +233,9 @@ export default function WorkspacePage() {
   // (API key, or an allowlisted session issued before its row was written)
   // passes every backend gate, so treat them as an owner here.
   const myRole = members.find((m) => m.email === session?.email)?.role;
-  const canManage = !members.length || myRole === "owner" || myRole === "admin";
+  // `undefined` covers both no-member-row cases *and* the not-yet-loaded list,
+  // which is why it reads as owner rather than as a denied role.
+  const canManage = myRole === undefined || myRole === "owner" || myRole === "admin";
   const canEditRole = (m: WorkspaceMember) =>
     canManage &&
     members.length > 0 &&
