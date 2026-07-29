@@ -17,7 +17,7 @@ import logging
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -70,6 +70,24 @@ def verify_google_id_token(token: str) -> dict:
     if not claims.get("email_verified"):
         raise HTTPException(403, detail="Google account email is not verified")
     return claims
+
+
+async def touch_membership(session: AsyncSession, email: str, workspace_id: str) -> None:
+    """Mark this workspace as the caller's most recent, for the next login.
+
+    A no-op when there's no membership row (raw API keys, and the window
+    before an allowlisted bootstrap row is written), so callers don't have to
+    check first.
+    """
+    await session.execute(
+        update(WorkspaceMember)
+        .where(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.email == email,
+        )
+        .values(last_active_at_ms=now_ms())
+    )
+    await session.commit()
 
 
 async def _redeem_invite(
@@ -127,22 +145,33 @@ async def google_login(body: GoogleLoginRequest, session: AsyncSession = Depends
     workspace_id: str | None
     if body.invite_token:
         workspace_id = await _redeem_invite(session, body.invite_token, email, name)
-    elif _email_allowed(email):
-        # Allowlisted emails keep the pre-invites invariant: they always
-        # attach to the first workspace and are recorded as its owners,
-        # regardless of any memberships picked up via invites.
-        workspace = await session.scalar(
-            select(Workspace).order_by(Workspace.created_at_ms).limit(1)
-        )
-        workspace_id = workspace.id if workspace is not None else None
-        if workspace_id is not None:
-            member = await session.scalar(
-                select(WorkspaceMember).where(
-                    WorkspaceMember.workspace_id == workspace_id,
-                    WorkspaceMember.email == email,
-                )
+    else:
+        # Users can belong to several workspaces, so a plain login resumes the
+        # one they were last in (coalesced: rows predating the column sort as
+        # 0, falling back to oldest-membership order).
+        member = await session.scalar(
+            select(WorkspaceMember)
+            .where(WorkspaceMember.email == email)
+            .order_by(
+                func.coalesce(WorkspaceMember.last_active_at_ms, 0).desc(),
+                WorkspaceMember.created_at_ms,
             )
-            if member is None:
+            .limit(1)
+        )
+        if member is not None:
+            workspace_id = member.workspace_id
+        elif _email_allowed(email):
+            # Bootstrap only: an allowlisted email with no membership anywhere
+            # becomes owner of the first workspace, which is how the very
+            # first operator gets in on a fresh deployment. It deliberately no
+            # longer fires for someone who already has a membership — with a
+            # domain allowlist that would silently make every invited employee
+            # an owner of workspace #1 on their next sign-in.
+            workspace = await session.scalar(
+                select(Workspace).order_by(Workspace.created_at_ms).limit(1)
+            )
+            workspace_id = workspace.id if workspace is not None else None
+            if workspace_id is not None:
                 session.add(
                     WorkspaceMember(workspace_id=workspace_id, email=email, name=name, role="owner")
                 )
@@ -151,19 +180,12 @@ async def google_login(body: GoogleLoginRequest, session: AsyncSession = Depends
                 except IntegrityError:
                     # Concurrent first login already recorded the row.
                     await session.rollback()
-    else:
-        member = await session.scalar(
-            select(WorkspaceMember)
-            .where(WorkspaceMember.email == email)
-            .order_by(WorkspaceMember.created_at_ms)
-            .limit(1)
-        )
-        if member is None:
+        else:
             raise HTTPException(403, detail=f"{email} is not allowed to access this dashboard")
-        workspace_id = member.workspace_id
     if workspace_id is None:
         raise HTTPException(503, detail="No workspace provisioned yet (run arhiteq_api.seed)")
 
+    await touch_membership(session, email, workspace_id)
     token, expires_at = issue_session(email, workspace_id, name)
     return {
         "token": token,

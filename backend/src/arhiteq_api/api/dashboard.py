@@ -1553,6 +1553,24 @@ class UpdateMemberRoleRequest(CompatModel):
     role: str = Field(pattern="^(owner|admin|member)$")
 
 
+async def _lock_workspace_for_role_change(session: AsyncSession, workspace_id: str) -> None:
+    """Serialize owner-affecting mutations on one workspace.
+
+    `_assert_not_last_owner` is a check-then-act: two concurrent requests
+    demoting or removing *different* owners of a two-owner workspace each see
+    one owner remaining and both commit, leaving zero — a state nobody inside
+    the workspace can repair, since granting `owner` back requires an owner.
+    Taking a row lock on the workspace first makes the pair run in sequence.
+
+    Postgres only: SQLite has no FOR UPDATE (it would be a syntax error) and
+    needs none — it serializes writers on a database-level lock already.
+    """
+    stmt = select(Workspace.id).where(Workspace.id == workspace_id)
+    if session.get_bind().dialect.name == "postgresql":
+        stmt = stmt.with_for_update()
+    await session.scalar(stmt)
+
+
 async def _caller_is_owner(session: AsyncSession, workspace_id: str, email: str | None) -> bool:
     """Whether the caller outranks admins for owner-affecting operations.
 
@@ -1611,6 +1629,7 @@ async def update_member_role(
     if manager.email is not None and manager.email == body.email:
         raise HTTPException(403, detail="You can't change your own role")
 
+    await _lock_workspace_for_role_change(session, workspace_id)
     member = await session.scalar(
         select(WorkspaceMember).where(
             WorkspaceMember.workspace_id == workspace_id,
@@ -1652,6 +1671,7 @@ async def remove_member(
     Existing sessions expire on their own TTL."""
     if manager.email is not None and manager.email == body.email:
         raise HTTPException(403, detail="You can't remove yourself from the workspace")
+    await _lock_workspace_for_role_change(session, manager.api_key.workspace_id)
     member = await session.scalar(
         select(WorkspaceMember).where(
             WorkspaceMember.workspace_id == manager.api_key.workspace_id,

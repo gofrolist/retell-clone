@@ -26,6 +26,17 @@ re-checks the `workspace_members` row rather than trusting the old token, so a
 removed member can't hop back in with a stale session. Those two endpoints plus
 `/list-workspaces` authenticate on identity alone (not `require_api_key`), so
 they still work when the active workspace has no key or was just deleted.
+Creating is open to any signed-in user (Retell parity) but capped per identity
+by `ARHITEQ_MAX_WORKSPACES_PER_USER` (default 10, `0` disables) — each new
+workspace provisions a live API key that can place billable calls.
+
+A plain login resumes the workspace you were last in
+(`workspace_members.last_active_at_ms`, stamped on login/create/switch). The
+allowlist's owner-grant on the oldest workspace is now **bootstrap-only** —
+it fires when the email has no membership anywhere, which is how the first
+operator gets in on a fresh deployment. It deliberately no longer overrides an
+existing membership: with a domain allowlist that silently promoted every
+invited employee to owner of workspace #1 on their next sign-in.
 
 Roles are `owner | admin | member`, enforced at three gates: API-key
 management and member/invite management and workspace deletion require

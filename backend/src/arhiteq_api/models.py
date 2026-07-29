@@ -162,6 +162,11 @@ class WorkspaceMember(Base):
     name: Mapped[str | None] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(16), default="member")  # owner | admin | member
     created_at_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+    # Last time this membership was the caller's active workspace. Login picks
+    # the highest one so signing back in returns you where you left off rather
+    # than to whichever workspace happens to be oldest. Null on rows written
+    # before this column existed; readers coalesce it to 0.
+    last_active_at_ms: Mapped[int | None] = mapped_column(BigInteger)
 
 
 class WorkspaceInvite(Base):

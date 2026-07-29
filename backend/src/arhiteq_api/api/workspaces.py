@@ -16,15 +16,17 @@ from typing import Any, NamedTuple
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import hash_key
+from ..config import get_settings
 from ..db import get_session
 from ..ids import new_api_key
-from ..models import ApiKey, Workspace, WorkspaceMember
+from ..models import ApiKey, Workspace, WorkspaceMember, now_ms
 from ..schemas import CompatModel
 from ..sessions import decode_session, issue_session
+from .auth_google import touch_membership
 
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["dashboard"])
@@ -140,6 +142,32 @@ async def create_workspace(
     if body.workspace_type is not None and body.workspace_type not in WORKSPACE_TYPES:
         raise HTTPException(422, detail=f"workspace_type must be one of {list(WORKSPACE_TYPES)}")
 
+    # Creating a workspace is open to any signed-in user (Retell parity), but
+    # each one provisions a live API key and can place billable calls, so a
+    # single identity can't mint them without bound. Raw API keys are operator
+    # credentials and skip the cap.
+    cap = get_settings().max_workspaces_per_user
+    if identity.email is not None and cap > 0:
+        owned = (
+            await session.scalar(
+                select(func.count())
+                .select_from(WorkspaceMember)
+                .where(
+                    WorkspaceMember.email == identity.email,
+                    WorkspaceMember.role == "owner",
+                )
+            )
+            or 0
+        )
+        if owned >= cap:
+            raise HTTPException(
+                409,
+                detail=(
+                    f"You already own {owned} workspaces (limit {cap}) — "
+                    "delete one or ask an operator to raise the limit"
+                ),
+            )
+
     ws = Workspace(name=name)
     if body.workspace_type is not None:
         ws.settings = {"workspace_type": body.workspace_type}
@@ -153,7 +181,11 @@ async def create_workspace(
     if identity.email is not None:
         session.add(
             WorkspaceMember(
-                workspace_id=ws.id, email=identity.email, name=identity.name, role="owner"
+                workspace_id=ws.id,
+                email=identity.email,
+                name=identity.name,
+                role="owner",
+                last_active_at_ms=now_ms(),
             )
         )
     await session.commit()
@@ -199,5 +231,7 @@ async def switch_workspace(
     if ws is None:
         raise HTTPException(404, detail="Workspace not found")
 
+    # Records where to resume on the next sign-in.
+    await touch_membership(session, identity.email, ws.id)
     token, expires_at = issue_session(identity.email, ws.id, identity.name)
     return {**_summary(ws, member.role, ws.id), "token": token, "expires_at": expires_at}

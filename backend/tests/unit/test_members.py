@@ -360,12 +360,16 @@ async def test_expired_invites_are_not_listed_and_reinvite_regenerates(client):
     assert [i["invite_id"] for i in listed] == [invite["invite_id"]]
 
 
-async def test_allowlisted_login_prefers_first_workspace_over_invited_one(
-    client, other_workspace, monkeypatch
-):
-    """Allowlist keeps its pre-invites guarantee: plain logins by allowlisted
-    emails always land on the first workspace, even after accepting an invite
-    elsewhere."""
+async def test_plain_login_resumes_the_last_active_workspace(client, other_workspace, monkeypatch):
+    """A user can be in several workspaces, so a plain login returns to the
+    one they were last in rather than to whichever is oldest.
+
+    This replaces the pre-invites rule where allowlisted emails always landed
+    on the first workspace and were recorded as `owner` there. That grant is
+    now bootstrap-only (no membership anywhere), so with a domain allowlist an
+    employee invited as a plain member no longer becomes an owner of workspace
+    #1 on their next sign-in — which was a silent privilege escalation.
+    """
     from tests.conftest import OTHER_AUTH_HEADERS
 
     resp = await client.post(
@@ -379,7 +383,9 @@ async def test_allowlisted_login_prefers_first_workspace_over_invited_one(
     assert accept.json()["workspace_id"] == other_workspace
 
     plain = await client.post("/auth/google", json={"id_token": "fake"})
-    assert plain.json()["workspace_id"] == WORKSPACE_ID
+    assert plain.json()["workspace_id"] == other_workspace
+    # ...and no owner row was conjured in the first workspace.
+    assert (await client.get("/list-members", headers=AUTH_HEADERS)).json() == []
 
 
 async def test_allowlisted_session_can_manage_members_before_member_row_exists(client):

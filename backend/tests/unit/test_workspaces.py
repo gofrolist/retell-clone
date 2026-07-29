@@ -185,6 +185,48 @@ async def test_removed_member_cannot_switch_back_with_a_stale_session(client, mo
     assert resp.status_code == 404
 
 
+async def test_login_resumes_the_workspace_you_switched_into(client, monkeypatch):
+    """Creating or switching records where you were; signing back in returns
+    you there instead of to whichever workspace happens to be oldest."""
+    headers = await _login(client, monkeypatch)
+    created = (
+        await client.post("/create-workspace", json={"name": "Second"}, headers=headers)
+    ).json()
+
+    # Creating switched us into it, so a fresh login lands there.
+    again = await client.post("/auth/google", json={"id_token": "fake"})
+    assert again.json()["workspace_id"] == created["workspace_id"]
+
+    # Switch back, and the next login follows.
+    await client.post("/switch-workspace", json={"workspace_id": WORKSPACE_ID}, headers=headers)
+    again = await client.post("/auth/google", json={"id_token": "fake"})
+    assert again.json()["workspace_id"] == WORKSPACE_ID
+
+
+async def test_workspace_creation_is_capped_per_identity(client, monkeypatch):
+    """Each workspace provisions a live API key, so one identity can't mint
+    them without bound."""
+    from arhiteq_api.config import Settings, get_settings
+
+    settings = get_settings()
+    patched = Settings(**{**settings.model_dump(), "max_workspaces_per_user": 2})
+    monkeypatch.setattr("arhiteq_api.api.workspaces.get_settings", lambda: patched)
+
+    headers = await _login(client, monkeypatch)  # already owner of WORKSPACE_ID
+    first = await client.post("/create-workspace", json={"name": "One"}, headers=headers)
+    assert first.status_code == 201
+    headers = {"Authorization": f"Bearer {first.json()['token']}"}
+
+    blocked = await client.post("/create-workspace", json={"name": "Two"}, headers=headers)
+    assert blocked.status_code == 409
+    assert "limit 2" in blocked.json()["detail"]
+
+    # Operator API keys are not capped.
+    assert (
+        await client.post("/create-workspace", json={"name": "Ops"}, headers=AUTH_HEADERS)
+    ).status_code == 201
+
+
 async def test_api_keys_cannot_switch_workspaces(client):
     resp = await client.post(
         "/switch-workspace", json={"workspace_id": WORKSPACE_ID}, headers=AUTH_HEADERS

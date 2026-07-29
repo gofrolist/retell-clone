@@ -61,6 +61,7 @@ _COLUMN_BACKFILLS: tuple[tuple[str, str, str], ...] = (
     ("contacts", "custom_fields", "JSON"),
     ("phone_numbers", "fallback_number", "VARCHAR(20)"),
     ("workspaces", "settings", "JSON"),
+    ("workspace_members", "last_active_at_ms", "BIGINT"),
     ("alerts", "compare_to", "VARCHAR(16) DEFAULT 'value'"),
     ("batch_calls", "reserved_concurrency", "INTEGER"),
     ("batch_calls", "call_time_window", "JSON"),
