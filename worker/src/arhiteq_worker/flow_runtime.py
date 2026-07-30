@@ -30,6 +30,7 @@ from arhiteq_worker.flow import (
     FlowError,
     FlowGraph,
     fallback_edge,
+    is_global_edge,
     node_instructions,
     prompt_edges,
     select_equation_edge,
@@ -373,16 +374,27 @@ class FlowRuntime:
         naturally here) — and only then, with no user turn in between,
         immediately follows the skip_response_edge, unless an equation edge
         fires first (equation edges take precedence at every transition
-        point, this one included). A node whose own prompt edges give the
-        model something to choose keeps its turn instead; auto-advancing
-        would strand those edges — including a synthetic ``global::...``
-        edge, so the check below reuses the exact edge list the node was
-        installed with rather than recomputing it against no global nodes.
+        point, this one included). A node whose own *authored* prompt edges
+        give the model something to choose keeps its turn instead;
+        auto-advancing would strand that choice.
+
+        Synthetic ``global::...`` edges (one per global node, see
+        `prompt_edges`) are deliberately excluded from that check. A global
+        node is by definition reachable from anywhere with no authored edge —
+        it is an escape hatch ("caller wants a human"), not a decision this
+        node is waiting on, and the destination node offers the very same
+        global edge right back, so the caller can still reach it on the next
+        turn. Counting synthetic edges here would mean any flow with a global
+        node (e.g. ``backend/tests/fixtures/retell_flows/prior_auth_hotline.json``,
+        whose ``branch`` node is itself global) can never auto-advance any
+        node at all, since every node is offered that node's synthetic edge.
+        This has been re-derived twice now — don't re-derive it a third time.
         """
         edges = await self._install(node)
+        authored_edges = [edge for edge in edges if not is_global_edge(edge)]
         spoken = await self._speak_static(node)
         skip = node.get("skip_response_edge")
-        if not (isinstance(skip, dict) and skip.get("destination_node_id") and not edges):
+        if not (isinstance(skip, dict) and skip.get("destination_node_id") and not authored_edges):
             return
         if not spoken and _is_prompt_instruction(node):
             # The line has to be phrased and nothing else will trigger a

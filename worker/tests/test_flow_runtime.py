@@ -715,14 +715,19 @@ def test_a_node_with_its_own_prompt_edges_keeps_its_turn_despite_a_skip_response
     assert _ids(fakes.offered_edges) == ["p1"]
 
 
-def test_a_node_with_a_global_edge_keeps_its_turn_despite_a_skip_response_edge() -> None:
-    """The stranding guard must see the same edges the node was installed with.
+def test_a_node_offered_only_a_synthetic_global_edge_still_auto_advances() -> None:
+    """A synthetic ``global::`` edge must not strand a node -- this is the regression.
 
-    n1 has no *local* prompt edges, but a global node makes it a synthetic
-    ``global::g1`` choice, installed via `_install`'s real ``graph.global_nodes``.
-    Checking the guard against an empty global-nodes list (as opposed to the
-    graph's real one) would miss that choice entirely and strand it by
-    auto-advancing past n1 via its skip_response_edge anyway.
+    n1 has no *authored* prompt edges of its own, only the synthetic
+    ``global::g1`` edge that `prompt_edges` offers at every node for the
+    flow's one global node. A global node is reachable from anywhere with no
+    authored edge -- it is an escape hatch ("caller wants a human"), not a
+    choice n1's own author put in front of the model -- and g1 stays just as
+    reachable from n2 as it was from n1, so nothing is lost by advancing.
+    Counting that synthetic edge in the stranding guard (the bug this test
+    guards against) would wrongly keep n1's turn forever, exactly as it did
+    for every skip-only node in the real ``prior_auth_hotline.json`` fixture
+    before this fix.
     """
     flow = {
         "start_node_id": "n1",
@@ -751,8 +756,10 @@ def test_a_node_with_a_global_edge_keeps_its_turn_despite_a_skip_response_edge()
     runtime = _runtime(flow, fakes)
     _run(runtime.start())
 
-    assert runtime.current_node_id == "n1"
+    assert runtime.current_node_id == "n2"
     assert fakes.said == ["Anything else?"]
+    # g1 is still offered at the destination node -- nothing about the
+    # escape hatch was lost by advancing past n1.
     assert _ids(fakes.offered_edges) == ["global::g1"]
 
 
@@ -799,6 +806,13 @@ def test_an_equation_edge_beats_the_skip_response_edge() -> None:
 # the old (wrong) "never speaks" reading these were silently skipped; the
 # corrected reading (skip response == skip WAITING, not skip speaking) means
 # every one of these lines must now actually reach the caller.
+#
+# Three of the four (``node-1773865396835`` "No Case", ``node-1773865855589``
+# "Conversation", ``node-1774302031808`` "Transfer") route their
+# skip_response_edge at the "Working Hour Split Node"
+# (``node-1773864774353``, a ``branch``); the fourth (``node-1773866072757``
+# "Please stay on the line") routes straight to the transfer_call node
+# instead and never touches the branch.
 _SKIP_RESPONSE_STATIC_LINES: dict[str, str] = {
     "node-1773865396835": (
         "I'm seeing that member, but I'm not seeing any case information for "
@@ -815,48 +829,64 @@ _SKIP_RESPONSE_STATIC_LINES: dict[str, str] = {
     ),
 }
 
+# "Please stay on the line while I transfer you" -- the second line spoken by
+# the three nodes that route through the working-hour branch on their way to
+# the transfer.
+_STAY_ON_THE_LINE = "Please stay on the line while I transfer you"
 
-# "Working Hour Split Node" (node-1773864774353) -- the branch these four
-# skip-only nodes would otherwise cascade through -- is itself a global node
-# (``global_node_setting.condition`` is set). Confirmed by tracing the real
-# fixture, not guessed.
-_WORKING_HOUR_SPLIT_NODE_ID = "node-1773864774353"
+# The transfer_call node ("Transfer Call") every one of the four skip-only
+# nodes ultimately reaches: directly for node-1773866072757, or via the
+# working-hour branch's ``else_edge`` for the other three.
+_TRANSFER_CALL_NODE_ID = "node-1773866123876"
 
 
 def test_the_real_fixtures_skip_response_nodes_now_speak_before_advancing(
     prior_auth_flow,
 ) -> None:
-    """The four previously-silent static lines are now actually spoken.
+    """The four previously-silent static lines are now actually spoken, and
+    the cascade they used to (and, with this fix, once again) trigger runs
+    all the way to the transfer.
 
     Each of these nodes carries a static line plus a skip_response_edge and
-    no other exit of its own (``edges: []``); under the corrected reading the
-    runtime speaks the line first, where it used to be silently dropped.
+    no other *authored* exit of its own (``edges: []``): with the stranding
+    guard fixed to count only authored prompt edges, none of the four has
+    anything of its own to strand on, so each speaks its line and
+    auto-follows its skip_response_edge without waiting for a user turn.
 
-    TRACE NOTE, since a prior report's claim here turned out to be wrong:
-    the report claimed three of these four ("No Case", "Conversation" x2,
-    "Transfer") cascade through the working-hour branch's ``else_edge`` onto
-    the fourth ("Please stay on the line...") and on to the transfer_call
-    node, each speaking two lines in a row. Tracing the *actual* fixture with
-    every fix in this wave applied contradicts that: `_WORKING_HOUR_SPLIT_NODE_ID`
-    is itself a global node, so *every one* of these four nodes -- not just
-    three -- is installed with a synthetic ``global::<that node>`` edge of
-    its own (`prompt_edges` offers a global node's synthetic edge at every
-    *other* node in the graph). With the item-5 stranding-guard fix, that
-    edge is exactly the kind of model choice the guard must not strand, so
-    every one of the four now keeps its turn instead of auto-following its
-    skip_response_edge: none of them reach the branch, none cascade, and none
-    trigger `classify`. Each speaks *only* its own single line and stays
-    exactly where it is -- verified by direct instrumentation of the fixture,
-    not assumed from the older (now-superseded) cascade claim.
+    TRACE NOTE, since prior reports have disagreed here (both "two lines
+    each" and "one line each" have been claimed at different points): a fresh
+    trace with this fix applied settles it. "Working Hour Split Node"
+    (``node-1773864774353``) is itself a global node, so it is also offered
+    a synthetic ``global::node-1773864774353`` edge at every *other* node in
+    the flow -- but a synthetic global edge is exactly what this fix says
+    must NOT strand a node, so it does not stop any of the four here either.
+    Three of the four (all but "Please stay on the line") land on the branch
+    node next; its own office-hours edge is a ``prompt`` condition, so
+    `classify` is asked once, and the fixture's default "no match" answer
+    (`Fakes` with no configured results returns ``None``) falls through the
+    branch's ``else_edge`` onto "Please stay on the line" -- a *second*
+    spoken line -- which itself then auto-follows its own skip_response_edge
+    onto the transfer_call node. That node has ``speak_during_execution``
+    false, so it adds no further line, and the transfer succeeds (the
+    default `Fakes` transfer result), landing all four traces on the same
+    transfer_call node. So: three nodes speak two lines and call `classify`
+    once; the fourth speaks one line and calls `classify` zero times; all
+    four end up transferred to the same node.
     """
     for node_id, expected_line in _SKIP_RESPONSE_STATIC_LINES.items():
         fakes = Fakes()
         runtime = _runtime(prior_auth_flow, fakes)
         _run(runtime.advance({"id": "x", "destination_node_id": node_id}))
 
-        assert fakes.said == [expected_line], node_id
-        assert fakes.classify_calls == [], node_id
-        assert runtime.current_node_id == node_id, node_id
+        if node_id == "node-1773866072757":
+            assert fakes.said == [expected_line], node_id
+            assert fakes.classify_calls == [], node_id
+        else:
+            assert fakes.said == [expected_line, _STAY_ON_THE_LINE], node_id
+            assert len(fakes.classify_calls) == 1, node_id
+
+        assert fakes.transfers == ["+15555550101"], node_id
+        assert runtime.current_node_id == _TRANSFER_CALL_NODE_ID, node_id
 
 
 def test_an_always_edge_fires_on_the_next_user_turn_and_is_never_offered_to_the_model() -> None:
@@ -1253,25 +1283,20 @@ def test_walking_the_real_prior_auth_fixture_ends_on_an_end_node(prior_auth_flow
     assert fakes.said[-1] == 'Thank you for calling Retell and have a wonderful day!"'
 
 
-def test_the_real_fixtures_stay_on_the_line_node_keeps_its_turn_for_the_global_edge(
-    prior_auth_flow,
-) -> None:
-    """ "Please stay on the line" speaks -- but does not auto-follow to the
-    transfer_call node the way it did before this wave's item-5 fix.
-
-    `node-1773866072757` has no local prompt edges of its own, but the
-    working-hour-split branch it used to fall through to is itself a global
-    node, so this node is installed with a synthetic ``global::...`` edge of
-    its own. The stranding guard (fixed to see the same edges the node was
-    installed with, not an empty list) now correctly treats that as a real
-    choice and keeps the node's turn instead of racing past it via
-    ``skip_response_edge``. See the trace note on
-    ``test_the_real_fixtures_skip_response_nodes_now_speak_before_advancing``.
+def test_the_real_fixtures_stay_on_the_line_node_auto_transfers(prior_auth_flow) -> None:
+    """ "Please stay on the line" speaks, then auto-follows straight to the
+    transfer -- it has no *authored* prompt edges to strand, only the
+    synthetic ``global::node-1773864774353`` edge every node in this flow is
+    offered for the (itself-global) working-hour-split branch, and a
+    synthetic global edge must not keep a node's turn (see the docstring on
+    `_enter_conversation` and the trace note on
+    ``test_the_real_fixtures_skip_response_nodes_now_speak_before_advancing``).
     """
     fakes = Fakes()
     runtime = _runtime(prior_auth_flow, fakes)
     _run(runtime.advance({"id": "x", "destination_node_id": "node-1773866072757"}))
 
     assert fakes.said == ["Please stay on the line while I transfer you"]
-    assert runtime.current_node_id == "node-1773866072757"
-    assert fakes.transfers == []
+    assert fakes.classify_calls == []
+    assert fakes.transfers == ["+15555550101"]
+    assert runtime.current_node_id == _TRANSFER_CALL_NODE_ID

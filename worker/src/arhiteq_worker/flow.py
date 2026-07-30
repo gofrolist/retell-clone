@@ -337,6 +337,19 @@ def evaluate_equation_condition(condition: Any, variables: Mapping[str, Any]) ->
 # across calls to `prompt_edges` for the same flow.
 _GLOBAL_EDGE_ID_PREFIX = "global::"
 
+
+def is_global_edge(edge: dict[str, Any]) -> bool:
+    """Is *edge* one of `prompt_edges`'s synthetic ``global::``-prefixed edges?
+
+    The one place that checks this by id prefix, so no second module ever
+    hardcodes the ``"global::"`` literal. Used by `flow_runtime`'s stranding
+    guard to tell a node's own authored edges apart from the synthetic ones
+    every node is offered for every global node in the flow.
+    """
+    edge_id = edge.get("id")
+    return isinstance(edge_id, str) and edge_id.startswith(_GLOBAL_EDGE_ID_PREFIX)
+
+
 # The single-edge shapes that can hold a node's guaranteed fallback, in
 # priority order (matches the order `iter_node_edges` yields them in).
 _FALLBACK_SHAPES: frozenset[str] = frozenset({"else_edge", "edge"})
