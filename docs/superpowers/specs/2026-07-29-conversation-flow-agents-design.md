@@ -131,8 +131,15 @@ the "Prompt / Static Sentence" toggle in the dashboard.
 - `edges[]` — conditional transitions.
 - `else_edge` — guaranteed fallback on `branch` and `function`.
 - `edge` — the single failure edge on `transfer_call`.
-- `always_edge` / `skip_response_edge` — on `conversation`; unconditional next,
-  and transition-without-speaking respectively.
+- `always_edge` — on `conversation`; the unconditional next hop, taken on the
+  following user turn.
+- `skip_response_edge` — on `conversation`; the node speaks, then the runtime
+  advances immediately **without waiting for the caller to reply**. "Skip
+  response" means skip waiting for *their* response, not skip saying ours. The
+  fixtures settle it: all four nodes carrying one are `static_text` with an empty
+  `edges[]`, so the skip edge is their only exit — under a
+  "transition-without-speaking" reading those nodes would exist solely to not say
+  their own line. It is the "say this and continue" connector.
 
 **`transition_condition` has two forms**, and v1 supports both:
 
@@ -254,9 +261,10 @@ from the enum.
 ### Per-node behaviour
 
 - **`conversation`** — converse, then transition. `always_edge` moves on
-  unconditionally after a turn; `skip_response_edge` transitions without
-  speaking. `start_speaker` and `interruption_sensitivity` override session
-  defaults for that node.
+  unconditionally after a turn; `skip_response_edge` speaks and then advances
+  at once, without waiting for the caller (see [Node types](#node-types)).
+  `start_speaker` overrides the session default for that node;
+  per-node `interruption_sensitivity` is parsed but not yet honoured.
 - **`branch`** — speaks nothing; pure routing. Equation edges resolve in code
   with no model call at all, which is the common case for a branch. If the node
   has prompt edges and no equation matched, one cheap classification call

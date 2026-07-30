@@ -653,10 +653,13 @@ injected callable (append to a list; return canned values). Cover:
 - a `branch` whose `classify` returns `None` (no match) follows `else_edge`;
 - a `subagent` node behaves exactly like a `conversation` node — assert the same
   instructions/tools calls as the equivalent conversation node;
-- **`skip_response_edge` transitions without speaking**: entering the destination records
-  no `say` call and no model turn is requested for the departing node. Four of the
-  prior-auth fixture's conversation nodes carry one, so this is a real path, not a
-  hypothetical;
+- **`skip_response_edge` speaks, then advances without waiting for the caller.**
+  ("Skip response" = skip waiting for *their* reply, not skip saying ours. All four
+  prior-auth nodes carrying one are `static_text` with an empty `edges[]`, so the skip
+  edge is their only exit — the other reading would make those nodes exist solely to not
+  say their own line.) Assert the line IS spoken and that the destination is entered with
+  no user turn in between, and that such a chain stops at `MAX_AUTOMATIC_TRANSITIONS`
+  instead of spinning;
 - **`always_edge` fires on the next user turn** without needing a model decision, and is
   not offered to the model as a prompt edge;
 - walking the real prior-auth fixture from its start node through a scripted sequence of
