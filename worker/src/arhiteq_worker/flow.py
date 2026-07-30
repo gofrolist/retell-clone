@@ -16,6 +16,8 @@ structural problem raises ``FlowError`` naming the offending node id so
 from __future__ import annotations
 
 import logging
+import math
+import re
 from collections.abc import Iterator, Mapping
 from typing import Any
 
@@ -162,12 +164,26 @@ _NUMERIC_OPERATORS: frozenset[str] = frozenset({">", "<"})
 _EQUALITY_OPERATORS: frozenset[str] = frozenset({"==", "!="})
 _CONTAINMENT_OPERATORS: frozenset[str] = frozenset({"CONTAINS", "NOT CONTAINS"})
 
+# A bare "{{name}}" operand, allowing surrounding whitespace, with nothing
+# else in the operand. Used by `_resolve_operand` to decide when a real
+# variables-mapping lookup (rather than a `resolve_template` pass) is the
+# right way to detect "missing".
+_SINGLE_PLACEHOLDER = re.compile(r"^\s*\{\{\s*([^{}]+?)\s*\}\}\s*$")
+
+# Sentinel distinguishing "no such key" from a legitimately falsy value
+# (None, "", 0) coming back from the variables mapping.
+_NOT_FOUND = object()
+
 
 def _as_float(text: str) -> float | None:
     try:
-        return float(text)
+        value = float(text)
     except TypeError, ValueError:
         return None
+    # "inf"/"-inf"/"nan" parse as floats but are not the numeric comparands
+    # Retell equations mean; treat them as non-numeric so callers fall back
+    # to string comparison instead of e.g. "inf" > 18 or nan != nan.
+    return value if math.isfinite(value) else None
 
 
 def _resolve_operand(value: Any, variables: Mapping[str, Any]) -> tuple[str, bool]:
@@ -175,19 +191,39 @@ def _resolve_operand(value: Any, variables: Mapping[str, Any]) -> tuple[str, boo
 
     ``variables`` supplies dynamic-variable values exactly as
     ``resolve_template`` would for a prompt, so ``{{current_time}}`` and other
-    system variables resolve the same way here as they do in agent text. A
-    placeholder whose key is not present is left literal by
-    ``resolve_template`` — that unresolved ``{{...}}`` remnant is how a
-    missing variable is detected, since Retell's dynamic variables always
-    arrive as strings with no separate "not set" sentinel.
+    system variables resolve the same way here as they do in agent text.
+
+    An operand that is *exactly* one placeholder (``{{name}}``, whitespace
+    allowed inside the braces) is looked up directly in ``variables`` via its
+    own ``.get`` — including ``ResolutionVariables``' lazily-computed system
+    variables (``{{current_time}}``, ``{{session_duration}}``, ...), which
+    only materialize through that mapping's ``__missing__``/``get`` machinery,
+    not a plain ``dict`` key check. Absence of the key is "missing".
+
+    Anything else — a literal with no placeholder, or text with an embedded
+    placeholder alongside other characters — is resolved with
+    ``resolve_template`` as before and treated as present. We used to treat a
+    leftover ``{{...}}`` in the resolved text as "missing", but that is wrong:
+    ``resolve_template`` never re-scans a substituted *value*, so a variable
+    whose value legitimately contains ``{{`` (e.g. ``{"note": "Say {{hi}} to
+    caller"}``) was mistaken for an unresolved placeholder even though the
+    variable is present. The direct-lookup path above is what makes the
+    common case — a bare variable compared against a literal — correct;
+    embedded-placeholder text is rare enough in equation operands that we
+    accept the "always present" simplification there.
     """
     if value is None:
         return "", False
     text = value if isinstance(value, str) else str(value)
+    single = _SINGLE_PLACEHOLDER.match(text)
+    if single:
+        found = variables.get(single.group(1), _NOT_FOUND)
+        if found is _NOT_FOUND:
+            return "", True
+        return (found if isinstance(found, str) else str(found)), False
     if "{{" not in text:
         return text, False
-    resolved = resolve_template(text, variables)
-    return resolved, "{{" in resolved
+    return resolve_template(text, variables), False
 
 
 def _evaluate_single_equation(equation: Any, variables: Mapping[str, Any]) -> bool:
@@ -227,6 +263,20 @@ def _evaluate_single_equation(equation: Any, variables: Mapping[str, Any]) -> bo
             return equal if operator == "==" else not equal
 
         if operator in _CONTAINMENT_OPERATORS:
+            # GUESS (like the outer {left,operator,right} shape guess in
+            # `evaluate_equation_condition`'s docstring): Retell does not
+            # specify CONTAINS semantics anywhere we can find. We implement
+            # it as a raw Python substring test. Their only documented
+            # example, `"New York, Los Angeles" CONTAINS {{user_location}}`,
+            # reads just as naturally as list *membership* against a
+            # comma-separated value — and under substring, a fragment of one
+            # entry (e.g. `user_location == "York"`) also matches, which
+            # membership semantics would reject. We keep substring anyway: it
+            # is the more general reading, it still satisfies the documented
+            # example for whole values, and its failure mode (over-matching a
+            # fragment) is at least predictable. If a real Retell flow ever
+            # shows membership semantics instead, this is the one place to
+            # change.
             contains = right_text in left_text
             return contains if operator == "CONTAINS" else not contains
 
