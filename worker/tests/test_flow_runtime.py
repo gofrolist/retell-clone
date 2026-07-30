@@ -44,6 +44,7 @@ class Fakes:
         self.build_calls: list[tuple[str, list[dict[str, Any]]]] = []
         self.ended: list[str] = []
         self.transfers: list[str] = []
+        self.generate_reply_calls: list[str | None] = []
         self._classify_results = list(classify_results or [])
         self.transfer_result = transfer_result
 
@@ -55,6 +56,9 @@ class Fakes:
 
     async def say(self, text: str) -> None:
         self.said.append(text)
+
+    async def generate_reply(self, instructions: str | None) -> None:
+        self.generate_reply_calls.append(instructions)
 
     async def classify(self, prompt: str, edges: list[dict[str, Any]]) -> str | None:
         self.classify_calls.append((prompt, list(edges)))
@@ -101,6 +105,7 @@ def _runtime(
         build_node_tools=fakes.build_node_tools,
         end_call=fakes.end_call,
         transfer_call=fakes.transfer_call,
+        generate_reply=fakes.generate_reply,
         call_id=call_id,
     )
 
@@ -230,6 +235,8 @@ def test_an_end_node_speaks_its_instruction_first_then_ends_the_call() -> None:
 
     assert fakes.said == ["Thanks for calling, goodbye!"]
     assert fakes.ended == ["agent_hangup"]
+    # A static_text line is spoken verbatim, never handed to a model turn.
+    assert fakes.generate_reply_calls == []
 
 
 def test_an_end_node_without_speak_during_execution_says_nothing() -> None:
@@ -251,8 +258,12 @@ def test_an_end_node_without_speak_during_execution_says_nothing() -> None:
     assert fakes.ended == ["agent_hangup"]
 
 
-def test_an_end_node_with_a_prompt_instruction_hands_it_to_the_model() -> None:
-    """No say(): a prompt instruction has to be phrased, so it goes to instructions."""
+def test_an_end_node_with_a_prompt_instruction_requests_a_model_turn_before_hanging_up() -> None:
+    """No say(): a prompt instruction has to be phrased, so a model turn is requested.
+
+    Nothing else would ever trigger that turn -- `end_call` follows right
+    after -- so without this the line is simply lost (dead air, then hangup).
+    """
     flow = {
         "start_node_id": "n1",
         "nodes": [
@@ -268,7 +279,8 @@ def test_an_end_node_with_a_prompt_instruction_hands_it_to_the_model() -> None:
     _run(_runtime(flow, fakes).start())
 
     assert fakes.said == []
-    assert any("Politely end the call" in text for text in fakes.instructions)
+    assert len(fakes.generate_reply_calls) == 1
+    assert "Politely end the call" in (fakes.generate_reply_calls[0] or "")
     assert fakes.ended == ["agent_hangup"]
 
 
@@ -579,6 +591,47 @@ def test_a_skip_response_edge_speaks_then_transitions_without_waiting() -> None:
     # with no user turn (no on_user_turn()/advance() call) in between.
     assert [node_id for node_id, _edges in fakes.build_calls] == ["n1", "n2"]
     assert len(fakes.instructions) == 2
+    # A static_text line is said verbatim; no model turn is requested for it.
+    assert fakes.generate_reply_calls == []
+
+
+def test_a_skip_response_edge_with_a_prompt_instruction_requests_a_model_turn_before_advancing() -> (
+    None
+):
+    """The production-bug case: a ``prompt`` line with no other exit but
+    ``skip_response_edge`` must not be silently dropped. Since no user turn
+    follows before the auto-advance, the runtime must itself ask for a model
+    turn to voice the line.
+    """
+    flow = {
+        "start_node_id": "n1",
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "conversation",
+                "instruction": {"type": "prompt", "text": "Say there is no case on file."},
+                "edges": [],
+                "skip_response_edge": {
+                    "id": "skip-1",
+                    "transition_condition": _prompt_condition("Always"),
+                    "destination_node_id": "n2",
+                },
+            },
+            {
+                "id": "n2",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "Anything else?"},
+            },
+        ],
+    }
+    fakes = Fakes()
+    runtime = _runtime(flow, fakes)
+    _run(runtime.start())
+
+    assert runtime.current_node_id == "n2"
+    # No say() for the prompt line -- it was requested as a model turn instead.
+    assert fakes.said == ["Anything else?"]
+    assert fakes.generate_reply_calls == [None]
 
 
 def test_a_chain_of_skip_response_edges_stops_at_the_automatic_transition_budget(
@@ -662,6 +715,85 @@ def test_a_node_with_its_own_prompt_edges_keeps_its_turn_despite_a_skip_response
     assert _ids(fakes.offered_edges) == ["p1"]
 
 
+def test_a_node_with_a_global_edge_keeps_its_turn_despite_a_skip_response_edge() -> None:
+    """The stranding guard must see the same edges the node was installed with.
+
+    n1 has no *local* prompt edges, but a global node makes it a synthetic
+    ``global::g1`` choice, installed via `_install`'s real ``graph.global_nodes``.
+    Checking the guard against an empty global-nodes list (as opposed to the
+    graph's real one) would miss that choice entirely and strand it by
+    auto-advancing past n1 via its skip_response_edge anyway.
+    """
+    flow = {
+        "start_node_id": "n1",
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "Anything else?"},
+                "edges": [],
+                "skip_response_edge": {
+                    "id": "skip-1",
+                    "transition_condition": _prompt_condition("Always"),
+                    "destination_node_id": "n2",
+                },
+            },
+            {"id": "n2", "type": "conversation", "instruction": {"type": "prompt", "text": "Two."}},
+            {
+                "id": "g1",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "Transferring you to a human."},
+                "global_node_setting": {"condition": "Caller wants a human"},
+            },
+        ],
+    }
+    fakes = Fakes()
+    runtime = _runtime(flow, fakes)
+    _run(runtime.start())
+
+    assert runtime.current_node_id == "n1"
+    assert fakes.said == ["Anything else?"]
+    assert _ids(fakes.offered_edges) == ["global::g1"]
+
+
+def test_an_equation_edge_beats_the_skip_response_edge() -> None:
+    """Equation edges take precedence at every transition point, including here."""
+    flow = {
+        "start_node_id": "n1",
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "Verifying member."},
+                "edges": [
+                    {
+                        "id": "eq-verified",
+                        "transition_condition": _equation_condition("{{verified}}", "==", "yes"),
+                        "destination_node_id": "n3",
+                    }
+                ],
+                "skip_response_edge": {
+                    "id": "skip-1",
+                    "transition_condition": _prompt_condition("Always"),
+                    "destination_node_id": "n2",
+                },
+            },
+            {"id": "n2", "type": "conversation", "instruction": {"type": "prompt", "text": "Two."}},
+            {
+                "id": "n3",
+                "type": "conversation",
+                "instruction": {"type": "prompt", "text": "Three."},
+            },
+        ],
+    }
+    fakes = Fakes()
+    runtime = _runtime(flow, fakes, variables={"verified": "yes"})
+    _run(runtime.start())
+
+    assert runtime.current_node_id == "n3"
+    assert fakes.said == ["Verifying member."]
+
+
 # The four `prior_auth_hotline.json` nodes whose only exit is a
 # skip_response_edge, and the static line each one is supposed to say. Under
 # the old (wrong) "never speaks" reading these were silently skipped; the
@@ -684,28 +816,47 @@ _SKIP_RESPONSE_STATIC_LINES: dict[str, str] = {
 }
 
 
+# "Working Hour Split Node" (node-1773864774353) -- the branch these four
+# skip-only nodes would otherwise cascade through -- is itself a global node
+# (``global_node_setting.condition`` is set). Confirmed by tracing the real
+# fixture, not guessed.
+_WORKING_HOUR_SPLIT_NODE_ID = "node-1773864774353"
+
+
 def test_the_real_fixtures_skip_response_nodes_now_speak_before_advancing(
     prior_auth_flow,
 ) -> None:
     """The four previously-silent static lines are now actually spoken.
 
     Each of these nodes carries a static line plus a skip_response_edge and
-    no other exit (``edges: []``); under the corrected reading the runtime
-    speaks the line first and only then advances. Three of the four
-    ("No Case", "Conversation" x2) fall through the working-hour branch's
-    ``else_edge`` onto "Please stay on the line while I transfer you" --
-    itself one of the four -- which then reaches the transfer_call node, so
-    those three each speak two lines in a row; the fourth ("Please stay on
-    the line") is reached directly and speaks just its own line.
+    no other exit of its own (``edges: []``); under the corrected reading the
+    runtime speaks the line first, where it used to be silently dropped.
+
+    TRACE NOTE, since a prior report's claim here turned out to be wrong:
+    the report claimed three of these four ("No Case", "Conversation" x2,
+    "Transfer") cascade through the working-hour branch's ``else_edge`` onto
+    the fourth ("Please stay on the line...") and on to the transfer_call
+    node, each speaking two lines in a row. Tracing the *actual* fixture with
+    every fix in this wave applied contradicts that: `_WORKING_HOUR_SPLIT_NODE_ID`
+    is itself a global node, so *every one* of these four nodes -- not just
+    three -- is installed with a synthetic ``global::<that node>`` edge of
+    its own (`prompt_edges` offers a global node's synthetic edge at every
+    *other* node in the graph). With the item-5 stranding-guard fix, that
+    edge is exactly the kind of model choice the guard must not strand, so
+    every one of the four now keeps its turn instead of auto-following its
+    skip_response_edge: none of them reach the branch, none cascade, and none
+    trigger `classify`. Each speaks *only* its own single line and stays
+    exactly where it is -- verified by direct instrumentation of the fixture,
+    not assumed from the older (now-superseded) cascade claim.
     """
     for node_id, expected_line in _SKIP_RESPONSE_STATIC_LINES.items():
         fakes = Fakes()
         runtime = _runtime(prior_auth_flow, fakes)
         _run(runtime.advance({"id": "x", "destination_node_id": node_id}))
 
-        assert fakes.said[0] == expected_line, node_id
-        assert expected_line in fakes.said
-        assert runtime.current_node_id != node_id
+        assert fakes.said == [expected_line], node_id
+        assert fakes.classify_calls == [], node_id
+        assert runtime.current_node_id == node_id, node_id
 
 
 def test_an_always_edge_fires_on_the_next_user_turn_and_is_never_offered_to_the_model() -> None:
@@ -992,6 +1143,47 @@ def test_start_speaker_user_defers_the_greeting_to_the_first_user_turn() -> None
     assert fakes.said == ["Hello, how can I help?"]
 
 
+def test_start_speaker_user_accumulates_pending_speech_across_a_skip_chain() -> None:
+    """A skip_response_edge cascade during `start()` must not drop earlier lines.
+
+    `_defer_speech` stays true for the whole `start()` call (it is only reset
+    in its ``finally``), so a chain of two nodes each parking a line while
+    deferred must not have the second overwrite the first: both are still
+    owed to the caller once the first user turn arrives.
+    """
+    flow = {
+        "start_node_id": "n1",
+        "start_speaker": "user",
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "First line."},
+                "edges": [],
+                "skip_response_edge": {
+                    "id": "skip-1",
+                    "transition_condition": _prompt_condition("Always"),
+                    "destination_node_id": "n2",
+                },
+            },
+            {
+                "id": "n2",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "Second line."},
+            },
+        ],
+    }
+    fakes = Fakes()
+    runtime = _runtime(flow, fakes)
+    _run(runtime.start())
+
+    # Nothing spoken yet -- both lines are still pending the first user turn.
+    assert fakes.said == []
+
+    _run(runtime.on_user_turn())
+    assert fakes.said == ["First line.", "Second line."]
+
+
 def test_nothing_is_spoken_after_the_call_has_ended() -> None:
     flow = {
         "start_node_id": "n1",
@@ -1061,12 +1253,25 @@ def test_walking_the_real_prior_auth_fixture_ends_on_an_end_node(prior_auth_flow
     assert fakes.said[-1] == 'Thank you for calling Retell and have a wonderful day!"'
 
 
-def test_the_real_fixtures_transfer_path_reaches_the_transfer_node(prior_auth_flow) -> None:
-    """ "Please stay on the line" speaks, then skip_response_edge -> transfer_call node."""
+def test_the_real_fixtures_stay_on_the_line_node_keeps_its_turn_for_the_global_edge(
+    prior_auth_flow,
+) -> None:
+    """ "Please stay on the line" speaks -- but does not auto-follow to the
+    transfer_call node the way it did before this wave's item-5 fix.
+
+    `node-1773866072757` has no local prompt edges of its own, but the
+    working-hour-split branch it used to fall through to is itself a global
+    node, so this node is installed with a synthetic ``global::...`` edge of
+    its own. The stranding guard (fixed to see the same edges the node was
+    installed with, not an empty list) now correctly treats that as a real
+    choice and keeps the node's turn instead of racing past it via
+    ``skip_response_edge``. See the trace note on
+    ``test_the_real_fixtures_skip_response_nodes_now_speak_before_advancing``.
+    """
     fakes = Fakes()
     runtime = _runtime(prior_auth_flow, fakes)
     _run(runtime.advance({"id": "x", "destination_node_id": "node-1773866072757"}))
 
     assert fakes.said == ["Please stay on the line while I transfer you"]
-    assert runtime.current_node_id == "node-1773866123876"
-    assert fakes.transfers == ["+15555550101"]
+    assert runtime.current_node_id == "node-1773866072757"
+    assert fakes.transfers == []

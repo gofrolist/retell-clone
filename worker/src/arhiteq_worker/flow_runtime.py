@@ -6,10 +6,10 @@ selection, prompt assembly). This module is the driver on top of it: it holds
 
 Like `flow`, it imports no ``livekit``: the worker's CI installs the dev-only
 dependency group, so anything that touches the agent session — updating the
-model's instructions, installing tools, speaking, hanging up, transferring —
-arrives as an **injected callable**. `main.py` (Task 7) supplies the real ones;
-tests supply recording fakes. If this module ever needs to import ``livekit``,
-the seam is in the wrong place.
+model's instructions, installing tools, speaking, requesting a model turn,
+hanging up, transferring — arrives as an **injected callable**. `main.py`
+(Task 7) supplies the real ones; tests supply recording fakes. If this module
+ever needs to import ``livekit``, the seam is in the wrong place.
 
 Routing rule that matters: a destination is always taken from an edge's own
 ``destination_node_id``. Edge ids are never node ids — `flow.prompt_edges`
@@ -64,6 +64,24 @@ Classify = Callable[[str, list[dict[str, Any]]], Awaitable[str | None]]
 BuildNodeTools = Callable[[dict[str, Any], list[dict[str, Any]]], list[Any]]
 EndCall = Callable[[str], Awaitable[None]]
 TransferCall = Callable[[str], Awaitable[str]]
+# Passing instructions asks for a turn phrased by them; ``None`` asks for a
+# turn from whatever instructions are already installed (`main.py`/Task 7
+# wires this to ``session.generate_reply()`` / ``session.generate_reply(
+# instructions=...)`` respectively — the same call the single-prompt
+# greeting path in `main.py` already makes, so this seam's signature is kept
+# compatible with it).
+GenerateReply = Callable[[str | None], Awaitable[None]]
+
+
+async def _default_generate_reply(_instructions: str | None) -> None:
+    """No-op default so existing `FlowRuntime(...)` constructions keep working."""
+    return
+
+
+def _is_prompt_instruction(node: dict[str, Any]) -> bool:
+    """Does *node* carry a ``prompt``-type instruction (needs a model turn to voice)?"""
+    instruction = node.get("instruction")
+    return isinstance(instruction, dict) and instruction.get("type") == "prompt"
 
 
 def _transfer_failed(result: Any) -> bool:
@@ -112,6 +130,7 @@ class FlowRuntime:
         build_node_tools: BuildNodeTools,
         end_call: EndCall,
         transfer_call: TransferCall,
+        generate_reply: GenerateReply = _default_generate_reply,
         call_id: str = "",
     ) -> None:
         self._graph = graph
@@ -124,6 +143,7 @@ class FlowRuntime:
         self._build_node_tools = build_node_tools
         self._end_call = end_call
         self._transfer_call = transfer_call
+        self._generate_reply = generate_reply
         self._call_id = call_id
 
         self._current_node_id = config.start_node_id
@@ -133,7 +153,11 @@ class FlowRuntime:
         # speaks, so the start node's verbatim line waits for that turn
         # instead of being dropped.
         self._defer_speech = False
-        self._pending_speech: str | None = None
+        # A list, not a single slot: an auto-follow chain (skip_response_edge
+        # cascades) can park more than one line while `_defer_speech` is
+        # still true (it is only reset in `start`'s ``finally``), and each
+        # one must reach the caller once the first user turn arrives.
+        self._pending_speech: list[str] = []
 
         self._handlers: dict[str, Callable[[dict[str, Any]], Awaitable[None]]] = {
             # ``subagent``'s field set is a strict subset of
@@ -198,9 +222,10 @@ class FlowRuntime:
         if self._ended:
             return
         self._auto_transitions = 0
-        if self._pending_speech is not None:
-            pending, self._pending_speech = self._pending_speech, None
-            await self._say(pending)
+        if self._pending_speech:
+            pending, self._pending_speech = self._pending_speech, []
+            for line in pending:
+                await self._say(line)
         node = self._current_node()
         if node is None:
             return
@@ -312,12 +337,18 @@ class FlowRuntime:
         return edges
 
     async def _speak_static(self, node: dict[str, Any]) -> bool:
-        """Speak a ``static_text`` instruction verbatim. True if there was one."""
+        """Speak a ``static_text`` instruction verbatim. True if there was one.
+
+        A ``prompt`` instruction is not handled here at all — phrasing one
+        needs a model turn, which is `_generate_reply`'s job, not this
+        method's; callers that must voice a prompt instruction with no user
+        turn to trigger one naturally call `_generate_reply` themselves.
+        """
         line = static_text(node, self._variables)
         if not line:
             return False
         if self._defer_speech:
-            self._pending_speech = line
+            self._pending_speech.append(line)
             return True
         await self._say(line)
         return True
@@ -336,24 +367,29 @@ class FlowRuntime:
 
         ``skip_response_edge`` means skip WAITING FOR the caller's response,
         not skip speaking: the node installs and speaks exactly like any
-        other node (a ``static_text`` line via `_speak_static`, a ``prompt``
-        instruction as a model turn request via `_install`), and only then —
-        with no user turn in between — immediately follows the
-        skip_response_edge, unless an equation edge fires first (equation
-        edges take precedence at every transition point, this one included).
-        A node whose own prompt edges give the model something to choose
-        keeps its turn instead; auto-advancing would strand those edges.
+        other node — a ``static_text`` line via `_speak_static`, or, when
+        that line is a ``prompt`` instead, by requesting a model turn via
+        `_generate_reply` (there is no next user turn to trigger one
+        naturally here) — and only then, with no user turn in between,
+        immediately follows the skip_response_edge, unless an equation edge
+        fires first (equation edges take precedence at every transition
+        point, this one included). A node whose own prompt edges give the
+        model something to choose keeps its turn instead; auto-advancing
+        would strand those edges — including a synthetic ``global::...``
+        edge, so the check below reuses the exact edge list the node was
+        installed with rather than recomputing it against no global nodes.
         """
-        await self._install(node)
-        await self._speak_static(node)
+        edges = await self._install(node)
+        spoken = await self._speak_static(node)
         skip = node.get("skip_response_edge")
-        if not (
-            isinstance(skip, dict)
-            and skip.get("destination_node_id")
-            and not prompt_edges(self._model_view(node), [])
-        ):
+        if not (isinstance(skip, dict) and skip.get("destination_node_id") and not edges):
             return
-        edge = select_equation_edge(node, self._variables)
+        if not spoken and _is_prompt_instruction(node):
+            # The line has to be phrased and nothing else will trigger a
+            # model turn before the auto-follow below — ask for one now,
+            # from the instructions `_install` just set.
+            await self._generate_reply(None)
+        edge = select_equation_edge(node, self._variables, exclude_edge=skip)
         if edge is None:
             edge = skip
             logger.info(
@@ -397,11 +433,15 @@ class FlowRuntime:
         await self._follow_fallback(node)
 
     async def _enter_end(self, node: dict[str, Any]) -> None:
-        if node.get("speak_during_execution") and not await self._speak_static(node):
-            # A ``prompt`` instruction has to be phrased, which needs a model
-            # turn the runtime cannot request itself; handing it to the
-            # session as instructions is the closest faithful thing.
-            await self._set_instructions(
+        if (
+            node.get("speak_during_execution")
+            and not await self._speak_static(node)
+            and _is_prompt_instruction(node)
+        ):
+            # A ``prompt`` instruction has to be phrased, and hanging up
+            # right below is the last thing this node does — request a
+            # model turn now, or the line is lost entirely.
+            await self._generate_reply(
                 node_instructions(self._model_view(node), self._graph, self._variables)
             )
         self._ended = True

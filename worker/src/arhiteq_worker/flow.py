@@ -343,7 +343,10 @@ _FALLBACK_SHAPES: frozenset[str] = frozenset({"else_edge", "edge"})
 
 
 def select_equation_edge(
-    node: dict[str, Any], variables: Mapping[str, Any]
+    node: dict[str, Any],
+    variables: Mapping[str, Any],
+    *,
+    exclude_edge: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """First ``equation``-condition edge, in declaration order, whose condition is true.
 
@@ -353,8 +356,18 @@ def select_equation_edge(
     dangling edge (no ``destination_node_id``) is never returned even if its
     condition is true: there is nowhere to send the call, so evaluation
     continues past it rather than stopping the walk.
+
+    *exclude_edge*, when given, is skipped by identity (``is``, not value
+    equality). `FlowRuntime` uses this to ask "does some *other* equation
+    edge fire ahead of this node's own ``skip_response_edge``?" without the
+    skip edge answering its own question: a ``skip_response_edge`` authored
+    with an ``equation`` condition (unusual, but not disallowed) would
+    otherwise come back from this same scan, reading as "an equation edge
+    beat the skip edge" when it and the skip edge are the very same edge.
     """
     for _shape, edge in iter_node_edges(node):
+        if exclude_edge is not None and edge is exclude_edge:
+            continue
         condition = edge.get("transition_condition")
         if not isinstance(condition, dict) or condition.get("type") != "equation":
             continue
