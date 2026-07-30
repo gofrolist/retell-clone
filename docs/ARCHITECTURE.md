@@ -135,6 +135,105 @@ rebranded **Arhiteq**. Talks to arhiteq-api with a session (dashboard) token.
    falls back to the number's default inbound agent on any error.
 3. Worker runs the agent with merged dynamic variables; webhooks as above.
 
+## Conversation flow execution
+
+A conversation flow (`response_engine.type == "conversation-flow"`) replaces
+the single prompt with a directed graph of nodes — prompts, tool calls,
+branches, transfers — that the worker walks live during the call instead of
+holding one static instruction set for the whole conversation. The graph
+itself is opaque JSON everywhere except in the worker: the control plane
+stores and serves it verbatim (see `docs/INTERNAL_API.md`), and node-type
+validation happens only at call start, in the worker.
+
+**Entering a node.** The instructions the model sees at any point are built
+from three pieces, in order: the flow's `global_prompt`; the node's own
+`instruction.text`, but only when that instruction's type is `prompt`; and a
+rendered list of the node's available transitions, naming each edge's id
+beside its condition text — the model can only choose a transition by id, so
+it has to be able to see them. When a node's instruction type is
+`static_text` instead, the worker speaks that text verbatim and never asks
+the model to phrase it; a `prompt` instruction is voiced by requesting an
+ordinary model turn.
+
+**Transitions.** Every node's edges carry a `transition_condition` of type
+`equation` or `prompt`. At every transition point the runtime evaluates the
+node's `equation` edges first, in declaration order — the first one that
+evaluates true wins, deterministically, in code, with no model call
+involved. Only if no equation edge fires do the node's `prompt` edges reach
+the model, offered as one synthetic tool call, `transition_to`, whose
+argument is an enum of that node's edge ids (never one tool per edge, so
+`tool_call_strict_mode` stays meaningful). A `branch` node whose edges are
+all equations therefore costs zero LLM calls to route.
+
+**`branch` nodes** speak nothing — they are pure routing, never a turn. If an
+equation edge fires, that decides it for free. If the node instead has
+`prompt` edges and no equation matched, the worker makes exactly one cheap,
+non-streaming completion against the flow's own mapped model (temperature 0)
+asking it to name the matching edge id from the transcript so far; no match
+routes to the node's `else_edge`.
+
+**`skip_response_edge` vs. `always_edge`.** Both are edges the runtime takes
+on its own, never offered to the model as a choice, but they mean different
+things. `skip_response_edge` lives on a `conversation` node: the node speaks
+its line as usual, and then the runtime advances immediately to the next
+node **without waiting for the caller to reply** — "skip response" means skip
+waiting for *their* response, not skip saying ours; it is the "say this and
+continue" connector, typically chaining a few `static_text` nodes together
+before the flow finally waits for a turn. `always_edge`, by contrast, is the
+unconditional next hop taken on the *following* user turn — the node still
+converses normally first.
+
+**`subagent` nodes execute as `conversation` nodes.** A `subagent`'s field
+set is a strict subset of `conversation`'s, so the two share one handler
+rather than one being a stub of the other.
+
+**Auto-advancing action nodes.** A `function` node (a flow-scoped HTTP tool
+call) or an `extract_dynamic_variables` node runs its own action and then has
+to decide where to go. When it has exactly one edge that could plausibly
+follow a successful result, the worker takes it automatically — there is
+nothing to decide. When it has several, the worker leaves the choice to the
+model instead of guessing: only the model, having just seen the tool result
+or the extracted values, can tell "found the member" apart from "lookup
+failed twice" when both come back as an ordinary (non-error) result. A hard
+failure always falls back to the node's `else_edge`.
+
+**Validation happens once, at call start.** Before the greeting is spoken,
+the worker indexes every node (including those nested in `components[]`, so
+an edge pointing into a subflow still resolves) and checks that every node's
+type is one it knows how to run and that every edge's destination exists.
+An unsupported node type or an edge into a missing node aborts the call
+immediately, naming the offending node id in the log — never a dead end
+discovered ninety seconds into a live call.
+
+**A bounded automatic-transition budget** stops a cycle of nodes that never
+wait for a user turn (an all-equation `branch` looping back on itself, say)
+from spinning forever inside a single turn; the budget resets on every real
+user turn, so a legitimately long chain of connector nodes is never cut
+short.
+
+The worker never fetches a conversation flow on its own — it only ever reads
+the `conversation_flow` object already resolved onto the call's config (see
+`docs/INTERNAL_API.md`), at the same pinned agent version as everything else
+about the call.
+
+**Known runtime limitations:**
+- Per-node overrides other than `start_speaker` — a node's own
+  `interruption_sensitivity`, voice speed, response eagerness, or per-node
+  LLM choice — survive round-trip (nodes are stored and served as opaque
+  JSON) but the runtime never reads them; only the flow-level `model_choice`
+  is honoured.
+- `finetune_transition_examples` / `finetune_conversation_examples` likewise
+  survive round-trip as part of a node's JSON but are not consulted at
+  runtime.
+- `components[]` (subflows) are indexed so a `destination_node_id` pointing
+  into one resolves, but there is no `component` node type to invoke a
+  subflow as a unit — a graph that actually contains one is rejected at call
+  start like any other unsupported node type.
+- A flow's `model_choice` names a model from Retell's own catalogue (real
+  flows carry `gpt-5.1`); Arhiteq is Gemini-only, so the worker maps it onto
+  the Gemini catalogue through the same helper the single-prompt path uses
+  for `llm.model` — an OpenAI model id never reaches a provider.
+
 ## Retell compatibility rules (non-negotiable)
 
 Contract-critical behaviors, from the migration spec — covered by the

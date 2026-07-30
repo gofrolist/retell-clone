@@ -46,12 +46,33 @@ Full call execution config:
             "begin_message": "…", "start_speaker": "agent",
             "general_tools": [ /* verbatim tool declarations */ ],
             "states": null, "starting_state": null,
-            "default_dynamic_variables": {} },
+            "default_dynamic_variables": {} } | null,
+  "conversation_flow": { "global_prompt": "…", "nodes": [ /* graph, verbatim */ ],
+            "start_node_id": "…", "start_speaker": "agent",
+            "tools": [ /* flow-scoped tool defs, by tool_id */ ],
+            "components": [ /* subflows */ ], "model_choice": { "model": "…" } | null,
+            "model_temperature": 0.0 | null, "kb_config": {...} | null,
+            "knowledge_base_ids": [...], "default_dynamic_variables": {} } | null,
   "dynamic_variables": { "first_name": "John", … },  // merged: defaults < call
   "metadata": {},
   "function_secret": "…"   // sent as X-Caller-Secret on custom tool calls
 }
 ```
+
+A conversation-flow agent (`response_engine.type == "conversation-flow"`) has
+no Retell-LLM row of its own, so `llm` is `null` and `conversation_flow`
+carries the graph instead — the worker branches on which of the two is
+present. `conversation_flow` is `null` for an ordinary single-prompt agent.
+Because a flow has no `llm.model`, it names its own model in
+`model_choice`/`model_temperature`; the worker maps `model_choice.model` onto
+the Gemini catalogue the same way it maps `llm.model` (see
+`docs/ARCHITECTURE.md`).
+
+Like `agent` and `llm`, `conversation_flow` is resolved at the call's pinned
+agent version, not the live draft — editing (or even publishing over) a flow
+while a call is running can never change what that call is executing. The
+worker never fetches a conversation flow directly; this is the only shape it
+ever sees one in.
 
 ### `POST /internal/calls/{call_id}/events`
 Lifecycle + streaming updates. Body: `{"event": "...", ...}`:
@@ -86,12 +107,14 @@ Terminal update; idempotent (second call is a no-op).
 
 ### `GET /internal/agents/{agent_id}/config?call_id={call_id}`
 Destination config for the `agent_swap` tool. Returns
-`{"agent": {…}, "llm": {…} | null}` (same shapes as in the call config);
-the worker re-points the live session at this agent's prompt, tools and
-voice mid-call. `call_id` is required and scopes the lookup: `404` for
-unknown agents, unknown calls, or agents outside the calling call's
-workspace (agent_id comes from user-editable tool config). The worker
-refuses to swap when `llm` is null (it would wipe the live prompt/tools).
+`{"agent": {…}, "llm": {…} | null, "conversation_flow": {…} | null}` (same
+shapes as in the call config); the worker re-points the live session at this
+agent's prompt, tools and voice mid-call. `call_id` is required and scopes
+the lookup: `404` for unknown agents, unknown calls, or agents outside the
+calling call's workspace (agent_id comes from user-editable tool config).
+The worker refuses to swap when `llm` is null (it would wipe the live
+prompt/tools) — this includes swapping onto a conversation-flow agent,
+which has no `llm`; `agent_swap` targeting a flow agent is not supported.
 
 ### `POST /internal/calls/{call_id}/knowledge-base/query`
 Retrieval behind the `kb_lookup` tool.
