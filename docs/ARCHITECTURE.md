@@ -261,7 +261,11 @@ enforces it, not a documented convention.
   `interruption_sensitivity`, voice speed, response eagerness, or per-node
   LLM choice — survive round-trip (nodes are stored and served as opaque
   JSON) but the runtime never reads them; only the flow-level `model_choice`
-  is honoured.
+  is honoured. `start_speaker` itself is read on the START node only
+  (`flow.py:start_speaker_for` has one caller: `main.py`, applied to
+  `graph.start`), so a value on any other node also survives round-trip
+  unread — which is why the editor offers the control on the start node
+  alone.
 - `finetune_transition_examples` / `finetune_conversation_examples` likewise
   survive round-trip as part of a node's JSON but are not consulted at
   runtime.

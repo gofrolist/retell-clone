@@ -17,7 +17,7 @@ import {
   Workflow,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 const CATEGORIES = [
   "All",
@@ -102,6 +102,23 @@ export default function CreateAgentModal({
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
+
+  // This modal is mounted permanently by the agents page (`open` merely
+  // toggles it), so every piece of state survives a Cancel and is still there
+  // on the next open. That is silent data corruption for `type`: pick
+  // "Conversational flow", cancel, reopen, pick a prompt template, Create —
+  // and you get a FLOW agent carrying the template's name and none of its
+  // prompt, with nothing on screen saying so. Reset the whole picker on each
+  // open instead of just `type`: a stale template/category/error is the same
+  // class of surprise, only less destructive.
+  useEffect(() => {
+    if (!open) return;
+    setType("single");
+    setCategory("All");
+    setTemplate("Build from scratch");
+    setCreating(false);
+    setError(null);
+  }, [open]);
 
   const handleCreate = async () => {
     const tpl = TEMPLATES.find((t) => t.name === template);

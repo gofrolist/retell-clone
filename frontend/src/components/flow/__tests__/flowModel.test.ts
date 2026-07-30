@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   addableEdgeShapes,
+  danglingEdgeNote,
   diffFlowPatch,
   EDGE_SHAPES,
   emptyCondition,
@@ -12,6 +13,9 @@ import {
   newToolId,
   seedFlow,
   stampToolIds,
+  summarizeCondition,
+  transferNumberStatus,
+  type FlowEdge,
   type FlowNode,
 } from "../flowModel";
 import type { RawConversationFlow } from "@/lib/api";
@@ -133,9 +137,36 @@ describe("addableEdgeShapes", () => {
     const node = (flow.nodes as FlowNode[]).find((n) => n.id === "node-1773865257897")!;
     expect(node.type).toBe("function");
     expect(node.else_edge).toBeDefined();
-    expect(addableEdgeShapes(node)).toEqual([]);
+    expect(addableEdgeShapes(node)).not.toContain("else_edge");
   });
 
+  // `flow_runtime.py`'s `_handlers` maps `function` and
+  // `extract_dynamic_variables` to `_enter_conversation` alongside
+  // `conversation`/`subagent` (its docstring names all four), so the worker
+  // takes their `skip_response_edge` on entry and their `always_edge` in
+  // `on_user_turn` exactly as it does for a conversation node. The editor
+  // offered them `else_edge` only, so a graph the worker executes fine could
+  // not be authored here.
+  test("a fresh function node can add always_edge and skip_response_edge too", () => {
+    const flow = load("clara_outbound.json");
+    const next = flowReducer(flow, {
+      type: "addNode",
+      nodeType: "function",
+      position: { x: 0, y: 0 },
+    });
+    const added = (next.nodes as FlowNode[]).at(-1)!;
+    expect(addableEdgeShapes(added)).toEqual(["else_edge", "always_edge", "skip_response_edge"]);
+  });
+
+  test("a function node with an else_edge can still add the two auto-follow shapes", () => {
+    const flow = load("prior_auth_hotline.json");
+    const node = (flow.nodes as FlowNode[]).find((n) => n.id === "node-1773865257897")!;
+    expect(addableEdgeShapes(node)).toEqual(["always_edge", "skip_response_edge"]);
+  });
+
+  // `branch` stays fallback-only, unlike `function`/`extract_dynamic_variables`
+  // above: it routes away on entry (`_enter_branch`) and is never the current
+  // node when `on_user_turn` runs, so an `always_edge` on one could never fire.
   test("a fresh branch node (no else_edge) can add its fallback", () => {
     const flow = load("clara_outbound.json");
     const next = flowReducer(flow, {
@@ -157,7 +188,7 @@ describe("addableEdgeShapes", () => {
     });
     const added = (next.nodes as FlowNode[]).at(-1)!;
     expect(added.else_edge).toBeUndefined();
-    expect(addableEdgeShapes(added)).toEqual(["else_edge"]);
+    expect(addableEdgeShapes(added)).toEqual(["else_edge", "always_edge", "skip_response_edge"]);
   });
 
   test("a fresh conversation node can add always_edge and skip_response_edge", () => {
@@ -518,5 +549,154 @@ describe("conditions", () => {
     // `evaluate_equation_condition` returns False for an empty `equations`
     // list, so the editor must never produce one -- hence the seeded row above.
     expect((emptyCondition("equation").equations as unknown[]).length).toBeGreaterThan(0);
+  });
+});
+
+describe("summarizeCondition", () => {
+  // ONE summariser for both readers: the settings panel's collapsed row and
+  // the canvas edge label. They were two copies, and the copies drifted --
+  // see the `exists` case below, which the panel got right and the canvas did
+  // not. `flowGraph.test.ts` pins the canvas end of the same rule.
+  test("a unary exists never shows a stale right operand", () => {
+    // `EquationBuilder` deliberately keeps `right` when the operator switches
+    // to `exists`, so a real edge carries one; the worker's
+    // `_evaluate_single_equation` never reads it.
+    const edge: FlowEdge = {
+      id: "e1",
+      transition_condition: {
+        type: "equation",
+        operator: "&&",
+        equations: [{ left: "{{policy_id}}", operator: "exists", right: "42" }],
+      },
+    };
+    expect(summarizeCondition(edge)).toBe("{{policy_id}} exists");
+  });
+
+  test("multiple equations are joined by the condition's own operator", () => {
+    const edge: FlowEdge = {
+      id: "e1",
+      transition_condition: {
+        type: "equation",
+        operator: "||",
+        equations: [
+          { left: "{{age}}", operator: ">", right: "18" },
+          { left: "{{state}}", operator: "==", right: "CA" },
+        ],
+      },
+    };
+    expect(summarizeCondition(edge)).toBe("{{age}} > 18 || {{state}} == CA");
+  });
+
+  test("returns null when there is nothing readable to show", () => {
+    // Each caller supplies its own fallback ("No condition set" in the panel,
+    // the shape's word on the canvas), so this must distinguish "no text"
+    // from an actual summary rather than baking one in.
+    expect(summarizeCondition({ id: "e1" })).toBeNull();
+    expect(summarizeCondition({ id: "e1", transition_condition: { type: "prompt", prompt: "" } })).toBeNull();
+    expect(
+      summarizeCondition({ id: "e1", transition_condition: { type: "prompt", prompt: "   " } }),
+    ).toBeNull();
+    expect(
+      summarizeCondition({ id: "e1", transition_condition: { type: "equation", equations: [] } }),
+    ).toBeNull();
+    expect(
+      summarizeCondition({ id: "e1", transition_condition: { type: "someday_new_kind" } }),
+    ).toBeNull();
+  });
+
+  test("summarises every condition on every real fixture without throwing", () => {
+    for (const name of NAMES) {
+      const flow = load(name);
+      for (const node of flow.nodes as FlowNode[]) {
+        for (const { edge } of iterNodeEdges(node)) {
+          const summary = summarizeCondition(edge);
+          expect(summary === null || typeof summary === "string").toBe(true);
+        }
+      }
+    }
+  });
+});
+
+describe("danglingEdgeNote", () => {
+  // Only a dangling FALLBACK on a node type that can do nothing but route
+  // actually ends the call. The other four combinations are inert, and the
+  // editor used to call all five a dead end -- on real fixture data.
+  test("a dangling else_edge on a function node ends the call", () => {
+    const flow = load("prior_auth_hotline.json");
+    const node = (flow.nodes as FlowNode[]).find((n) => n.id === "node-1773865257897")!;
+    expect((node.else_edge as Record<string, unknown>).destination_node_id).toBeUndefined();
+    const note = danglingEdgeNote("else_edge", String(node.type));
+    expect(note.tone).toBe("error");
+    expect(note.text).toContain("call ends here");
+  });
+
+  test("a dangling failure edge on a transfer_call node ends the call", () => {
+    const flow = load("prior_auth_hotline.json");
+    const node = (flow.nodes as FlowNode[]).find((n) => n.id === "node-1773866123876")!;
+    expect((node.edge as Record<string, unknown>).destination_node_id).toBeUndefined();
+    expect(danglingEdgeNote("edge", String(node.type)).tone).toBe("error");
+  });
+
+  test("the fixture's dangling edges[] entry is not reported as a dead end", () => {
+    // `prior_auth_hotline.json` really ships one, on a `subagent` node.
+    // `prompt_edges` excludes a destination-less authored edge and
+    // `select_equation_edge` continues past it: the node keeps every other
+    // option, and nothing about the call ends.
+    const flow = load("prior_auth_hotline.json");
+    const node = (flow.nodes as FlowNode[]).find((n) => n.id === "node-1785347159284")!;
+    const dangling = (node.edges as Record<string, unknown>[]).filter(
+      (e) => !e.destination_node_id,
+    );
+    expect(dangling.length).toBe(1);
+    const note = danglingEdgeNote("edges", String(node.type));
+    expect(note.tone).toBe("info");
+    expect(note.text).toContain("never offers this transition");
+  });
+
+  test("a dangling always_edge / skip_response_edge is inert, not fatal", () => {
+    // Both follow sites are gated on `destination_node_id`
+    // (`on_user_turn`, `_enter_conversation`), so the node just waits.
+    for (const shape of ["always_edge", "skip_response_edge"] as const) {
+      for (const nodeType of ["conversation", "subagent", "function"]) {
+        expect(danglingEdgeNote(shape, nodeType).tone).toBe("info");
+      }
+    }
+  });
+
+  test("a dangling fallback on a node that can hold the conversation stays put", () => {
+    // `_dead_end` ends the call only for `_ROUTING_NODE_TYPES`;
+    // conversation/subagent keep talking, which is a legitimate state.
+    expect(danglingEdgeNote("else_edge", "conversation").tone).toBe("info");
+    expect(danglingEdgeNote("edge", "subagent").tone).toBe("info");
+  });
+});
+
+describe("transferNumberStatus", () => {
+  // `flow_runtime.py:_transfer_number` runs `resolve_template` on the
+  // authored value BEFORE matching E.164, so a `{{variable}}` destination is
+  // a working configuration the editor cannot judge -- and must not red-flag.
+  test("a bare placeholder is pending resolution, not an error", () => {
+    expect(transferNumberStatus("{{transfer_number}}")).toBe("template");
+  });
+
+  test("a placeholder mixed with literal digits is also pending resolution", () => {
+    expect(transferNumberStatus("+1{{extension}}")).toBe("template");
+    expect(transferNumberStatus("{{ transfer_number }}")).toBe("template");
+  });
+
+  test("a plain E.164 number is valid, with or without surrounding space", () => {
+    expect(transferNumberStatus("+14155551234")).toBe("e164");
+    expect(transferNumberStatus("  +14155551234  ")).toBe("e164");
+  });
+
+  test("an empty value is neither valid nor an error", () => {
+    expect(transferNumberStatus("")).toBe("empty");
+    expect(transferNumberStatus("   ")).toBe("empty");
+  });
+
+  test("a placeholder-free non-E.164 value is the one real error", () => {
+    expect(transferNumberStatus("415-555-1234")).toBe("invalid");
+    expect(transferNumberStatus("+0123456789")).toBe("invalid"); // leading 0 after +
+    expect(transferNumberStatus("call the clinic")).toBe("invalid");
   });
 });

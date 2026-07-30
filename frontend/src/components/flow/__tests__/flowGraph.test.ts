@@ -103,6 +103,43 @@ describe("toReactFlow", () => {
     expect((edges[0].data as FlowEdgeData).label).toBe("{{age}} > 18");
   });
 
+  test("a unary exists is labelled without its stale right operand", () => {
+    // The settings panel and the canvas summarise the SAME edge, and used to
+    // do it with two copies of the logic: when the panel learned that
+    // `exists` is unary (the worker's `_evaluate_single_equation` never reads
+    // `right`, and `EquationBuilder` deliberately keeps a stale one), the
+    // canvas kept printing `right` for the very same edge. One summariser
+    // now, shared -- `flowModel.test.ts` pins the other end of it.
+    const cond = {
+      type: "equation",
+      operator: "&&",
+      equations: [{ left: "{{policy_id}}", operator: "exists", right: "42" }],
+    };
+    const flow = { conversation_flow_id: "f", version: 0, start_node_id: "n1",
+      nodes: [
+        { id: "n1", type: "branch", edges: [
+          { id: "e1", destination_node_id: "n2", transition_condition: cond }] },
+        { id: "n2", type: "end" },
+      ]} as unknown as RawConversationFlow;
+    const { edges } = toReactFlow(flow);
+    expect((edges[0].data as FlowEdgeData).label).toBe("{{policy_id}} exists");
+  });
+
+  test("an empty prompt condition falls back to the shape's own word", () => {
+    // A freshly dragged connection carries `{type: "prompt", prompt: ""}`
+    // until the user writes one; labelling it with that empty string left a
+    // nameless connector on the canvas.
+    const flow = { conversation_flow_id: "f", version: 0, start_node_id: "n1",
+      nodes: [
+        { id: "n1", type: "conversation", edges: [
+          { id: "e1", destination_node_id: "n2",
+            transition_condition: { type: "prompt", prompt: "" } }] },
+        { id: "n2", type: "end" },
+      ]} as unknown as RawConversationFlow;
+    const { edges } = toReactFlow(flow);
+    expect((edges[0].data as FlowEdgeData).label).toBe("condition");
+  });
+
   test("notes render as their own node type", () => {
     const flow = load("prior_auth_hotline.json");
     const { nodes } = toReactFlow(flow);

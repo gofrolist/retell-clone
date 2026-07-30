@@ -178,20 +178,34 @@ function Canvas({
  * out through `dispatch`, and `nodes`/`edges` are always derived from `flow`
  * (see `Canvas` above), never held as a second source of truth.
  *
- * `canvasEpoch` (the caller passes `agent.version`) is a remount key for the
- * canvas only — see the "Fix wave" section of `.superpowers/sdd/
- * task-10-report.md`. Browser-verified root cause: after a *bulk* graph
- * replacement (switching to view a different published version, restoring a
- * version as a new draft, or the silent draft-fork on the first edit after a
- * publish — all of which change `agent.version`) React and the DOM update
- * correctly (confirmed via the accessibility tree and a live DOM query — the
- * new text really is there), but Chromium's compositor sometimes keeps
- * painting the pre-update pixels for the affected node(s) indefinitely, with
- * no re-render, resize, or wait fixing it — only a forced reflow does. A
- * `key` change is the standard, reliable way to force one: it unmounts and
- * remounts every DOM node in the canvas, so there is nothing stale left to
- * paint over. Ordinary incremental edits (typing, dragging) never change
- * `agent.version`, so they don't remount and keep their viewport/selection.
+ * `canvasEpoch` is a remount key for the canvas only, and the caller must
+ * increment it ONLY on a bulk graph replacement — the whole graph swapped out
+ * from under the editor: viewing a different published version, restoring a
+ * version as a new draft, or any other reload of the whole document
+ * (`page.tsx`'s `selectVersion`/`reload`).
+ *
+ * Why it exists: after such a replacement, React and the DOM update correctly
+ * (browser-verified at the time via the accessibility tree and a live DOM
+ * query — the new text really was there), but Chromium's compositor kept
+ * painting the pre-update pixels for the affected node(s) indefinitely; no
+ * re-render, resize or wait cleared it, only a forced reflow. Changing a
+ * `key` is the standard way to force one: it unmounts and remounts every DOM
+ * node in the canvas, so there is nothing stale left to paint over.
+ *
+ * Why it must not be `agent.version`, which it used to be: that number also
+ * bumps on the FIRST EDIT of any published agent (`versions.touch` bumps it
+ * when `is_published`, and a brand-new agent is published at V0), and
+ * `page.tsx`'s flow save re-reads the agent — so a user typing into a new
+ * agent's start node had the canvas remount and the settings pane unmount
+ * their textarea mid-keystroke, 800ms after they started. An epoch the page
+ * bumps explicitly at the two replacement sites cannot do that.
+ *
+ * Scope, stated plainly so it is not overclaimed: this remount addresses only
+ * the post-replacement stale paint described above. Stale paint reported
+ * against ordinary incremental edits (drag-wiring an edge, switching a
+ * condition's type) was never reproduced and is NOT addressed here — those
+ * edits deliberately do not change the epoch, precisely so they keep their
+ * viewport and selection.
  */
 export default function FlowEditor({
   flow,
@@ -215,7 +229,10 @@ export default function FlowEditor({
   }, [selectedNodeId]);
 
   // A selection made in one version's graph shouldn't linger, half-relevant,
-  // after a bulk replacement swaps the whole graph out from under it.
+  // after a bulk replacement swaps the whole graph out from under it. Keyed
+  // off the same epoch as the remount, and for the same reason: anything that
+  // clears the selection unmounts whatever field the user is typing into, so
+  // it must never fire on an ordinary edit.
   useEffect(() => {
     setSelectedNodeId(null);
   }, [canvasEpoch]);

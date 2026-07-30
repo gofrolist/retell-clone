@@ -163,21 +163,103 @@ export function iterNodeEdges(
 /**
  * Which of the four single-edge shapes it makes sense to offer an "Add"
  * control for, per node type. Mirrors what the worker actually reads:
- * `flow.py:fallback_edge` looks for `else_edge` on exactly `branch`,
- * `function` and `extract_dynamic_variables` (falling back to the single
- * `edge` on `transfer_call`), and `flow_runtime.py`'s `_enter_conversation`
- * follows `always_edge`/`skip_response_edge` only off `conversation` and
- * `subagent`. Never lists `"edges"` here: that shape is a list, unbounded,
- * and already creatable by dragging a connection on the canvas.
+ *
+ * - `flow.py:fallback_edge` looks for `else_edge` on exactly `branch`,
+ *   `function` and `extract_dynamic_variables` (falling back to the single
+ *   `edge` on `transfer_call`).
+ * - `always_edge`/`skip_response_edge` are followed by the four node types
+ *   whose handler is `flow_runtime.py`'s `_enter_conversation` — its
+ *   `_handlers` map registers `conversation`, `subagent`, `function` AND
+ *   `extract_dynamic_variables` against it, and its own docstring names all
+ *   four. (`skip_response_edge` is read there; `always_edge` in
+ *   `on_user_turn`, off whatever node is current — which is any of those
+ *   four, since `branch`/`transfer_call` route away on entry and never stay
+ *   current.) `function`/`extract_dynamic_variables` therefore take three
+ *   addable shapes, not one: the editor used to offer them `else_edge`
+ *   alone, so a graph the worker executes fine was not authorable here.
+ *
+ * Never lists `"edges"`: that shape is a list, unbounded, and already
+ * creatable by dragging a connection on the canvas.
  */
 const ADDABLE_SHAPES_BY_NODE_TYPE: Record<string, readonly EdgeShape[]> = {
   branch: ["else_edge"],
-  function: ["else_edge"],
-  extract_dynamic_variables: ["else_edge"],
+  function: ["else_edge", "always_edge", "skip_response_edge"],
+  extract_dynamic_variables: ["else_edge", "always_edge", "skip_response_edge"],
   transfer_call: ["edge"],
   conversation: ["always_edge", "skip_response_edge"],
   subagent: ["always_edge", "skip_response_edge"],
 };
+
+/**
+ * Node types that exist only to ROUTE — the worker's
+ * `flow_runtime.py:_ROUTING_NODE_TYPES`, verbatim. `_dead_end` ENDS THE CALL
+ * for these when a fallback is unusable, because they hold no conversation of
+ * their own; `conversation`/`subagent` stay put instead (the model keeps
+ * talking), which is why they are deliberately absent.
+ */
+const ROUTING_NODE_TYPES = new Set([
+  "branch",
+  "function",
+  "extract_dynamic_variables",
+  "transfer_call",
+]);
+
+/** The fallback shapes `flow.py:fallback_edge` consults, in its order. */
+const FALLBACK_SHAPES = new Set<EdgeShape>(["else_edge", "edge"]);
+
+export type DanglingNote = { tone: "error" | "info"; text: string };
+
+/**
+ * What a destination-less edge of *shape* on a node of *nodeType* actually
+ * does at runtime — which is NOT "ends the call" for three of the five
+ * shapes, and depends on the node type for the other two:
+ *
+ * - `else_edge`/`edge`: `flow.py:fallback_edge` returns `None` rather than
+ *   the raw edge when it is dangling, so `_follow_fallback` goes to
+ *   `_dead_end` — which ends the call only for `ROUTING_NODE_TYPES` and
+ *   otherwise logs and stays put. This is the one genuinely fatal case.
+ * - `edges[]`: a dangling entry is skipped, not fatal — `prompt_edges`
+ *   ("Dangling authored edges … are excluded") never offers it to the model,
+ *   and `select_equation_edge` continues past it. The node keeps every other
+ *   option it has. The real `prior_auth_hotline.json` fixture ships one.
+ * - `always_edge`: `on_user_turn` follows it only
+ *   `if isinstance(always, dict) and always.get("destination_node_id")`.
+ * - `skip_response_edge`: `_enter_conversation`'s auto-follow branch is
+ *   likewise gated on `skip.get("destination_node_id")`, so the node just
+ *   waits for the caller like any other.
+ */
+export function danglingEdgeNote(shape: EdgeShape, nodeType: string): DanglingNote {
+  if (FALLBACK_SHAPES.has(shape)) {
+    if (ROUTING_NODE_TYPES.has(nodeType)) {
+      return {
+        tone: "error",
+        text:
+          "No destination set. The worker treats a dangling fallback as unresolvable, and this " +
+          "node type cannot hold the conversation — the call ends here.",
+      };
+    }
+    return {
+      tone: "info",
+      text:
+        "No destination set, so the worker ignores this fallback. This node type keeps the " +
+        "conversation going instead of ending the call.",
+    };
+  }
+  if (shape === "edges") {
+    return {
+      tone: "info",
+      text:
+        "No destination set, so the worker never offers this transition — it can never be " +
+        "taken. Every other transition on this node still works.",
+    };
+  }
+  return {
+    tone: "info",
+    text:
+      "No destination set, so the worker never follows this edge — the node behaves as if it " +
+      "were not there and waits for the caller.",
+  };
+}
 
 /**
  * The single-edge shapes worth offering an "Add …" control for on *node*,
@@ -193,6 +275,84 @@ export function addableEdgeShapes(node: FlowNode): EdgeShape[] {
   const candidates = ADDABLE_SHAPES_BY_NODE_TYPE[node.type] ?? [];
   const present = new Set(iterNodeEdges(node).map((e) => e.shape));
   return candidates.filter((shape) => !present.has(shape));
+}
+
+// ---------------------------------------------------------------------------
+// Condition summaries. ONE summariser, used by both readers of an edge's
+// condition: the settings panel's collapsed row (`EdgeList`) and the canvas
+// edge label (`flowGraph.labelFor`). They were two copies once, and the copies
+// drifted the moment one of them learned that `exists` is unary — the panel
+// stopped printing the stale `right` operand while the canvas kept printing
+// it for the same edge. Anything either reader needs beyond this string
+// (a fallback for "no condition") belongs at the call site, not in a fork.
+// ---------------------------------------------------------------------------
+
+/**
+ * A one-line, human-readable rendering of *edge*'s transition condition, or
+ * `null` when it has no readable condition (no condition object, an empty
+ * prompt, an empty `equations` list, or a condition type this editor does not
+ * model). Callers supply their own fallback for `null`.
+ *
+ * `exists` is unary — the worker's `_evaluate_single_equation` never reads
+ * `right` for it, and `EquationBuilder` deliberately preserves a stale
+ * `right` rather than clearing it on operator switch, so this is the one
+ * place that must stop showing it.
+ */
+export function summarizeCondition(edge: FlowEdge): string | null {
+  const condition = edge.transition_condition;
+  if (!condition || typeof condition !== "object") return null;
+
+  if (condition.type === "prompt") {
+    return typeof condition.prompt === "string" && condition.prompt.trim() ? condition.prompt : null;
+  }
+
+  if (condition.type === "equation") {
+    const equations = Array.isArray(condition.equations) ? condition.equations : [];
+    if (equations.length === 0) return null;
+    const joiner = condition.operator === "||" ? " || " : " && ";
+    return equations
+      .map((eq) => {
+        const e = (eq ?? {}) as Record<string, unknown>;
+        if (e.operator === "exists") return `${e.left ?? ""} exists`.trim();
+        return `${e.left ?? ""} ${e.operator ?? ""} ${e.right ?? ""}`.trim();
+      })
+      .join(joiner);
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Transfer destination validation.
+// ---------------------------------------------------------------------------
+
+// worker/src/arhiteq_worker/tools.py:E164_RE — kept in sync by hand since the
+// worker's own module cannot be imported client-side.
+const E164_RE = /^\+[1-9]\d{1,14}$/;
+
+// A `{{name}}` placeholder anywhere in the value. Deliberately looser than
+// `variables.py:_PLACEHOLDER` (which also models Retell's one level of
+// nesting): this only decides whether the value is *resolved before* it is
+// validated, and any `{{…}}` at all makes that true.
+const PLACEHOLDER_RE = /\{\{[^{}]*\}\}/;
+
+export type TransferNumberStatus = "empty" | "e164" | "template" | "invalid";
+
+/**
+ * How a `transfer_call` node's predefined `number` will fare at call time.
+ *
+ * The worker's `_transfer_number` (`flow_runtime.py`) runs `resolve_template`
+ * on the authored value FIRST and only then matches `E164_RE`, so
+ * `{{transfer_number}}` — or `+1{{extension}}` — is a legitimate authored
+ * value whose validity is not knowable here: `"template"`, not `"invalid"`.
+ * Calling it an error would red-flag a configuration that works.
+ */
+export function transferNumberStatus(value: string): TransferNumberStatus {
+  const trimmed = value.trim();
+  if (!trimmed) return "empty";
+  if (E164_RE.test(trimmed)) return "e164";
+  if (PLACEHOLDER_RE.test(trimmed)) return "template";
+  return "invalid";
 }
 
 // ---------------------------------------------------------------------------

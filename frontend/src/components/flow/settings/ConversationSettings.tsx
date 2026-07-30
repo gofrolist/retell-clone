@@ -27,12 +27,19 @@ const START_SPEAKER_OPTIONS = [
  * "speaking" node types (`_enter_conversation` handles both identically) and
  * carry the same fields.
  */
-export default function ConversationSettings({ node, dispatch }: NodeSettingsProps) {
+export default function ConversationSettings({ node, flow, dispatch }: NodeSettingsProps) {
   const instruction = (node.instruction ?? {}) as { type?: string; text?: string };
   const instructionType = instruction.type === "static_text" ? "static_text" : "prompt";
   const rawStartSpeaker = node.start_speaker;
   const startSpeaker = rawStartSpeaker === "agent" || rawStartSpeaker === "user" ? rawStartSpeaker : "";
   const globalSetting = (node.global_node_setting ?? {}) as { condition?: string };
+  // `flow.py:start_speaker_for` has exactly one caller — `main.py` applies it
+  // to `self._graph.start` when it builds the runtime's config. On any other
+  // node the field is stored faithfully and then never read, so offering the
+  // control there would be the same lie the branch refused to tell for
+  // `ignore_e164_validation` (see `TransferSettings`): a control that does
+  // nothing. It appears only on the start node.
+  const isStartNode = flow.start_node_id === node.id;
 
   const patch = (patch: Record<string, unknown>) =>
     dispatch({ type: "patchNode", nodeId: node.id, patch });
@@ -69,16 +76,18 @@ export default function ConversationSettings({ node, dispatch }: NodeSettingsPro
         </div>
       </Field>
 
-      <Field
-        label="Who speaks first"
-        hint="Overrides the flow's own start speaker at this node only."
-      >
-        <Select
-          value={startSpeaker}
-          onChange={(v) => patch({ start_speaker: v })}
-          options={START_SPEAKER_OPTIONS}
-        />
-      </Field>
+      {isStartNode && (
+        <Field
+          label="Who speaks first"
+          hint="Overrides the flow's own start speaker for the opening of the call. Only the start node's value is read at runtime, so this appears here alone."
+        >
+          <Select
+            value={startSpeaker}
+            onChange={(v) => patch({ start_speaker: v })}
+            options={START_SPEAKER_OPTIONS}
+          />
+        </Field>
+      )}
 
       <Field
         label="Global node"

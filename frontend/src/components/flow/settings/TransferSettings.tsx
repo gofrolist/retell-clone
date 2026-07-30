@@ -3,11 +3,8 @@
 import { Field, TextInput, Textarea } from "@/components/ui/Field";
 import Toggle from "@/components/ui/Toggle";
 import { cn } from "@/lib/utils";
+import { transferNumberStatus } from "../flowModel";
 import type { NodeSettingsProps } from "./NodeSettings";
-
-// worker/src/arhiteq_worker/tools.py:E164_RE — kept in sync by hand since the
-// worker's own module cannot be imported client-side.
-const E164_RE = /^\+[1-9]\d{1,14}$/;
 
 const DESTINATION_TYPES = [
   { value: "predefined", label: "Fixed number" },
@@ -20,8 +17,10 @@ const DESTINATION_TYPES = [
  * honours it — E.164 is enforced unconditionally on every dial-out path
  * (see `docs/SECURITY.md` § Transfer destinations) — so a toggle would claim
  * a control that does nothing. Client-side E.164 validation below is the
- * honest substitute: it cannot stop a bad `{{variable}}` substitution at call
- * time, but it catches an obviously malformed fixed number at author time.
+ * honest substitute: it catches an obviously malformed fixed number at author
+ * time. It cannot judge a `{{variable}}` destination — the worker resolves
+ * templates before it validates — so a templated value is reported as
+ * pending resolution, never as an error.
  */
 export default function TransferSettings({ node, dispatch }: NodeSettingsProps) {
   const destination = (node.transfer_destination ?? {}) as {
@@ -33,7 +32,11 @@ export default function TransferSettings({ node, dispatch }: NodeSettingsProps) 
   const number = typeof destination.number === "string" ? destination.number : "";
   const prompt = typeof destination.prompt === "string" ? destination.prompt : "";
   const speaks = Boolean(node.speak_during_execution);
-  const numberLooksValid = number.trim() === "" || E164_RE.test(number.trim());
+  // `_transfer_number` resolves `{{…}}` BEFORE it matches E.164, so a
+  // templated number is a working configuration whose final value simply is
+  // not knowable at author time — `flowModel.transferNumberStatus` reports it
+  // as `template`, and only a placeholder-free non-E.164 value is an error.
+  const numberStatus = transferNumberStatus(number);
 
   const patchNode = (patch: Record<string, unknown>) =>
     dispatch({ type: "patchNode", nodeId: node.id, patch });
@@ -66,17 +69,23 @@ export default function TransferSettings({ node, dispatch }: NodeSettingsProps) 
       {kind === "predefined" ? (
         <Field
           label="Number"
-          hint="Must be E.164 (e.g. +14155551234). This is enforced unconditionally at call time with no override — a non-matching number silently takes the failure edge below instead of dialing."
+          hint="Must be E.164 (e.g. +14155551234) once dynamic variables are resolved. That check is unconditional at call time with no override — a non-matching number silently takes the failure edge below instead of dialing. {{variables}} are allowed and resolved first."
         >
           <TextInput
             value={number}
             onChange={(e) => patchDestination({ number: e.target.value })}
             placeholder="+14155551234"
-            className={cn(!numberLooksValid && "border-bad focus:border-bad")}
+            className={cn(numberStatus === "invalid" && "border-bad focus:border-bad")}
           />
-          {!numberLooksValid && (
+          {numberStatus === "invalid" && (
             <p className="mt-1.5 text-xs text-bad">
               Not E.164 — the call will take the failure edge below instead of dialing.
+            </p>
+          )}
+          {numberStatus === "template" && (
+            <p className="mt-1.5 text-xs text-sub">
+              Resolved from dynamic variables at call time, then checked for E.164 — valid as
+              long as it resolves to a plain E.164 number.
             </p>
           )}
         </Field>

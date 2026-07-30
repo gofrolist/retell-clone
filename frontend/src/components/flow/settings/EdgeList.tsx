@@ -1,14 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Plus, Trash2, TriangleAlert } from "lucide-react";
+import { ChevronDown, ChevronRight, Info, Plus, Trash2, TriangleAlert } from "lucide-react";
 import Button from "@/components/ui/Button";
 import Select from "@/components/ui/Select";
+import { cn } from "@/lib/utils";
 import type { RawConversationFlow } from "@/lib/api";
 import {
   addableEdgeShapes,
+  danglingEdgeNote,
   EDGE_SHAPES,
   iterNodeEdges,
+  summarizeCondition,
   type EdgeShape,
   type FlowAction,
   type FlowEdge,
@@ -54,31 +57,29 @@ function destinationOptions(otherNodes: FlowNode[]): { value: string; label: str
   return otherNodes.map((n) => ({ value: n.id, label: nodeLabel(n) }));
 }
 
+/**
+ * The collapsed row's one-line condition. `summarizeCondition` is shared with
+ * the canvas edge label (`flowGraph.labelFor`); only the "nothing to show"
+ * fallback differs between the two, so only that lives here.
+ */
 function summarize(edge: FlowEdge): string {
-  const condition = edge.transition_condition;
-  if (condition && typeof condition === "object") {
-    if (condition.type === "prompt" && typeof condition.prompt === "string" && condition.prompt.trim()) {
-      return condition.prompt;
-    }
-    if (condition.type === "equation") {
-      const equations = Array.isArray(condition.equations) ? condition.equations : [];
-      if (equations.length > 0) {
-        const joiner = condition.operator === "||" ? " || " : " && ";
-        return equations
-          .map((eq) => {
-            const e = (eq ?? {}) as Record<string, unknown>;
-            // `exists` is unary -- the worker's `_evaluate_single_equation`
-            // never reads `right` for it, and `EquationBuilder` deliberately
-            // preserves a stale `right` rather than clearing it on switch, so
-            // this is the one place that must stop showing it.
-            if (e.operator === "exists") return `${e.left ?? ""} exists`.trim();
-            return `${e.left ?? ""} ${e.operator ?? ""} ${e.right ?? ""}`.trim();
-          })
-          .join(joiner);
-      }
-    }
-  }
-  return "No condition set";
+  return summarizeCondition(edge) ?? "No condition set";
+}
+
+function DanglingNote({ shape, nodeType }: { shape: EdgeShape; nodeType: string }) {
+  const note = danglingEdgeNote(shape, nodeType);
+  const Icon = note.tone === "error" ? TriangleAlert : Info;
+  return (
+    <p
+      className={cn(
+        "flex items-start gap-1.5 rounded-md px-2 py-1.5 text-xs",
+        note.tone === "error" ? "bg-red-50 text-bad" : "bg-app text-sub",
+      )}
+    >
+      <Icon className="mt-0.5 size-3.5 shrink-0" />
+      {note.text}
+    </p>
+  );
 }
 
 function EdgeRow({
@@ -149,13 +150,11 @@ function EdgeRow({
         />
       )}
 
-      {dangling && (
-        <p className="flex items-start gap-1.5 rounded-md bg-red-50 px-2 py-1.5 text-xs text-bad">
-          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-          No destination set. On a live call this is a dead end: the worker treats a dangling
-          fallback as unresolvable and ends the call here.
-        </p>
-      )}
+      {/* What a dangling edge does at runtime differs per shape AND per node
+          type — only a fallback (`else_edge`/`edge`) on a routing node type
+          actually ends the call; the other three shapes are simply inert. See
+          `flowModel.danglingEdgeNote`, which reads that off the worker. */}
+      {dangling && <DanglingNote shape={shape} nodeType={String(node.type)} />}
     </div>
   );
 }

@@ -24,6 +24,7 @@ import type { Edge as RFEdge, Node as RFNode, NodeChange } from "@xyflow/react";
 import { MarkerType } from "@xyflow/react";
 import {
   iterNodeEdges,
+  summarizeCondition,
   type EdgeShape,
   type FlowAction,
   type FlowEdge,
@@ -155,28 +156,14 @@ const SHAPE_LABEL: Record<EdgeShape, string> = {
   skip_response_edge: "skip response",
 };
 
-function equationLabel(cond: { operator?: string; equations?: unknown }): string {
-  const equations = Array.isArray(cond.equations) ? cond.equations : [];
-  const joiner = cond.operator === "||" ? " || " : " && ";
-  return equations
-    .map((eq) => {
-      const e = (eq ?? {}) as Record<string, unknown>;
-      return `${e.left ?? ""} ${e.operator ?? ""} ${e.right ?? ""}`.trim();
-    })
-    .join(joiner);
-}
-
+/**
+ * The condition text, or the shape's own word when there is none to show.
+ * `summarizeCondition` is shared with `EdgeList`'s collapsed row on purpose —
+ * a second copy here is exactly how the canvas came to keep printing the
+ * stale `right` operand of a unary `exists` after the panel stopped.
+ */
 function labelFor(shape: EdgeShape, edge: FlowEdge): string {
-  const cond = edge.transition_condition;
-  if (cond && typeof cond === "object") {
-    if (cond.type === "prompt" && typeof cond.prompt === "string") {
-      return cond.prompt;
-    }
-    if (cond.type === "equation") {
-      return equationLabel(cond);
-    }
-  }
-  return SHAPE_LABEL[shape];
+  return summarizeCondition(edge) ?? SHAPE_LABEL[shape];
 }
 
 // ---------------------------------------------------------------------------
