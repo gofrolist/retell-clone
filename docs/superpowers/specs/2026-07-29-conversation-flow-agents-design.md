@@ -149,6 +149,15 @@ the "Prompt / Static Sentence" toggle in the dashboard.
 The mix matters for the runtime: equation edges cost nothing to evaluate, prompt
 edges need the model. See [Per-node behaviour](#per-node-behaviour).
 
+**Where node validation lives.** Nodes stay opaque JSON at the DB layer
+(`models.py`), and the API validates nothing about node types — it stores
+whatever it is handed, so importing a flow containing an `mcp` or `component`
+node is lossless even though neither runs. Type enforcement belongs to the
+worker, at call start, where an unsupported node is a startup error naming the
+node id. `backend/` and `worker/` are separate uv projects with no shared
+package, so there is no single module to put this in; the fixtures, read by both
+test suites, are what keep the two aligned.
+
 **Two shapes the parser must tolerate**, both present in older fixtures:
 
 - edges carrying a legacy `condition` string alongside `transition_condition`;

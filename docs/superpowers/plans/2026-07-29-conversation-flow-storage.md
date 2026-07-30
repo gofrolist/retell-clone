@@ -36,11 +36,12 @@ turns on any user-visible feature — the create-modal card stays disabled.
 - The three fixtures in `backend/tests/fixtures/retell_flows/` are sanitized real
   Retell data. **Never edit them by hand** — they are the schema authority.
 
-## Correction to the spec
+## Where node validation lives
 
-The spec says node validation lives in "one Pydantic module shared by API and
-worker". There is no shared package: `backend/` and `worker/` are separate uv
-projects. Task 8 corrects that sentence. The actual arrangement:
+The spec is explicit about this (§ "Where node validation lives"), and it is
+worth restating because it shapes what this plan does *not* build. `backend/` and
+`worker/` are separate uv projects with no shared package, so there is no one
+module to hold node validation. The arrangement:
 
 - **The API validates nothing about node types.** It stores whatever it is given,
   so importing a flow containing an `mcp` or `component` node is lossless.
@@ -1133,27 +1134,11 @@ A flow-backed voice agent's graph is frozen into the version's `flow_snapshot`,
 so the flow's own counter is bookkeeping rather than what a call resolves against.
 ```
 
-- [ ] **Step 4: Correct the spec's shared-module claim**
-
-In `docs/superpowers/specs/2026-07-29-conversation-flow-agents-design.md`, replace:
-
-```
-**Nodes stay opaque JSON** at the DB layer (`models.py:506`). Validation lives in
-one Pydantic module shared by API and worker, applied on write, permissive on
-unknown keys — same "extra fields fine, renames never" rule as the rest of the
-contract.
-```
-
-with:
-
-```
-**Nodes stay opaque JSON** at the DB layer (`models.py:506`), and the API
-validates nothing about node types — it stores whatever it is given, so
-importing a flow containing an `mcp` or `component` node stays lossless. Type
-enforcement lives in the worker, at call start. `backend/` and `worker/` are
-separate uv projects with no shared package, so there is no one module to put it
-in; the fixtures, read by both test suites, are what keep the two aligned.
-```
+- [x] **Step 4: State in the spec where node validation lives** — done directly
+  by the controller, not this task. This step originally quoted a paragraph to
+  *replace*, but that paragraph was never written into the spec file, so the
+  implementer correctly refused to fabricate the edit. The spec now carries a
+  "Where node validation lives" subsection stating the arrangement positively.
 
 - [ ] **Step 5: Run the full suite once more and commit**
 
