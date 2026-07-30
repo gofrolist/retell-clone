@@ -27,7 +27,7 @@ import {
   type NodeTypes,
 } from "@xyflow/react";
 import type { RawConversationFlow } from "@/lib/api";
-import { edgeAddress, toReactFlow, type FlowEdgeData } from "./flowGraph";
+import { edgeAddress, nodeChangeAction, toReactFlow, type FlowEdgeData } from "./flowGraph";
 import type { FlowAction } from "./flowModel";
 import NodePalette, { NODE_DRAG_MIME } from "./NodePalette";
 import FlowNode from "./nodes/FlowNode";
@@ -79,19 +79,22 @@ function Canvas({
           } else {
             setSelectedNodeId((current) => (current === change.id ? null : current));
           }
-        } else if (change.type === "position") {
-          // Only apply on drag end, or the 800 ms autosave (Task 8) fires on
-          // every pixel of a drag.
-          if (readOnly || change.dragging !== false || !change.position) continue;
-          dispatch({ type: "moveNode", nodeId: change.id, position: change.position });
-        } else if (change.type === "remove") {
-          if (readOnly) continue;
-          dispatch({ type: "deleteNode", nodeId: change.id });
+          continue;
+        }
+        if (readOnly) continue;
+        // `nodeChangeAction` tells a note id from a graph node id and
+        // dispatches the right action family (`moveNode`/`deleteNode` vs.
+        // `patchNote`/`deleteNote`); it also filters out changes that must
+        // not mutate the flow (dimensions, mid-drag position changes).
+        const action = nodeChangeAction(change, flow);
+        if (!action) continue;
+        dispatch(action);
+        if (change.type === "remove") {
           setSelectedNodeId((current) => (current === change.id ? null : current));
         }
       }
     },
-    [dispatch, readOnly, setSelectedNodeId],
+    [dispatch, flow, readOnly, setSelectedNodeId],
   );
 
   const onEdgesChange = useCallback(

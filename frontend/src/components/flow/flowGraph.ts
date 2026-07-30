@@ -20,11 +20,12 @@
  */
 
 import type { CSSProperties } from "react";
-import type { Edge as RFEdge, Node as RFNode } from "@xyflow/react";
+import type { Edge as RFEdge, Node as RFNode, NodeChange } from "@xyflow/react";
 import { MarkerType } from "@xyflow/react";
 import {
   iterNodeEdges,
   type EdgeShape,
+  type FlowAction,
   type FlowEdge,
   type FlowNode,
   type Position,
@@ -67,6 +68,46 @@ export function edgeAddress(rfEdgeId: string): { nodeId: string; shape: EdgeShap
   const shape = (parts.pop() ?? "edges") as EdgeShape;
   const nodeId = parts.join("::");
   return { nodeId, shape, index: Number(indexPart) };
+}
+
+// ---------------------------------------------------------------------------
+// React Flow NodeChange -> FlowAction. The canvas's `nodes` array is a union
+// of two entity kinds (`toReactFlow` appends note nodes after graph nodes),
+// but `flowModel.ts` keeps them as two separate action families
+// (`moveNode`/`deleteNode` vs. `patchNote`/`deleteNote`) addressed by two
+// separate id spaces (`flow.nodes` vs. `flow.notes`). This is the one place
+// that tells a note id from a node id and routes to the right action, so the
+// canvas component never has to. Pure and DOM-free on purpose: it is the only
+// seam this plan's "no rendering tests" rule leaves for a regression test.
+// ---------------------------------------------------------------------------
+
+function isNoteId(flow: RawConversationFlow, id: string): boolean {
+  const notes = Array.isArray(flow.notes) ? (flow.notes as Record<string, unknown>[]) : [];
+  return notes.some((note) => note.id === id);
+}
+
+/**
+ * Maps one React Flow `NodeChange` onto the `FlowAction` it should dispatch,
+ * or `null` if the change must not mutate the flow: a `select`/`dimensions`
+ * change (editor-local, not flow content), or a mid-drag `position` change
+ * (`dragging: true` fires on every pixel — only the drag-end change, with
+ * `dragging: false`, should reach the reducer).
+ */
+export function nodeChangeAction(change: NodeChange, flow: RawConversationFlow): FlowAction | null {
+  if (change.type === "position") {
+    if (change.dragging !== false || !change.position) return null;
+    return isNoteId(flow, change.id)
+      ? { type: "patchNote", noteId: change.id, patch: { display_position: change.position } }
+      : { type: "moveNode", nodeId: change.id, position: change.position };
+  }
+
+  if (change.type === "remove") {
+    return isNoteId(flow, change.id)
+      ? { type: "deleteNote", noteId: change.id }
+      : { type: "deleteNode", nodeId: change.id };
+  }
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------
