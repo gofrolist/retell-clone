@@ -160,6 +160,41 @@ export function iterNodeEdges(
   return result;
 }
 
+/**
+ * Which of the four single-edge shapes it makes sense to offer an "Add"
+ * control for, per node type. Mirrors what the worker actually reads:
+ * `flow.py:fallback_edge` looks for `else_edge` on exactly `branch`,
+ * `function` and `extract_dynamic_variables` (falling back to the single
+ * `edge` on `transfer_call`), and `flow_runtime.py`'s `_enter_conversation`
+ * follows `always_edge`/`skip_response_edge` only off `conversation` and
+ * `subagent`. Never lists `"edges"` here: that shape is a list, unbounded,
+ * and already creatable by dragging a connection on the canvas.
+ */
+const ADDABLE_SHAPES_BY_NODE_TYPE: Record<string, readonly EdgeShape[]> = {
+  branch: ["else_edge"],
+  function: ["else_edge"],
+  extract_dynamic_variables: ["else_edge"],
+  transfer_call: ["edge"],
+  conversation: ["always_edge", "skip_response_edge"],
+  subagent: ["always_edge", "skip_response_edge"],
+};
+
+/**
+ * The single-edge shapes worth offering an "Add …" control for on *node*,
+ * minus whichever it already has (each of the four can exist at most once
+ * per node — `connect` replaces rather than appends for these shapes). A
+ * freshly palette-added node can be missing a shape entirely (`defaultsFor`
+ * gives a new `transfer_call` no `edge` field, a new `branch`/`function` no
+ * `else_edge`) — without this, a user has no way to author that node's
+ * guaranteed fallback, and an absent fallback dead-ends the call exactly like
+ * a dangling one (`flow.py:fallback_edge`, `flow_runtime.py:_dead_end`).
+ */
+export function addableEdgeShapes(node: FlowNode): EdgeShape[] {
+  const candidates = ADDABLE_SHAPES_BY_NODE_TYPE[node.type] ?? [];
+  const present = new Set(iterNodeEdges(node).map((e) => e.shape));
+  return candidates.filter((shape) => !present.has(shape));
+}
+
 // ---------------------------------------------------------------------------
 // Id minting. Retell's own ids look like `node-<ms>` / `edge-<ms>-<rand>`;
 // staying close to that convention keeps imported and authored graphs

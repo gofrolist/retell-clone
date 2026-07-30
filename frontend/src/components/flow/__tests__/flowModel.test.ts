@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  addableEdgeShapes,
   EDGE_SHAPES,
   emptyCondition,
   EQUATION_OPERATORS,
@@ -89,6 +90,120 @@ describe("iterNodeEdges", () => {
     expect(shapes.has("else_edge")).toBe(true);
     expect(shapes.has("edge")).toBe(true);
     expect(shapes.has("skip_response_edge")).toBe(true);
+  });
+});
+
+describe("addableEdgeShapes", () => {
+  test("a fresh transfer_call node (no edge field at all) can add its failure edge", () => {
+    // flowModel's defaultsFor("transfer_call") gives a new node no `edge`
+    // field at all -- confirmed against the reducer, not just asserted here.
+    const flow = load("clara_outbound.json");
+    const next = flowReducer(flow, {
+      type: "addNode",
+      nodeType: "transfer_call",
+      position: { x: 0, y: 0 },
+    });
+    const added = (next.nodes as FlowNode[]).at(-1)!;
+    expect(added.type).toBe("transfer_call");
+    expect(added.edge).toBeUndefined();
+    expect(addableEdgeShapes(added)).toEqual(["edge"]);
+  });
+
+  test("a transfer_call node that already has its edge offers nothing", () => {
+    const flow = load("prior_auth_hotline.json");
+    const node = (flow.nodes as FlowNode[]).find((n) => n.id === "node-1773866123876")!;
+    expect(node.type).toBe("transfer_call");
+    expect(node.edge).toBeDefined();
+    expect(addableEdgeShapes(node)).toEqual([]);
+  });
+
+  test("a branch node that already has else_edge does not offer it again", () => {
+    const flow = load("prior_auth_hotline.json");
+    const node = (flow.nodes as FlowNode[]).find((n) => n.id === "node-1773864774353")!;
+    expect(node.type).toBe("branch");
+    expect(node.else_edge).toBeDefined();
+    expect(addableEdgeShapes(node)).toEqual([]);
+  });
+
+  test("a function node that already has else_edge does not offer it again", () => {
+    const flow = load("prior_auth_hotline.json");
+    const node = (flow.nodes as FlowNode[]).find((n) => n.id === "node-1773865257897")!;
+    expect(node.type).toBe("function");
+    expect(node.else_edge).toBeDefined();
+    expect(addableEdgeShapes(node)).toEqual([]);
+  });
+
+  test("a fresh branch node (no else_edge) can add its fallback", () => {
+    const flow = load("clara_outbound.json");
+    const next = flowReducer(flow, {
+      type: "addNode",
+      nodeType: "branch",
+      position: { x: 0, y: 0 },
+    });
+    const added = (next.nodes as FlowNode[]).at(-1)!;
+    expect(added.else_edge).toBeUndefined();
+    expect(addableEdgeShapes(added)).toEqual(["else_edge"]);
+  });
+
+  test("a fresh extract_dynamic_variables node can add its fallback", () => {
+    const flow = load("clara_outbound.json");
+    const next = flowReducer(flow, {
+      type: "addNode",
+      nodeType: "extract_dynamic_variables",
+      position: { x: 0, y: 0 },
+    });
+    const added = (next.nodes as FlowNode[]).at(-1)!;
+    expect(added.else_edge).toBeUndefined();
+    expect(addableEdgeShapes(added)).toEqual(["else_edge"]);
+  });
+
+  test("a fresh conversation node can add always_edge and skip_response_edge", () => {
+    const flow = load("clara_outbound.json");
+    const next = flowReducer(flow, {
+      type: "addNode",
+      nodeType: "conversation",
+      position: { x: 0, y: 0 },
+    });
+    const added = (next.nodes as FlowNode[]).at(-1)!;
+    expect(addableEdgeShapes(added)).toEqual(["always_edge", "skip_response_edge"]);
+  });
+
+  test("a fresh subagent node can add always_edge and skip_response_edge", () => {
+    const flow = load("clara_outbound.json");
+    const next = flowReducer(flow, {
+      type: "addNode",
+      nodeType: "subagent",
+      position: { x: 0, y: 0 },
+    });
+    const added = (next.nodes as FlowNode[]).at(-1)!;
+    expect(addableEdgeShapes(added)).toEqual(["always_edge", "skip_response_edge"]);
+  });
+
+  test("a conversation node that already has skip_response_edge only offers always_edge", () => {
+    const flow = load("prior_auth_hotline.json");
+    const node = (flow.nodes as FlowNode[]).find((n) => n.id === "node-1773865396835")!;
+    expect(node.type).toBe("conversation");
+    expect(node.skip_response_edge).toBeDefined();
+    expect(node.always_edge).toBeUndefined();
+    expect(addableEdgeShapes(node)).toEqual(["always_edge"]);
+  });
+
+  test("never offers 'edges' -- it is a list, unbounded, and creatable by dragging", () => {
+    const flow = load("clara_outbound.json");
+    for (const node of flow.nodes as FlowNode[]) {
+      expect(addableEdgeShapes(node)).not.toContain("edges");
+    }
+  });
+
+  test("an unmodelled node type (end) offers nothing", () => {
+    const flow = load("clara_outbound.json");
+    const next = flowReducer(flow, {
+      type: "addNode",
+      nodeType: "end",
+      position: { x: 0, y: 0 },
+    });
+    const added = (next.nodes as FlowNode[]).at(-1)!;
+    expect(addableEdgeShapes(added)).toEqual([]);
   });
 });
 

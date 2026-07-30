@@ -1,10 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Trash2, TriangleAlert } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, Trash2, TriangleAlert } from "lucide-react";
+import Button from "@/components/ui/Button";
 import Select from "@/components/ui/Select";
 import type { RawConversationFlow } from "@/lib/api";
 import {
+  addableEdgeShapes,
   EDGE_SHAPES,
   iterNodeEdges,
   type EdgeShape,
@@ -44,6 +46,14 @@ const SHAPE_EXPLANATION: Record<EdgeShape, string> = {
  */
 const NO_CONDITION_SHAPES = new Set<EdgeShape>(["always_edge", "skip_response_edge"]);
 
+function nodeLabel(node: FlowNode): string {
+  return typeof node.name === "string" && node.name ? node.name : node.id;
+}
+
+function destinationOptions(otherNodes: FlowNode[]): { value: string; label: string }[] {
+  return otherNodes.map((n) => ({ value: n.id, label: nodeLabel(n) }));
+}
+
 function summarize(edge: FlowEdge): string {
   const condition = edge.transition_condition;
   if (condition && typeof condition === "object") {
@@ -57,6 +67,11 @@ function summarize(edge: FlowEdge): string {
         return equations
           .map((eq) => {
             const e = (eq ?? {}) as Record<string, unknown>;
+            // `exists` is unary -- the worker's `_evaluate_single_equation`
+            // never reads `right` for it, and `EquationBuilder` deliberately
+            // preserves a stale `right` rather than clearing it on switch, so
+            // this is the one place that must stop showing it.
+            if (e.operator === "exists") return `${e.left ?? ""} exists`.trim();
             return `${e.left ?? ""} ${e.operator ?? ""} ${e.right ?? ""}`.trim();
           })
           .join(joiner);
@@ -97,13 +112,7 @@ function EdgeRow({
         <Select
           value={destination}
           onChange={(v) => patch({ destination_node_id: v })}
-          options={[
-            { value: "", label: "No destination" },
-            ...otherNodes.map((n) => ({
-              value: n.id,
-              label: typeof n.name === "string" && n.name ? n.name : n.id,
-            })),
-          ]}
+          options={[{ value: "", label: "No destination" }, ...destinationOptions(otherNodes)]}
           className="min-w-0 grow"
         />
         {showCondition && (
@@ -152,10 +161,70 @@ function EdgeRow({
 }
 
 /**
+ * One not-yet-present single-edge shape (`else_edge`/`edge`/`always_edge`/
+ * `skip_response_edge`) this node type can carry — see
+ * `flowModel.addableEdgeShapes`. The destination is chosen first and the
+ * button stays disabled until one is: `connect` always writes a
+ * `destination_node_id`, and creating one with none would immediately be the
+ * dangling state `EdgeRow` warns about above.
+ */
+function AddEdgeRow({
+  node,
+  otherNodes,
+  shape,
+  dispatch,
+}: {
+  node: FlowNode;
+  otherNodes: FlowNode[];
+  shape: EdgeShape;
+  dispatch: (action: FlowAction) => void;
+}) {
+  const [destination, setDestination] = useState("");
+
+  return (
+    <div className="space-y-2 rounded-lg border border-dashed border-line p-2.5">
+      <div>
+        <p className="text-[13px] font-medium text-ink">{SHAPE_HEADING[shape]}</p>
+        <p className="text-xs text-sub">{SHAPE_EXPLANATION[shape]}</p>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <Select
+          value={destination}
+          onChange={setDestination}
+          options={[
+            { value: "", label: "Choose destination…" },
+            ...destinationOptions(otherNodes),
+          ]}
+          className="min-w-0 grow"
+        />
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          disabled={!destination}
+          onClick={() => {
+            dispatch({ type: "connect", nodeId: node.id, shape, destinationNodeId: destination });
+            setDestination("");
+          }}
+          className="shrink-0"
+        >
+          <Plus className="size-3.5" />
+          Add
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Every edge a node carries, grouped by shape with a heading and runtime
- * explanation per group (see `SHAPE_HEADING`/`SHAPE_EXPLANATION`). Shared by
- * every per-type settings editor via `NodeSettings`, which renders this once,
- * above the per-type body.
+ * explanation per group (see `SHAPE_HEADING`/`SHAPE_EXPLANATION`), plus an
+ * "Add …" control for every single-edge shape this node type can carry but
+ * doesn't yet (`flowModel.addableEdgeShapes`) — otherwise a freshly
+ * palette-added `transfer_call`/`branch`/`function`/`extract_dynamic_variables`
+ * node has no way to gain its guaranteed fallback, and dead-ends the call on
+ * its first failure. Shared by every per-type settings editor via
+ * `NodeSettings`, which renders this once, above the per-type body.
  */
 export default function EdgeList({
   node,
@@ -179,7 +248,9 @@ export default function EdgeList({
     grouped.set(shape, list);
   }
 
-  if (grouped.size === 0) {
+  const addable = addableEdgeShapes(node);
+
+  if (grouped.size === 0 && addable.length === 0) {
     return <p className="text-xs text-faint">No transitions from this node yet.</p>;
   }
 
@@ -204,6 +275,15 @@ export default function EdgeList({
             />
           ))}
         </div>
+      ))}
+      {addable.map((shape) => (
+        <AddEdgeRow
+          key={shape}
+          node={node}
+          otherNodes={otherNodes}
+          shape={shape}
+          dispatch={dispatch}
+        />
       ))}
     </div>
   );
