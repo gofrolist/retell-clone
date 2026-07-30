@@ -164,6 +164,21 @@ async def _validate_folder_id(session, folder_id, workspace_id: str) -> None:
         raise HTTPException(422, detail="folder_id does not reference a folder in this workspace")
 
 
+def _validate_response_engine_patch(payload: dict) -> None:
+    """422 a non-dict, non-null response_engine before apply_patch can set it.
+
+    apply_patch setattrs whatever is in the payload verbatim; a string or list
+    there would sail through (only a dict is checked below) and then blow up
+    every later read of `agent.response_engine.get(...)` (_load_flow,
+    _load_llm) with an AttributeError — a permanent 500 on that agent.
+    """
+    if "response_engine" not in payload:
+        return
+    engine = payload["response_engine"]
+    if engine is not None and not isinstance(engine, dict):
+        raise HTTPException(422, detail="response_engine must be an object or null")
+
+
 async def _validate_conversation_flow_id(
     session: AsyncSession, flow_id: str | None, workspace_id: str
 ) -> None:
@@ -261,6 +276,7 @@ async def update_agent(
     payload = await request.json()
     _require_object_body(payload)
     _validate_webhook_patch(payload)
+    _validate_response_engine_patch(payload)
     engine = payload.get("response_engine")
     if isinstance(engine, dict):
         await _validate_conversation_flow_id(

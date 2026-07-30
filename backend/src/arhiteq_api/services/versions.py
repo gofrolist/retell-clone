@@ -30,6 +30,13 @@ log = logging.getLogger(__name__)
 LATEST = "latest"
 LATEST_PUBLISHED = "latest_published"
 
+# Log-noise guard, not a correctness mechanism: resolve_with_flow's "published
+# with no flow snapshot" warning would otherwise fire once per config fetch —
+# i.e. once per call and again on every worker reconnect. Keyed by
+# (agent_id, version) and kept for the process lifetime so each affected
+# version is still reported at least once per deploy.
+_WARNED_UNFROZEN_VERSIONS: set[tuple[str, int]] = set()
+
 # Columns that identify a row or track version bookkeeping rather than describe
 # the agent's behaviour. Everything else is config and travels in a snapshot,
 # so a column added later is captured without touching a second allowlist.
@@ -515,13 +522,16 @@ async def resolve_with_flow(
         return pinned, llm, flow, version
     if row is None or row.flow_snapshot is None:
         if row is not None and row.is_published:
-            log.warning(
-                "agent %s version %s is published with no flow snapshot; "
-                "serving the live conversation flow %s instead of a frozen one",
-                agent.agent_id,
-                version,
-                flow.conversation_flow_id,
-            )
+            key = (agent.agent_id, version)
+            if key not in _WARNED_UNFROZEN_VERSIONS:
+                _WARNED_UNFROZEN_VERSIONS.add(key)
+                log.warning(
+                    "agent %s version %s is published with no flow snapshot; "
+                    "serving the live conversation flow %s instead of a frozen one",
+                    agent.agent_id,
+                    version,
+                    flow.conversation_flow_id,
+                )
         return pinned, llm, flow, version
     return pinned, llm, _detach(flow, row.flow_snapshot, _FLOW_EXCLUDED), version
 
