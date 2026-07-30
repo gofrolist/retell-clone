@@ -21,7 +21,9 @@
 - **Five edge shapes**, each with different runtime meaning: `edges[]` (list, conditional), `else_edge` (guaranteed fallback), `edge` (single failure edge, on `transfer_call`), `always_edge` (unconditional, fires on the next user turn), `skip_response_edge` (speak the node's line, then advance **without** waiting for the caller).
 - **Two condition forms:** `transition_condition.type` is `"prompt"` (`{type, prompt}`) or `"equation"` (`{type, equations: [{left, operator, right}], operator: "&&" | "||"}`). Equation operators: `>` `<` `==` `!=` `CONTAINS` `NOT CONTAINS` `exists`.
 - **Existing UI kit only** — `@/components/ui/{Field,Select,Toggle,Button,Accordion,Modal,Slider,RadioRow,Tooltip}`, `cn` from `@/lib/utils`, `lucide-react` icons. Do not introduce a second styling idiom. Match the surrounding Tailwind vocabulary (`text-[13px]`, `border-line`, `bg-card`, `text-sub`, `text-ink`, `text-faint`).
-- **No new dependency other than `@xyflow/react`.** It pulls `@xyflow/system`, `zustand` and `classcat` transitively; that is accepted (spec § Editor). `bun test` is built into bun — do **not** add vitest/jest.
+- **No new *runtime* dependency other than `@xyflow/react`.** It pulls `@xyflow/system`, `zustand` and `classcat` transitively; that is accepted (spec § Editor). `bun test` is built into bun — do **not** add vitest/jest.
+  - Types-only devDependencies are exempt. `@types/bun` is required: without it `bunx tsc --noEmit -p .` cannot resolve `bun:test` or `import.meta.dir`, and the `test.each` callbacks fall back to implicit `any` — i.e. the test files are not typechecked at all. `tsc` is clean on `main`, so leaving it broken would be a regression this branch introduced. It is scoped by a `/// <reference types="bun" />` file in `__tests__/`, **not** a `types` array in `tsconfig.json` — that would disable auto-inclusion of `@types/node` and `@types/react` that Next needs.
+  - Note that bun's `test.each` overloads take an array of **tuples**, not a flat list: write `test.each(NAMES.map((n) => [n] as const))`.
 
 ---
 
@@ -642,10 +644,13 @@ describe("toReactFlow", () => {
   });
 
   test("a dangling edge produces no React Flow edge", () => {
-    // The real prior-auth fixture has three: two dangling fallbacks and one
-    // dangling `edge` on a transfer_call node. React Flow cannot draw an edge
-    // with no target, so they are dropped from the canvas (the settings panel
-    // still shows them, which is where they get fixed).
+    // The real prior-auth fixture has exactly three dangling edges, one per
+    // list-vs-single shape: an `else_edge` on a function node, an `edge` on a
+    // transfer_call node, and an `edges[]` entry on a subagent node. React
+    // Flow cannot draw an edge with no target, so all three are dropped from
+    // the canvas (the settings panel still shows them, which is where they
+    // get fixed). Assert the COUNT too — a `toReactFlow` that dropped every
+    // edge would satisfy a no-broken-targets loop vacuously.
     const flow = load("prior_auth_hotline.json");
     const { edges } = toReactFlow(flow);
     const ids = new Set((flow.nodes as FlowNode[]).map((n) => n.id));

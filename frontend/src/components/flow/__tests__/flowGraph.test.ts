@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import type { FlowNode } from "../flowModel";
+import { iterNodeEdges, type FlowNode } from "../flowModel";
 import { edgeAddress, toReactFlow, type FlowEdgeData, type FlowNodeData } from "../flowGraph";
 import type { RawConversationFlow } from "@/lib/api";
 import { load, NAMES } from "./fixtures";
 
 describe("toReactFlow", () => {
-  test.each(NAMES)("%s: every node becomes exactly one React Flow node", (name) => {
+  test.each(NAMES.map((n) => [n] as const))("%s: every node becomes exactly one React Flow node", (name) => {
     const flow = load(name);
     const { nodes } = toReactFlow(flow);
     const graphNodes = nodes.filter((n) => n.type === "flowNode");
@@ -38,14 +38,22 @@ describe("toReactFlow", () => {
   });
 
   test("a dangling edge produces no React Flow edge", () => {
-    // The real prior-auth fixture has three: two dangling fallbacks and one
-    // dangling `edge` on a transfer_call node. React Flow cannot draw an edge
-    // with no target, so they are dropped from the canvas (the settings panel
-    // still shows them, which is where they get fixed).
+    // The real prior-auth fixture has exactly three dangling edges, one per
+    // list-vs-single shape: an `else_edge` on a function node, an `edge` on a
+    // transfer_call node, and an `edges[]` entry on a subagent node. React
+    // Flow cannot draw an edge with no target, so all three are dropped from
+    // the canvas (the settings panel still shows them, which is where they
+    // get fixed).
     const flow = load("prior_auth_hotline.json");
     const { edges } = toReactFlow(flow);
     const ids = new Set((flow.nodes as FlowNode[]).map((n) => n.id));
     for (const e of edges) expect(ids.has(e.target)).toBe(true);
+    // Pin the count, not just "no broken targets": a `toReactFlow` that
+    // dropped every edge would satisfy the loop above vacuously.
+    const authored = (flow.nodes as FlowNode[]).flatMap((n) => iterNodeEdges(n));
+    const dangling = authored.filter((e) => !e.edge.destination_node_id);
+    expect(dangling.length).toBe(3);
+    expect(edges.length).toBe(authored.length - dangling.length);
   });
 
   test("each edge carries its shape, and the id round-trips through edgeAddress", () => {
@@ -100,5 +108,47 @@ describe("toReactFlow", () => {
     expect(nodes.filter((n) => n.type === "note").length).toBe(
       (flow.notes as unknown[]).length,
     );
+  });
+
+  // The three fallbacks below are unreachable from the real fixtures, so
+  // nothing else pins them. Task 4 renders all three, which is exactly why an
+  // untested one would surface as a blank label or a note stacked at 0,0.
+  test("an edges[] entry with an unrecognized condition type still gets a label", () => {
+    const flow = {
+      conversation_flow_id: "f", version: 0, start_node_id: "n1",
+      nodes: [
+        { id: "n1", type: "conversation", edges: [
+          // A condition type neither the editor nor the worker knows. Retell
+          // could ship one; the canvas must not render a nameless connector.
+          { id: "e1", destination_node_id: "n2",
+            transition_condition: { type: "someday_new_kind" } }] },
+        { id: "n2", type: "end" },
+      ],
+    } as unknown as RawConversationFlow;
+    const { edges } = toReactFlow(flow);
+    expect((edges[0].data as FlowEdgeData).label).toBe("condition");
+  });
+
+  test("a note with no display_position or size gets deterministic defaults", () => {
+    const flow = {
+      conversation_flow_id: "f", version: 0, start_node_id: "n1",
+      nodes: [{ id: "n1", type: "end" }],
+      notes: [{ id: "note-1", content: "no position, no size" }],
+    } as unknown as RawConversationFlow;
+    const note = toReactFlow(flow).nodes.find((n) => n.type === "note")!;
+    expect(note.position).toEqual(toReactFlow(flow).nodes.find((n) => n.type === "note")!.position);
+    expect(typeof note.position.x).toBe("number");
+    expect(Number.isFinite(note.position.x)).toBe(true);
+    expect(note.style).toMatchObject({ width: 220, height: 120 });
+  });
+
+  test("a note keeps its authored size when it has one", () => {
+    const flow = {
+      conversation_flow_id: "f", version: 0, start_node_id: "n1",
+      nodes: [{ id: "n1", type: "end" }],
+      notes: [{ id: "note-1", content: "sized", size: { width: 345, height: 118 } }],
+    } as unknown as RawConversationFlow;
+    const note = toReactFlow(flow).nodes.find((n) => n.type === "note")!;
+    expect(note.style).toMatchObject({ width: 345, height: 118 });
   });
 });

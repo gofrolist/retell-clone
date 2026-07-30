@@ -12,7 +12,7 @@ import type { RawConversationFlow } from "@/lib/api";
 import { load, NAMES } from "./fixtures";
 
 describe("fidelity", () => {
-  test.each(NAMES)("%s survives a no-op edit byte for byte", (name) => {
+  test.each(NAMES.map((n) => [n] as const))("%s survives a no-op edit byte for byte", (name) => {
     const flow = load(name);
     const before = JSON.stringify(flow);
     // Rename a node to X and back: two real reducer passes, not a clone.
@@ -30,7 +30,7 @@ describe("fidelity", () => {
     expect(JSON.stringify(restored)).toBe(before);
   });
 
-  test.each(NAMES)("%s keeps keys the editor does not model", (name) => {
+  test.each(NAMES.map((n) => [n] as const))("%s keeps keys the editor does not model", (name) => {
     const flow = load(name);
     const next = flowReducer(flow, { type: "patchFlow", patch: { global_prompt: "changed" } });
     for (const key of Object.keys(flow)) expect(next).toHaveProperty(key);
@@ -130,7 +130,12 @@ describe("reducer actions", () => {
     const flow = load("prior_auth_hotline.json");
     const next = flowReducer(flow, { type: "deleteNode", nodeId: flow.start_node_id as string });
     const ids = (next.nodes as FlowNode[]).map((n) => n.id);
-    expect(ids).toContain(next.start_node_id);
+    // `start_node_id` is `string | null | undefined` on the wire, so assert it
+    // is actually a string before the membership check — otherwise a reducer
+    // that dropped it to null/undefined would fail on a confusing `toContain`
+    // message rather than saying what went wrong.
+    expect(typeof next.start_node_id).toBe("string");
+    expect(ids).toContain(next.start_node_id as string);
   });
 
   test("connect adds an edges[] entry with a prompt condition", () => {

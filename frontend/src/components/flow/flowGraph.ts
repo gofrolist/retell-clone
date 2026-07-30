@@ -159,7 +159,12 @@ const EDGE_VISUAL: Record<EdgeShape, EdgeVisual> = {
     animated: false,
   },
   edge: {
-    style: { stroke: "var(--color-bad)", strokeWidth: 1.5, strokeDasharray: "6 4" },
+    // Dash pattern differs from `else_edge`'s "6 4" on purpose. Both are
+    // dashed fallbacks and colour alone ("muted" vs "bad") is the one
+    // difference a red/green-deficient reader may not see at all — and these
+    // two mean genuinely different things: `else_edge` is "nothing matched",
+    // `edge` is "the transfer failed".
+    style: { stroke: "var(--color-bad)", strokeWidth: 1.5, strokeDasharray: "2 3" },
     animated: false,
   },
   always_edge: {
