@@ -15,10 +15,14 @@ structural problem raises ``FlowError`` naming the offending node id so
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import logging
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 from arhiteq_worker.config import ConversationFlowConfig
+from arhiteq_worker.variables import resolve_template
+
+logger = logging.getLogger("arhiteq-worker.flow")
 
 # Retell node types this worker knows how to execute. An unsupported type is
 # rejected at load rather than discovered mid-call.
@@ -149,3 +153,117 @@ class FlowGraph:
             for node in self._nodes_by_id.values()
             if (node.get("global_node_setting") or {}).get("condition")
         ]
+
+
+# Comparison operators documented at
+# https://docs.retellai.com/build/conversation-flow/transitions (equation
+# conditions). ``exists`` is handled separately below since it is unary.
+_NUMERIC_OPERATORS: frozenset[str] = frozenset({">", "<"})
+_EQUALITY_OPERATORS: frozenset[str] = frozenset({"==", "!="})
+_CONTAINMENT_OPERATORS: frozenset[str] = frozenset({"CONTAINS", "NOT CONTAINS"})
+
+
+def _as_float(text: str) -> float | None:
+    try:
+        return float(text)
+    except TypeError, ValueError:
+        return None
+
+
+def _resolve_operand(value: Any, variables: Mapping[str, Any]) -> tuple[str, bool]:
+    """Resolve one equation operand to text, reporting whether it is missing.
+
+    ``variables`` supplies dynamic-variable values exactly as
+    ``resolve_template`` would for a prompt, so ``{{current_time}}`` and other
+    system variables resolve the same way here as they do in agent text. A
+    placeholder whose key is not present is left literal by
+    ``resolve_template`` — that unresolved ``{{...}}`` remnant is how a
+    missing variable is detected, since Retell's dynamic variables always
+    arrive as strings with no separate "not set" sentinel.
+    """
+    if value is None:
+        return "", False
+    text = value if isinstance(value, str) else str(value)
+    if "{{" not in text:
+        return text, False
+    resolved = resolve_template(text, variables)
+    return resolved, "{{" in resolved
+
+
+def _evaluate_single_equation(equation: Any, variables: Mapping[str, Any]) -> bool:
+    """Evaluate one ``{"left", "operator", "right"}`` equation. Never raises."""
+    try:
+        if not isinstance(equation, dict):
+            return False
+        operator = equation.get("operator")
+        if not isinstance(operator, str):
+            return False
+        left = equation.get("left")
+
+        if operator == "exists":
+            left_text, missing = _resolve_operand(left, variables)
+            return not missing and left_text != ""
+
+        left_text, left_missing = _resolve_operand(left, variables)
+        if left_missing:
+            return False
+        right_text, right_missing = _resolve_operand(equation.get("right"), variables)
+        if right_missing:
+            return False
+
+        if operator in _NUMERIC_OPERATORS:
+            left_num, right_num = _as_float(left_text), _as_float(right_text)
+            if left_num is None or right_num is None:
+                return False
+            return left_num > right_num if operator == ">" else left_num < right_num
+
+        if operator in _EQUALITY_OPERATORS:
+            left_num, right_num = _as_float(left_text), _as_float(right_text)
+            equal = (
+                left_num == right_num
+                if left_num is not None and right_num is not None
+                else left_text == right_text
+            )
+            return equal if operator == "==" else not equal
+
+        if operator in _CONTAINMENT_OPERATORS:
+            contains = right_text in left_text
+            return contains if operator == "CONTAINS" else not contains
+
+        # Unrecognized operator: malformed, not exceptional.
+        logger.debug("unrecognized equation operator %r", operator)
+        return False
+    except Exception:
+        logger.debug("failed to evaluate equation %r", equation, exc_info=True)
+        return False
+
+
+def evaluate_equation_condition(condition: Any, variables: Mapping[str, Any]) -> bool:
+    """Evaluate a deterministic ``{"type": "equation", ...}`` transition condition.
+
+    ``condition`` is ``{"type": "equation", "equations": [...], "operator": "||"
+    | "&&"}`` per Retell's OpenAPI schema, which pins only this outer shape
+    (and a 50-equation cap we do not enforce here — evaluating more is not
+    unsafe, just unlikely). The per-equation shape
+    (``{"left", "operator", "right"}``) is not pinned by that schema; see the
+    module docstring in ``tests/test_flow_equations.py`` for why we read it
+    that way and where to correct it if a real flow ever disagrees.
+
+    Never raises: any malformed shape (missing/empty ``equations``, missing
+    ``operator``, non-dict ``condition``, wrong ``type``) is False, logged at
+    debug so it is diagnosable without being noisy in normal operation.
+    """
+    try:
+        if not isinstance(condition, dict) or condition.get("type") != "equation":
+            return False
+        equations = condition.get("equations")
+        if not isinstance(equations, list) or not equations:
+            return False
+        operator = condition.get("operator")
+        if operator not in ("&&", "||"):
+            return False
+        results = [_evaluate_single_equation(equation, variables) for equation in equations]
+        return all(results) if operator == "&&" else any(results)
+    except Exception:
+        logger.debug("failed to evaluate equation condition %r", condition, exc_info=True)
+        return False
