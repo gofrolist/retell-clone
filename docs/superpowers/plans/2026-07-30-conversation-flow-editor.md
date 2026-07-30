@@ -293,7 +293,9 @@ import type { RawConversationFlow } from "@/lib/api";
 
 // The sanitized real-Retell captures are the shared schema authority for the
 // backend, the worker AND this editor. Reading them from here is deliberate:
-// if the editor drifts from what Retell actually sends, these fail.
+// if the editor drifts from what Retell actually sends, these fail. Task 3
+// lifts these three lines into `__tests__/fixtures.ts` when a second suite
+// needs them; leave them inline here for now.
 const FIXTURES = join(import.meta.dir, "../../../../../backend/tests/fixtures/retell_flows");
 const load = (name: string): RawConversationFlow =>
   JSON.parse(readFileSync(join(FIXTURES, name), "utf8"));
@@ -566,7 +568,31 @@ Expected: `package.json` gains the dependency, `bun.lock` updates. It brings `@x
 
 - [ ] **Step 2: Write the failing tests**
 
-`frontend/src/components/flow/__tests__/flowGraph.test.ts`. Reuse the `load`/`FIXTURES` helper shape from `flowModel.test.ts` (duplicating those four lines is fine — a shared test helper module for two files is not worth the indirection).
+`frontend/src/components/flow/__tests__/flowGraph.test.ts`.
+
+First extract the fixture loader Task 2 wrote inline into `frontend/src/components/flow/__tests__/fixtures.ts` and re-point `flowModel.test.ts` at it, so both suites read the fixtures through one place:
+
+```typescript
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { RawConversationFlow } from "@/lib/api";
+
+// The sanitized real-Retell captures are the shared schema authority for the
+// backend, the worker AND this editor. Reading them from here is deliberate:
+// if the editor drifts from what Retell actually sends, these tests fail.
+const FIXTURES = join(import.meta.dir, "../../../../../backend/tests/fixtures/retell_flows");
+
+export const NAMES = [
+  "prior_auth_hotline.json",
+  "clara_outbound.json",
+  "identity_verify_transfer.json",
+] as const;
+
+export const load = (name: string): RawConversationFlow =>
+  JSON.parse(readFileSync(join(FIXTURES, name), "utf8"));
+```
+
+Verify the relative path resolves from `__tests__/` before building on it — `bun test src/components/flow` failing with ENOENT means the `../` count is wrong, not that the fixtures moved.
 
 ```typescript
 describe("toReactFlow", () => {
