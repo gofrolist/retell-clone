@@ -13,6 +13,7 @@ only explodes mid-call), so every tool built here is checked the same way.
 
 import asyncio
 import json
+import logging
 import typing
 
 import httpx
@@ -22,6 +23,7 @@ pytest.importorskip("livekit.agents")
 
 from livekit.agents import RunContext
 
+from arhiteq_worker import flow as flow_module
 from arhiteq_worker.config import ConversationFlowConfig
 from arhiteq_worker.flow import (
     FlowGraph,
@@ -562,6 +564,73 @@ def test_function_node_tool_wait_for_result_false_advances_without_waiting() -> 
 
     _run(scenario())
     assert calls == [node["edges"][0]]
+
+
+def test_function_node_tool_wait_for_result_false_retains_the_background_task() -> None:
+    """The fire-and-forget request must be held by a strong reference.
+
+    The event loop keeps only a *weak* reference to a task, so
+    ``asyncio.create_task(run())`` with the result thrown away can be
+    garbage-collected before the request ever reaches the transport —
+    silently, and with any exception it raises never logged. `main.py`
+    documents this exact hazard and holds every task it spawns in
+    `_background_tasks`; the test above cannot catch a regression here
+    because it holds a live reference of its own through the transport's
+    events. This one asserts the module keeps the reference itself, and drops
+    it again once the task completes.
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_request(request: httpx.Request) -> httpx.Response:
+        started.set()
+        await release.wait()
+        return httpx.Response(200, json={"memberId": "M-1"})
+
+    async def on_transition(edge: dict) -> None:
+        return None
+
+    tool = make_function_node_tool(
+        _function_node(wait_for_result=False),
+        _FLOW_TOOLS,
+        http=httpx.AsyncClient(transport=httpx.MockTransport(slow_request)),
+        function_secret="s",
+        variables={},
+        call_info=None,
+        state=CallState(call_id="call_1"),
+        on_transition=on_transition,
+    )
+    fnc = getattr(tool, "_fnc", None) or getattr(tool, "fnc", tool)
+
+    async def scenario() -> None:
+        await asyncio.wait_for(fnc({"call_first_name": "Jo"}, _FakeContext()), timeout=5.0)
+        await asyncio.wait_for(started.wait(), timeout=5.0)
+        in_flight = [task for task in flow_module._background_tasks if not task.done()]
+        assert in_flight, "the backgrounded request is not retained anywhere"
+
+        release.set()
+        await asyncio.gather(*in_flight)
+        # Completed tasks are discarded again: the set is not a leak.
+        assert not (set(in_flight) & flow_module._background_tasks)
+
+    _run(scenario())
+
+
+def test_a_detached_flow_task_that_raises_is_logged(caplog) -> None:
+    """...and its failure is surfaced, not swallowed with the reference."""
+
+    async def boom() -> None:
+        raise RuntimeError("the request never made it")
+
+    async def scenario() -> None:
+        task = flow_module._spawn_detached(boom())
+        with pytest.raises(RuntimeError):
+            await task
+
+    with caplog.at_level(logging.ERROR, logger="arhiteq-worker.flow"):
+        _run(scenario())
+
+    assert any(record.levelno >= logging.ERROR for record in caplog.records)
 
 
 def test_function_node_tool_returns_none_for_an_unresolved_tool_id() -> None:

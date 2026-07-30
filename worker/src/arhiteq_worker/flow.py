@@ -61,6 +61,31 @@ from arhiteq_worker.variables import resolve_deep, resolve_template
 
 logger = logging.getLogger("arhiteq-worker.flow")
 
+# Strong refs to fire-and-forget work — today, a ``wait_for_result: false``
+# function node's HTTP call. The event loop keeps only a WEAK reference to a
+# task, so an un-held one can be garbage-collected before it ever reaches the
+# transport, silently and with any exception it raises never logged. `main.py`
+# documents the same hazard and holds every task it spawns the same way; its
+# `_spawn` cannot simply be reused here because importing `main` would drag
+# livekit into this module's import graph (see the module docstring).
+_background_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _log_task_exception(task: asyncio.Task[Any]) -> None:
+    """Surface a crashed detached task instead of letting it die silently."""
+    if not task.cancelled() and task.exception() is not None:
+        logger.error("flow background task %s failed", task.get_name(), exc_info=task.exception())
+
+
+def _spawn_detached(coro: Any) -> asyncio.Task[Any]:
+    """`asyncio.create_task`, but the task is retained until it completes."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    task.add_done_callback(_log_task_exception)
+    return task
+
+
 # Retell node types this worker knows how to execute. An unsupported type is
 # rejected at load rather than discovered mid-call.
 SUPPORTED_NODE_TYPES: frozenset[str] = frozenset(
@@ -903,7 +928,7 @@ def make_function_node_tool(
     ``else_edge`` (seen on ``clara_outbound.json``'s bare action nodes, whose
     ``edges: []`` carry no success-specific continuation at all).
     ``wait_for_result: false`` fires the request without waiting
-    (`asyncio.create_task` — its ``response_variables`` land only if/when it
+    (`_spawn_detached` — its ``response_variables`` land only if/when it
     later completes) and applies that same edge selection immediately, per
     task-6-brief.md's "advance without waiting for the result" — there is no
     result yet to call an error, so only the success side of the rule
@@ -972,7 +997,9 @@ def make_function_node_tool(
             )
 
         if not wait_for_result:
-            asyncio.create_task(run())
+            # Retained (`_spawn_detached`), never a bare `create_task`: an
+            # un-held task can be collected before the request is even sent.
+            _spawn_detached(run())
             edge = _select_success_edge(success_edges, failure_edge)
             if edge is not None:
                 await on_transition(edge)
