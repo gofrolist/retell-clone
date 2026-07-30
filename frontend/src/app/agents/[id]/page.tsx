@@ -493,7 +493,21 @@ export default function AgentEditorPage({
               is the only place that edits them for a flow agent. */}
           {flowView ? (
             <div className="mt-3 flex min-h-0 grow flex-col">
-              <FlowEditor flow={flowView} dispatch={dispatchFlow} readOnly={readOnly} />
+              {/* `canvasEpoch` forces the canvas to remount on a bulk graph
+                  replacement (version switch/restore, or the silent
+                  draft-fork on the first edit after a publish) — see
+                  `FlowEditor`'s doc comment and the "Fix wave" section of
+                  `.superpowers/sdd/task-10-report.md` for the browser-verified
+                  paint bug this works around. `agent.version` (not
+                  `flowView`/`flow`) is the right signal: it's stable across
+                  ordinary incremental edits within one version, so typing and
+                  dragging never remount or lose the viewport. */}
+              <FlowEditor
+                flow={flowView}
+                dispatch={dispatchFlow}
+                readOnly={readOnly}
+                canvasEpoch={agent.version}
+              />
             </div>
           ) : llmView ? (
             <>

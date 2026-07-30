@@ -177,15 +177,32 @@ function Canvas({
  * owns only selection state (`selectedNodeId`) — every graph mutation goes
  * out through `dispatch`, and `nodes`/`edges` are always derived from `flow`
  * (see `Canvas` above), never held as a second source of truth.
+ *
+ * `canvasEpoch` (the caller passes `agent.version`) is a remount key for the
+ * canvas only — see the "Fix wave" section of `.superpowers/sdd/
+ * task-10-report.md`. Browser-verified root cause: after a *bulk* graph
+ * replacement (switching to view a different published version, restoring a
+ * version as a new draft, or the silent draft-fork on the first edit after a
+ * publish — all of which change `agent.version`) React and the DOM update
+ * correctly (confirmed via the accessibility tree and a live DOM query — the
+ * new text really is there), but Chromium's compositor sometimes keeps
+ * painting the pre-update pixels for the affected node(s) indefinitely, with
+ * no re-render, resize, or wait fixing it — only a forced reflow does. A
+ * `key` change is the standard, reliable way to force one: it unmounts and
+ * remounts every DOM node in the canvas, so there is nothing stale left to
+ * paint over. Ordinary incremental edits (typing, dragging) never change
+ * `agent.version`, so they don't remount and keep their viewport/selection.
  */
 export default function FlowEditor({
   flow,
   dispatch,
   readOnly,
+  canvasEpoch,
 }: {
   flow: RawConversationFlow;
   dispatch: (action: FlowAction) => void;
   readOnly: boolean;
+  canvasEpoch: number;
 }) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [rightTab, setRightTab] = useState<"node" | "global">("node");
@@ -197,11 +214,18 @@ export default function FlowEditor({
     if (selectedNodeId) setRightTab("node");
   }, [selectedNodeId]);
 
+  // A selection made in one version's graph shouldn't linger, half-relevant,
+  // after a bulk replacement swaps the whole graph out from under it.
+  useEffect(() => {
+    setSelectedNodeId(null);
+  }, [canvasEpoch]);
+
   return (
     <ReactFlowProvider>
       <div className="flex h-full min-h-0 w-full">
         <NodePalette dispatch={dispatch} readOnly={readOnly} />
         <Canvas
+          key={canvasEpoch}
           flow={flow}
           dispatch={dispatch}
           readOnly={readOnly}
