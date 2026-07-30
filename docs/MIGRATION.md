@@ -110,10 +110,10 @@ seeding is a no-op for it — so its published version keeps `flow_snapshot =
 NULL` forever. `resolve_with_flow` degrades a `NULL` snapshot to serving the
 **live** flow row instead of a frozen one.
 
-- **Affected:** flow-backed agents published before this change — in
-  practice, exactly the agents `scripts/import_usan_agents.py` creates during
-  Phase 1 of this runbook, if any of them are later converted to a
-  conversation flow rather than a plain prompt.
+- **Affected:** agents that were *already* flow-backed *and* published before
+  this change. Converting an agent to a conversation flow afterwards is safe:
+  that goes through `update-agent`, which opens a draft, and publishing it
+  writes the snapshot like any other edit.
 - **Consequence:** editing that flow's graph reaches every in-flight call
   pinned to the affected published version, not just new calls — the one
   thing this feature exists to prevent.
