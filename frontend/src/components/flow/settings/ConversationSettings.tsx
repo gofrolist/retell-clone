@@ -1,0 +1,98 @@
+"use client";
+
+import { Field, Textarea } from "@/components/ui/Field";
+import Select from "@/components/ui/Select";
+import { cn } from "@/lib/utils";
+import type { NodeSettingsProps } from "./NodeSettings";
+
+/**
+ * Labels are honest about what each instruction type means at runtime
+ * (`worker/src/arhiteq_worker/flow.py:node_instructions`/`static_text`):
+ * `prompt` is handed to the model to phrase, `static_text` is spoken
+ * verbatim with no model turn involved.
+ */
+const INSTRUCTION_TYPES = [
+  { value: "prompt", label: "Prompt", hint: "The model phrases it." },
+  { value: "static_text", label: "Exact text", hint: "Spoken verbatim." },
+] as const;
+
+const START_SPEAKER_OPTIONS = [
+  { value: "", label: "Inherit from flow" },
+  { value: "agent", label: "Agent speaks first" },
+  { value: "user", label: "Wait for the caller" },
+];
+
+/**
+ * Shared by `conversation` and `subagent` nodes — both are the worker's
+ * "speaking" node types (`_enter_conversation` handles both identically) and
+ * carry the same fields.
+ */
+export default function ConversationSettings({ node, dispatch }: NodeSettingsProps) {
+  const instruction = (node.instruction ?? {}) as { type?: string; text?: string };
+  const instructionType = instruction.type === "static_text" ? "static_text" : "prompt";
+  const rawStartSpeaker = node.start_speaker;
+  const startSpeaker = rawStartSpeaker === "agent" || rawStartSpeaker === "user" ? rawStartSpeaker : "";
+  const globalSetting = (node.global_node_setting ?? {}) as { condition?: string };
+
+  const patch = (patch: Record<string, unknown>) =>
+    dispatch({ type: "patchNode", nodeId: node.id, patch });
+
+  return (
+    <div className="space-y-4">
+      <Field label="What it says">
+        <div className="space-y-2">
+          <div className="inline-flex items-center gap-0.5 rounded-lg border border-line bg-app p-0.5">
+            {INSTRUCTION_TYPES.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => patch({ instruction: { ...instruction, type: opt.value } })}
+                className={cn(
+                  "rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors cursor-pointer",
+                  instructionType === opt.value
+                    ? "border border-line bg-white text-ink shadow-sm"
+                    : "text-sub hover:text-ink",
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-sub">
+            {INSTRUCTION_TYPES.find((opt) => opt.value === instructionType)?.hint}
+          </p>
+          <Textarea
+            rows={4}
+            value={instruction.text ?? ""}
+            onChange={(e) => patch({ instruction: { ...instruction, text: e.target.value } })}
+          />
+        </div>
+      </Field>
+
+      <Field
+        label="Who speaks first"
+        hint="Overrides the flow's own start speaker at this node only."
+      >
+        <Select
+          value={startSpeaker}
+          onChange={(v) => patch({ start_speaker: v })}
+          options={START_SPEAKER_OPTIONS}
+        />
+      </Field>
+
+      <Field
+        label="Global node"
+        hint="When set, this node is reachable from anywhere in the flow — the caller can jump here on any turn once the condition matches, not only by an authored edge into it."
+      >
+        <Textarea
+          rows={2}
+          placeholder="Describe when the caller should be able to jump here from anywhere…"
+          value={globalSetting.condition ?? ""}
+          onChange={(e) =>
+            patch({ global_node_setting: { ...globalSetting, condition: e.target.value } })
+          }
+        />
+      </Field>
+    </div>
+  );
+}

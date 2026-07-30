@@ -32,6 +32,7 @@ import type { FlowAction } from "./flowModel";
 import NodePalette, { NODE_DRAG_MIME } from "./NodePalette";
 import FlowNode from "./nodes/FlowNode";
 import NoteNode from "./nodes/NoteNode";
+import NodeSettings from "./settings/NodeSettings";
 
 // Module-level constants: a fresh object literal each render makes React
 // Flow remount every node/edge and log a warning.
@@ -169,11 +170,10 @@ function Canvas({
 
 /**
  * The three-pane conversation-flow canvas: node palette (left) · React Flow
- * canvas (center) · settings pane (right, a placeholder until Task 6 wires
- * up `<NodeSettings>`). `FlowEditor` owns only selection state
- * (`selectedNodeId`) — every graph mutation goes out through `dispatch`, and
- * `nodes`/`edges` are always derived from `flow` (see `Canvas` above), never
- * held as a second source of truth.
+ * canvas (center) · settings pane (right, `<NodeSettings>`). `FlowEditor`
+ * owns only selection state (`selectedNodeId`) — every graph mutation goes
+ * out through `dispatch`, and `nodes`/`edges` are always derived from `flow`
+ * (see `Canvas` above), never held as a second source of truth.
  */
 export default function FlowEditor({
   flow,
@@ -198,11 +198,12 @@ export default function FlowEditor({
           setSelectedNodeId={setSelectedNodeId}
         />
         <div className="h-full w-[320px] shrink-0 overflow-y-auto border-l border-line bg-card">
-          {/* Task 6 replaces this placeholder with <NodeSettings>, reading
-              `selectedNodeId` and mutating through `dispatch`. */}
-          <div className="p-4 text-[13px] text-sub">
-            {selectedNodeId ? `Selected node: ${selectedNodeId}` : "Select a node to edit its settings."}
-          </div>
+          <NodeSettings
+            flow={flow}
+            dispatch={dispatch}
+            selectedNodeId={selectedNodeId}
+            readOnly={readOnly}
+          />
         </div>
       </div>
     </ReactFlowProvider>
