@@ -109,9 +109,10 @@ async def test_create_agent_rejects_another_workspaces_flow(client, other_worksp
 
 async def test_published_version_freezes_the_flow(client):
     """Editing a draft flow must not change what a published version serves."""
-    agent = await create_flow_agent(client)
+    flow = await create_flow(client, global_prompt="ORIGINAL")
+    flow_id = flow["conversation_flow_id"]
+    agent = await create_flow_agent(client, flow_id=flow_id)
     agent_id = agent["agent_id"]
-    flow_id = agent["response_engine"]["conversation_flow_id"]
 
     published = await client.post(f"/publish-agent/{agent_id}", headers=AUTH_HEADERS, json={})
     assert published.status_code == 200, published.text
@@ -142,6 +143,86 @@ async def test_published_version_freezes_the_flow(client):
     assert config.status_code == 200, config.text
     served = config.json()["conversation_flow"]
     assert served is not None
-    assert served["global_prompt"] != "REWRITTEN AFTER PUBLISH", (
-        f"published version {version} served the edited draft flow"
+    assert served["global_prompt"] == "ORIGINAL", (
+        f"published version {version} served {served['global_prompt']!r} "
+        "instead of the frozen graph"
     )
+    assert served["nodes"] == NODES, f"published version {version} did not freeze the graph's nodes"
+
+
+async def test_flow_edit_opens_the_owning_agents_draft(client):
+    """PATCHing a flow must open a draft on every agent whose response_engine
+    points at it — mirroring update-retell-llm's agents_using_llm/touch dance
+    (api/llms.py) — or a flow edit can never be published and reach a call.
+    """
+    agent = await create_flow_agent(client)
+    agent_id = agent["agent_id"]
+    flow_id = agent["response_engine"]["conversation_flow_id"]
+
+    published = await client.post(f"/publish-agent/{agent_id}", headers=AUTH_HEADERS, json={})
+    assert published.status_code == 200, published.text
+
+    edited = await client.patch(
+        f"/update-conversation-flow/{flow_id}",
+        headers=AUTH_HEADERS,
+        json={"global_prompt": "EDITED"},
+    )
+    assert edited.status_code == 200, edited.text
+
+    versions_resp = await client.get(f"/get-agent-versions/{agent_id}", headers=AUTH_HEADERS)
+    assert versions_resp.status_code == 200, versions_resp.text
+    versions = versions_resp.json()
+    assert [(v["version"], v["is_published"]) for v in versions] == [(1, False), (0, True)], (
+        "flow edit did not open a draft on the owning agent"
+    )
+
+    republish = await client.post(f"/publish-agent/{agent_id}", headers=AUTH_HEADERS, json={})
+    assert republish.status_code == 200, republish.text
+    assert republish.json()["version"] == 1, republish.text
+
+    call = await client.post(
+        "/v2/register-phone-call",
+        headers=AUTH_HEADERS,
+        json={"agent_id": agent_id, "from_number": "+15551230000", "to_number": "+15559990000"},
+    )
+    assert call.status_code == 201, call.text
+    call_id = call.json()["call_id"]
+
+    config = await client.get(f"/internal/calls/{call_id}/config", headers=INTERNAL_HEADERS)
+    assert config.status_code == 200, config.text
+    served = config.json()["conversation_flow"]
+    assert served is not None
+    assert served["global_prompt"] == "EDITED", (
+        "publishing after a flow edit did not serve the edited graph"
+    )
+
+
+async def test_deleted_flow_still_serves_its_published_snapshot(client):
+    """Deleting a flow must not blank out a published version's graph: the
+    complete config is sitting in flow_snapshot and resolve_with_flow must
+    rebuild it rather than serve null.
+    """
+    agent = await create_flow_agent(client)
+    agent_id = agent["agent_id"]
+    flow_id = agent["response_engine"]["conversation_flow_id"]
+
+    published = await client.post(f"/publish-agent/{agent_id}", headers=AUTH_HEADERS, json={})
+    assert published.status_code == 200, published.text
+
+    call = await client.post(
+        "/v2/register-phone-call",
+        headers=AUTH_HEADERS,
+        json={"agent_id": agent_id, "from_number": "+15551230000", "to_number": "+15559990000"},
+    )
+    assert call.status_code == 201, call.text
+    call_id = call.json()["call_id"]
+
+    deleted = await client.delete(f"/delete-conversation-flow/{flow_id}", headers=AUTH_HEADERS)
+    assert deleted.status_code == 204, deleted.text
+
+    config = await client.get(f"/internal/calls/{call_id}/config", headers=INTERNAL_HEADERS)
+    assert config.status_code == 200, config.text
+    served = config.json()["conversation_flow"]
+    assert served is not None, "deleted flow served null instead of the frozen snapshot"
+    assert served["nodes"] == NODES
+    assert served["conversation_flow_id"] == flow_id

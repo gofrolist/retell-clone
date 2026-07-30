@@ -15,6 +15,7 @@ Only voice agents are versioned. Chat agents and conversation flows keep their
 plain `version` counter.
 """
 
+import logging
 from typing import Any
 
 from fastapi import HTTPException
@@ -22,6 +23,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import Agent, AgentVersion, ConversationFlow, RetellLLM, now_ms
+
+log = logging.getLogger(__name__)
 
 LATEST = "latest"
 LATEST_PUBLISHED = "latest_published"
@@ -219,6 +222,16 @@ async def agents_using_llm(session: AsyncSession, workspace_id: str, llm_id: str
     """
     agents = await session.scalars(select(Agent).where(Agent.workspace_id == workspace_id))
     return [a for a in agents if (a.response_engine or {}).get("llm_id") == llm_id]
+
+
+async def agents_using_flow(session: AsyncSession, workspace_id: str, flow_id: str) -> list[Agent]:
+    """Agents in this workspace whose response engine is `flow_id`.
+
+    Filtered in Python for the same reason agents_using_llm is: a JSON
+    predicate would need dialect-specific SQL for SQLite and Postgres both.
+    """
+    agents = await session.scalars(select(Agent).where(Agent.workspace_id == workspace_id))
+    return [a for a in agents if (a.response_engine or {}).get("conversation_flow_id") == flow_id]
 
 
 async def publish(
@@ -444,21 +457,57 @@ async def resolve_with_flow(
     Deliberately does NOT shortcut on `version == agent.version` the way the
     agent/llm snapshot lookups implicitly do inside resolve(): that equality
     only proves the *agent* row wasn't drafted since publish. A conversation
-    flow keeps its own independent version counter (see module docstring) and
-    `update-conversation-flow` never touches the owning agent's draft state,
-    so a flow can drift out from under a published, untouched agent. The
-    version's own row is always consulted; only a version with no row (a
+    flow keeps its own independent version counter (see module docstring), and
+    `update-conversation-flow` opens the owning agent's draft (like
+    update-retell-llm) but does not itself advance `agent.version` on rows
+    that are still mid-edit, so a flow can still drift out from under a
+    published, untouched agent (e.g. legacy history predating that wiring).
+    The version's own row is always consulted; only a version with no row (a
     fresh, still-open draft) or no flow_snapshot (pre-Task-5 history, or an
-    agent with no flow) falls back to serving the live flow.
+    agent with no flow) falls back to serving the live flow — and if the live
+    row itself is gone, a transient copy is rebuilt from the snapshot instead
+    of serving null (see `_rebuild_flow`).
     """
     pinned, llm, version = await resolve(session, agent, ref, strict=strict)
     flow = await _load_flow(session, pinned)
-    if flow is None:
-        return pinned, llm, flow, version
     row = await _get(session, agent.agent_id, version)
+    if flow is None:
+        # The live row is gone (deleted flow) but the pinned version's snapshot
+        # still holds the whole graph — rebuild a transient row from it rather
+        # than serve null for a version that is otherwise fully resolvable.
+        if row is not None and row.flow_snapshot:
+            return pinned, llm, _rebuild_flow(pinned, row.flow_snapshot), version
+        return pinned, llm, flow, version
     if row is None or row.flow_snapshot is None:
+        if row is not None and row.is_published:
+            log.warning(
+                "agent %s version %s is published with no flow snapshot; "
+                "serving the live conversation flow %s instead of a frozen one",
+                agent.agent_id,
+                version,
+                flow.conversation_flow_id,
+            )
         return pinned, llm, flow, version
     return pinned, llm, _detach(flow, row.flow_snapshot, _FLOW_EXCLUDED), version
+
+
+def _rebuild_flow(agent: Agent, snapshot: dict[str, Any]) -> ConversationFlow:
+    """A transient ConversationFlow rebuilt from `snapshot` when the live row
+    backing it has been deleted.
+
+    _FLOW_EXCLUDED omits conversation_flow_id, so the snapshot carries no id;
+    take it from the pinned agent's response_engine so the serialized object
+    still identifies itself. Never added to the session — this must not
+    resurrect the deleted row.
+    """
+    flow = ConversationFlow()
+    columns = flow.__table__.columns
+    for field, value in snapshot.items():
+        if field in columns and field not in _FLOW_EXCLUDED:
+            setattr(flow, field, value)
+    flow.conversation_flow_id = (agent.response_engine or {}).get("conversation_flow_id")
+    flow.workspace_id = agent.workspace_id
+    return flow
 
 
 async def published_version_of(session: AsyncSession, agent: Agent) -> int:
