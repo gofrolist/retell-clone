@@ -373,6 +373,77 @@ def test_an_inferred_transfer_destination_that_is_not_a_number_fails_over() -> N
     assert runtime.current_node_id == "n2"
 
 
+def test_the_flow_transfer_guard_is_the_built_in_tools_guard() -> None:
+    """Not "the same shape" — the same object, so the two cannot drift.
+
+    A `\\d{7,14}` copy of this once lived in `flow_runtime` under a comment
+    claiming parity with the built-in transfer tool, silently rejecting short
+    national-format destinations `tools` dials fine.
+    """
+    from arhiteq_worker import flow_runtime, tools
+
+    assert flow_runtime.E164_RE is tools.E164_RE
+
+
+def test_a_short_national_format_destination_is_dialed_like_the_built_in_tool() -> None:
+    """The regression the drifted copy caused: `+6831234` is valid E.164.
+
+    Seven digits clears `tools.E164_RE` (`\\d{1,14}` after the leading digit)
+    and the built-in transfer tool dials it. The old flow-local `\\d{7,14}`
+    copy required eight and failed the node over to its failure edge instead.
+    """
+    fakes = Fakes()
+    runtime = _runtime(_transfer_flow({"type": "predefined", "number": "+6831234"}), fakes)
+    _run(runtime.start())
+
+    assert fakes.transfers == ["+6831234"]
+    assert runtime.ended
+
+
+def test_ignore_e164_validation_does_not_unlock_a_non_e164_destination() -> None:
+    """The node flag is parsed and deliberately not acted on.
+
+    It could only ever widen what reaches the dialer:
+    `CallRuntime.transfer_call` emits ``tel:{number}`` and nothing else, so a
+    non-E.164 value addresses nothing — it just builds a malformed URI. The
+    built-in transfer tool has no such opt-out, and neither does this path.
+    """
+    fakes = Fakes()
+    runtime = _runtime(
+        _transfer_flow(
+            {"type": "predefined", "number": "not-a-number"},
+            ignore_e164_validation=True,
+        ),
+        fakes,
+    )
+    _run(runtime.start())
+
+    assert fakes.transfers == []
+    assert runtime.current_node_id == "n2"  # failed over, exactly as without the flag
+
+
+def test_ignore_e164_validation_does_not_dial_caller_steerable_prose() -> None:
+    """The reason the flag is not honoured, stated as a test.
+
+    An ``inferred`` destination resolves a ``{{var}}`` the model may have
+    extracted from caller speech. With the flag honoured, a caller who gets
+    ``escalation_number`` set to a premium-rate string would have it dialed.
+    """
+    fakes = Fakes()
+    runtime = _runtime(
+        _transfer_flow(
+            {"type": "inferred", "prompt": "{{escalation_number}}"},
+            ignore_e164_validation=True,
+        ),
+        fakes,
+        variables={"escalation_number": "900-PREMIUM-RATE"},
+    )
+    _run(runtime.start())
+
+    assert fakes.transfers == []
+    assert runtime.current_node_id == "n2"
+
+
 def test_a_transfer_node_speaks_its_line_when_speak_during_execution_is_true() -> None:
     fakes = Fakes()
     runtime = _runtime(

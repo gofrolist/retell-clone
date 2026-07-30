@@ -9,7 +9,10 @@ dependency group, so anything that touches the agent session — updating the
 model's instructions, installing tools, speaking, requesting a model turn,
 hanging up, transferring — arrives as an **injected callable**. `main.py`
 (Task 7) supplies the real ones; tests supply recording fakes. If this module
-ever needs to import ``livekit``, the seam is in the wrong place.
+ever needs to import ``livekit``, the seam is in the wrong place. (The one
+name pulled from ``tools`` — `E164_RE` — is safe for the same reason `flow`'s
+imports from it are: `tools.py` only imports ``livekit.agents`` lazily, inside
+its own tool factories, so its module import is livekit-free.)
 
 Routing rule that matters: a destination is always taken from an edge's own
 ``destination_node_id``. Edge ids are never node ids — `flow.prompt_edges`
@@ -21,7 +24,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
@@ -36,6 +38,7 @@ from arhiteq_worker.flow import (
     select_equation_edge,
     static_text,
 )
+from arhiteq_worker.tools import E164_RE
 from arhiteq_worker.variables import resolve_template
 
 logger = logging.getLogger("arhiteq-worker.flow")
@@ -60,9 +63,12 @@ HANGUP_REASON = "agent_hangup"
 # is rejected at load, so both graph problems read alike on the call record.
 DEAD_END_REASON = "error_unknown"
 
-# Same shape the built-in transfer tool enforces: a destination that reaches
-# the SIP leg must be strict E.164 unless the node opts out.
-_E164_RE = re.compile(r"^\+[1-9]\d{7,14}$")
+# Not a copy of the built-in transfer tool's guard — literally the same
+# object (`tools.E164_RE`). It used to be a copy, and the copy had drifted to
+# `\d{7,14}` under a comment claiming parity, silently rejecting short
+# national-format destinations the built-in tool dials fine. Importing is what
+# makes that class of drift impossible; see `tools.E164_RE` for why the rule
+# itself is absolute.
 
 # Node types that exist only to ROUTE. They install no conversation of their
 # own (a ``branch`` speaks nothing at all; a ``transfer_call`` has said
@@ -748,10 +754,21 @@ class FlowRuntime:
             )
             return ""
         number = resolve_template(raw, self._variables).strip()
-        if not node.get("ignore_e164_validation") and not _E164_RE.match(number):
-            # The destination can be steered by untrusted caller speech, so a
-            # non-E.164 value is never dialed (same guard as the built-in
-            # transfer tool).
+        if not E164_RE.match(number):
+            # Unconditional, exactly like the built-in transfer tool: the
+            # destination can be steered by untrusted caller speech, so a
+            # non-E.164 value is never dialed.
+            #
+            # A node's ``ignore_e164_validation`` is deliberately NOT honoured.
+            # It could only ever widen what reaches the dialer, never unlock a
+            # working destination: `CallRuntime.transfer_call` emits
+            # ``tel:{number}`` and nothing else, so a non-E.164 value does not
+            # address a SIP URI or an extension — it just builds a malformed
+            # ``tel:`` URI. Honouring the flag would hand caller-steerable text
+            # straight to the SIP leg (an ``inferred`` destination resolves a
+            # ``{{var}}`` the model may have extracted from the caller) in
+            # exchange for nothing. The field is parsed and stored losslessly
+            # control-plane side; only this worker declines to act on it.
             logger.warning(
                 "flow call=%s node %s: transfer destination %r (%s) is not E.164",
                 self._call_id,

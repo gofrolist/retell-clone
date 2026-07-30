@@ -54,6 +54,24 @@ they are http(s) and resolve exclusively to public addresses — blocking
 loopback, RFC1918, link-local, and the GCP metadata server (169.254.169.254).
 Dev escape hatch: `ARHITEQ_ALLOW_PRIVATE_WEBHOOKS=true`.
 
+## Transfer destinations
+
+Every path that can dial out validates against one shared regex,
+`arhiteq_worker/tools.py:E164_RE` — the built-in `transfer_call` tool,
+`agent_swap`'s numbers, and a conversation flow's `transfer_call` nodes
+(`flow_runtime.py` imports the same object rather than declaring its own; a
+drifted copy is how the two last diverged). A destination that is not strict
+E.164 is never dialed.
+
+The rule is absolute — no env escape hatch, and a flow node's
+`ignore_e164_validation` is parsed and stored but deliberately not acted on.
+Destinations are caller-steerable: a `transfer_call` node with an `inferred`
+destination resolves a `{{var}}` the model may have extracted from caller
+speech, so honouring the opt-out would let social-engineered text reach the
+SIP leg. It would also buy nothing — `CallRuntime.transfer_call` emits
+`tel:{number}` and nothing else, so a non-E.164 value cannot address a SIP
+URI or an extension anyway.
+
 ## Rate limiting & headers
 
 - Per-credential sliding-window rate limit on the public API

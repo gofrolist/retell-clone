@@ -245,6 +245,11 @@ about the call.
 - `finetune_transition_examples` / `finetune_conversation_examples` likewise
   survive round-trip as part of a node's JSON but are not consulted at
   runtime.
+- A `transfer_call` node's `ignore_e164_validation` survives round-trip but is
+  deliberately not acted on: every dial-out path enforces strict E.164 with
+  no opt-out (`docs/SECURITY.md` § Transfer destinations). This is the one
+  place the runtime declines a stored flag on purpose rather than for lack of
+  support.
 - `components[]` (subflows) are indexed so a `destination_node_id` pointing
   into one resolves, but there is no `component` node type to invoke a
   subflow as a unit — a graph that actually contains one is rejected at call

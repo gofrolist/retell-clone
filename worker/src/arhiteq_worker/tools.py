@@ -47,7 +47,16 @@ _ALLOWED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 # hostile endpoint returning tens of MB would stall the live call and blow up
 # token cost. 256 KiB is far more than any real tool result.
 MAX_TOOL_RESPONSE_BYTES = 256 * 1024
-_E164_RE = re.compile(r"^\+[1-9]\d{1,14}$")
+# THE transfer-destination guard, for every path that can dial out: the
+# built-in transfer tool and `agent_swap`'s numbers below, plus a conversation
+# flow's `transfer_call` nodes (`flow_runtime.py` imports this very object).
+# Public, and shared rather than re-declared, because a second copy is a
+# second thing to get wrong — a `\d{7,14}` variant of this once shipped in
+# `flow_runtime.py` under a comment claiming it matched. A transfer
+# destination can be steered by untrusted caller speech (an `inferred`
+# destination resolves a `{{var}}` the model may have extracted), so nothing
+# that is not strict E.164 is ever dialed, on any path and with no opt-out.
+E164_RE = re.compile(r"^\+[1-9]\d{1,14}$")
 
 # RFC 4733 DTMF event codes (LiveKit publish_dtmf takes the numeric code).
 DTMF_CODES: dict[str, int] = {
@@ -476,7 +485,7 @@ def _make_transfer_call_tool(
             result = json.dumps({"error": "no transfer destination configured"})
             state.add_tool_result(name, result, tool_call_id)
             return result
-        if not _E164_RE.match(number):
+        if not E164_RE.match(number):
             # The destination may come from LLM output steered by untrusted
             # caller speech — reject anything not strict E.164 so a social-
             # engineered call can't dial premium-rate/international numbers.
@@ -830,7 +839,7 @@ def _make_send_sms_tool(
             api_key = os.environ.get("TELNYX_API_KEY", "")
             if not api_key:
                 raise ToolConfigError("SMS is not configured")
-            if not (_E164_RE.match(agent_number or "") and _E164_RE.match(user_number or "")):
+            if not (E164_RE.match(agent_number or "") and E164_RE.match(user_number or "")):
                 # Web calls have no phone numbers to text between.
                 raise ToolConfigError("SMS requires a phone call with E.164 numbers")
             if not text:
