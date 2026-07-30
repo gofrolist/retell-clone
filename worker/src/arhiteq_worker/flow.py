@@ -53,23 +53,36 @@ class FlowError(Exception):
     """
 
 
-def iter_node_edges(node: dict[str, Any]) -> Iterator[dict[str, Any]]:
-    """Yield every edge a node carries, across all five shapes Retell uses.
+def iter_node_edges(node: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Yield every edge a node carries, tagged with the field it came from.
 
-    Real nodes carry edges as a list (``edges``) and/or up to four single-
-    object fields (``else_edge``, ``edge``, ``always_edge``,
-    ``skip_response_edge``). Exported so later tasks (flow execution,
-    transition evaluation) don't have to re-enumerate this list.
+    Real Retell nodes spread edges across five fields, each with different
+    runtime meaning:
+
+    - ``edges`` (list) — conditional transitions, offered to the model or
+      evaluated as equations.
+    - ``else_edge`` — guaranteed fallback (seen on ``branch`` and
+      ``function`` nodes).
+    - ``edge`` — the single failure edge (seen on ``transfer_call``).
+    - ``always_edge`` — unconditional next.
+    - ``skip_response_edge`` — transition without speaking.
+
+    Yields ``(shape, edge)`` tuples where ``shape`` is the field name the
+    edge came from, so callers don't have to re-inspect the node to recover
+    it. Order is stable and deterministic: ``edges[]`` first in list order,
+    then the single-edge fields in the order listed above. Exported so later
+    tasks (flow execution, transition evaluation) don't have to re-enumerate
+    this list.
     """
     edges = node.get("edges")
     if isinstance(edges, list):
         for edge in edges:
             if isinstance(edge, dict):
-                yield edge
+                yield "edges", edge
     for field_name in _SINGLE_EDGE_FIELDS:
         edge = node.get(field_name)
         if isinstance(edge, dict):
-            yield edge
+            yield field_name, edge
 
 
 class FlowGraph:
@@ -98,6 +111,8 @@ class FlowGraph:
                     continue
                 node_id = node.get("id")
                 if isinstance(node_id, str) and node_id:
+                    if node_id in nodes_by_id:
+                        raise FlowError(f"duplicate node id {node_id!r} in component nodes")
                     nodes_by_id[node_id] = node
 
         if not nodes_by_id:
@@ -107,7 +122,7 @@ class FlowGraph:
             node_type = node.get("type")
             if node_type not in SUPPORTED_NODE_TYPES:
                 raise FlowError(f"node {node_id!r} has unsupported type {node_type!r}")
-            for edge in iter_node_edges(node):
+            for _shape, edge in iter_node_edges(node):
                 destination = edge.get("destination_node_id")
                 if destination and destination not in nodes_by_id:
                     raise FlowError(f"node {node_id!r} has an edge to missing node {destination!r}")

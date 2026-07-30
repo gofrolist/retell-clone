@@ -27,9 +27,8 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # CI installs only the dev group (no project), so tests import the package
-# straight from src/. "." lets tests import fixture helpers as
-# `tests.conftest` (a plain import, not a fixture) from anywhere in the tree.
-pythonpath = ["src", "."]
+# straight from src/.
+pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100
