@@ -22,7 +22,9 @@ pytest.importorskip("livekit.agents")
 
 from livekit.agents import RunContext
 
+from arhiteq_worker.config import ConversationFlowConfig
 from arhiteq_worker.flow import (
+    FlowGraph,
     make_extract_node_tool,
     make_flow_kb_lookup_tool,
     make_function_node_tool,
@@ -34,6 +36,10 @@ from arhiteq_worker.state import CallState
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def _graph(flow_dict: dict) -> FlowGraph:
+    return FlowGraph.from_config(ConversationFlowConfig.from_dict(flow_dict))
 
 
 def _hints(tool) -> dict:
@@ -302,6 +308,174 @@ def test_function_node_tool_failure_advances_the_else_edge() -> None:
     assert json.loads(result).get("error")
 
 
+# ---------------------------------------------------------------------------
+# make_function_node_tool: success routing with more than one prompt edge
+# ---------------------------------------------------------------------------
+#
+# Real-fixture regression (backend/tests/fixtures/retell_flows/
+# prior_auth_hotline.json): node "node-1773865257897" ("Get Member") carries
+# TWO prompt edges ("Successfully get the member information" / "get_member
+# has failed twice to get information") plus an else_edge, while node
+# "node-1773865358553" ("Get Pa Cases") carries exactly ONE. Only a hard HTTP
+# failure may auto-route to else_edge; a successful call with more than one
+# prompt edge must leave the choice to the model instead of blindly
+# following edges[0] — the model just saw the tool result and is the only
+# thing that can tell "found the member" apart from "failed twice".
+
+
+def test_function_node_tool_two_prompt_edges_does_not_auto_advance_on_success(
+    prior_auth_flow,
+) -> None:
+    graph = _graph(prior_auth_flow)
+    node = graph.node("node-1773865257897")  # "Get Member": 2 prompt edges
+    assert len(node["edges"]) == 2
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"memberId": "M-1"})
+
+    state = CallState(call_id="call_1")
+    calls: list[dict] = []
+
+    async def on_transition(edge: dict) -> None:
+        calls.append(edge)
+
+    tool = make_function_node_tool(
+        node,
+        prior_auth_flow["tools"],
+        http=_client(handler),
+        function_secret="s",
+        variables={},
+        call_info=None,
+        state=state,
+        on_transition=on_transition,
+    )
+    assert tool is not None
+    fnc = getattr(tool, "_fnc", None) or getattr(tool, "fnc", tool)
+    result = _run(
+        fnc(
+            {"call_first_name": "Jo", "call_last_name": "Doe", "call_dob": "2000-01-01"},
+            _FakeContext(),
+        )
+    )
+
+    # Ambiguous success: the model must choose via its own transition_to
+    # tool, not have this handler pick edges[0] for it.
+    assert calls == []
+    assert json.loads(result) == {"memberId": "M-1"}
+
+
+def test_function_node_tool_single_prompt_edge_auto_advances_on_success(
+    prior_auth_flow,
+) -> None:
+    graph = _graph(prior_auth_flow)
+    node = graph.node("node-1773865358553")  # "Get Pa Cases": 1 prompt edge
+    assert len(node["edges"]) == 1
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={})
+
+    state = CallState(call_id="call_1")
+    calls: list[dict] = []
+
+    async def on_transition(edge: dict) -> None:
+        calls.append(edge)
+
+    tool = make_function_node_tool(
+        node,
+        prior_auth_flow["tools"],
+        http=_client(handler),
+        function_secret="s",
+        variables={},
+        call_info=None,
+        state=state,
+        on_transition=on_transition,
+    )
+    assert tool is not None
+    fnc = getattr(tool, "_fnc", None) or getattr(tool, "fnc", tool)
+    _run(fnc({"member_id": "M-1"}, _FakeContext()))
+
+    # Unambiguous: the single prompt edge is followed automatically.
+    assert calls == [node["edges"][0]]
+
+
+def test_function_node_tool_two_prompt_edges_error_advances_the_else_edge(
+    prior_auth_flow,
+) -> None:
+    graph = _graph(prior_auth_flow)
+    # The real "Get Member" else_edge is dangling (no destination_node_id —
+    # see test_flow_transitions.test_fallback_edge_against_the_real_fixture_
+    # dangling_cases); give it one here so this test can observe the
+    # fallback actually being followed. The ambiguity under test lives in
+    # `edges[]`, not `else_edge`.
+    node = dict(graph.node("node-1773865257897"))
+    node["else_edge"] = {**node["else_edge"], "destination_node_id": "n_failure"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    state = CallState(call_id="call_1")
+    calls: list[dict] = []
+
+    async def on_transition(edge: dict) -> None:
+        calls.append(edge)
+
+    tool = make_function_node_tool(
+        node,
+        prior_auth_flow["tools"],
+        http=_client(handler),
+        function_secret="s",
+        variables={},
+        call_info=None,
+        state=state,
+        on_transition=on_transition,
+    )
+    assert tool is not None
+    fnc = getattr(tool, "_fnc", None) or getattr(tool, "fnc", tool)
+    _run(
+        fnc(
+            {"call_first_name": "Jo", "call_last_name": "Doe", "call_dob": "2000-01-01"},
+            _FakeContext(),
+        )
+    )
+
+    # Hard failure always routes to else_edge, regardless of how many
+    # prompt edges the node carries.
+    assert calls == [node["else_edge"]]
+
+
+def test_function_node_tool_single_prompt_edge_error_advances_the_else_edge(
+    prior_auth_flow,
+) -> None:
+    graph = _graph(prior_auth_flow)
+    node = graph.node("node-1773865358553")  # "Get Pa Cases": real else_edge has a destination
+    assert node["else_edge"].get("destination_node_id")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    state = CallState(call_id="call_1")
+    calls: list[dict] = []
+
+    async def on_transition(edge: dict) -> None:
+        calls.append(edge)
+
+    tool = make_function_node_tool(
+        node,
+        prior_auth_flow["tools"],
+        http=_client(handler),
+        function_secret="s",
+        variables={},
+        call_info=None,
+        state=state,
+        on_transition=on_transition,
+    )
+    assert tool is not None
+    fnc = getattr(tool, "_fnc", None) or getattr(tool, "fnc", tool)
+    _run(fnc({"member_id": "M-1"}, _FakeContext()))
+
+    assert calls == [node["else_edge"]]
+
+
 def test_function_node_tool_speaks_a_filler_when_speak_during_execution() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={})
@@ -330,12 +504,26 @@ def test_function_node_tool_speaks_a_filler_when_speak_during_execution() -> Non
 
 
 def test_function_node_tool_wait_for_result_false_advances_without_waiting() -> None:
+    """The handler must return before the backgrounded HTTP call completes.
+
+    `release` is only ever set *after* the handler call has already
+    returned, and `slow_request` only marks `request_completed` after
+    `release` unblocks it. So if the handler returned, `request_completed`
+    provably cannot be set yet -- that ordering is a hard guarantee, not
+    "scheduling is not guaranteed here". Every wait carries a timeout: if a
+    future change turns `asyncio.create_task(run())` back into `await
+    run()`, the handler call itself would deadlock (it would be the one
+    awaiting the still-unset `release`), and `asyncio.wait_for` turns that
+    deadlock into a fast, clear failure instead of a hang.
+    """
     started = asyncio.Event()
     release = asyncio.Event()
+    request_completed = asyncio.Event()
 
     async def slow_request(request: httpx.Request) -> httpx.Response:
         started.set()
         await release.wait()
+        request_completed.set()
         return httpx.Response(200, json={"memberId": "M-1"})
 
     state = CallState(call_id="call_1")
@@ -358,10 +546,19 @@ def test_function_node_tool_wait_for_result_false_advances_without_waiting() -> 
     fnc = getattr(tool, "_fnc", None) or getattr(tool, "fnc", tool)
 
     async def scenario() -> None:
-        await fnc({"call_first_name": "Jo"}, _FakeContext())
-        # The handler must not have waited on the (still in-flight) request.
-        assert not started.is_set() or True  # scheduling is not guaranteed here
+        result = await asyncio.wait_for(fnc({"call_first_name": "Jo"}, _FakeContext()), timeout=5.0)
+        # Proof the handler did not wait: the request cannot have completed
+        # yet, since nothing has released it.
+        assert result is not None
+        assert not request_completed.is_set()
+
+        # The background task really was scheduled (not silently dropped):
+        # it reaches the transport and blocks there until released.
+        await asyncio.wait_for(started.wait(), timeout=5.0)
+        assert not request_completed.is_set()
+
         release.set()
+        await asyncio.wait_for(request_completed.wait(), timeout=5.0)
 
     _run(scenario())
     assert calls == [node["edges"][0]]
@@ -384,6 +581,47 @@ def test_function_node_tool_returns_none_for_an_unresolved_tool_id() -> None:
         on_transition=on_transition,
     )
     assert tool is None
+
+
+def test_function_node_tool_speak_after_execution_false_raises_stop_response() -> None:
+    """`speak_after_execution: false` -> the model must not react to the result.
+
+    Mirrors `tools._make_http_tool`'s documented behaviour: raising
+    `livekit.agents.llm.StopResponse` from the handler is livekit-agents' own
+    signal for "don't have the LLM respond to this tool result". The
+    transition must still happen first -- only whether the model *speaks*
+    about the result is suppressed, not the graph walk.
+    """
+    from livekit.agents.llm import StopResponse
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"memberId": "M-1"})
+
+    state = CallState(call_id="call_1")
+    calls: list[dict] = []
+
+    async def on_transition(edge: dict) -> None:
+        calls.append(edge)
+
+    node = _function_node()
+    flow_tools = [{**_FLOW_TOOLS[0], "speak_after_execution": False}]
+    tool = make_function_node_tool(
+        node,
+        flow_tools,
+        http=_client(handler),
+        function_secret="s",
+        variables={},
+        call_info=None,
+        state=state,
+        on_transition=on_transition,
+    )
+    fnc = getattr(tool, "_fnc", None) or getattr(tool, "fnc", tool)
+
+    with pytest.raises(StopResponse):
+        _run(fnc({"call_first_name": "Jo"}, _FakeContext()))
+
+    # The transition still happened before the StopResponse was raised.
+    assert calls == [node["edges"][0]]
 
 
 # ---------------------------------------------------------------------------
@@ -467,6 +705,42 @@ def test_extract_node_tool_empty_extraction_advances_the_else_edge() -> None:
     _run(fnc({}, None))
 
     assert calls == [node["else_edge"]]
+
+
+def test_extract_node_tool_two_prompt_edges_does_not_auto_advance_on_success() -> None:
+    """`make_extract_node_tool` shares `make_function_node_tool`'s edge-choice
+    rule: a non-empty extraction with more than one usable prompt edge must
+    leave the choice to the model, not blindly follow ``edges[0]``.
+    """
+    variables: dict = {}
+    state = CallState(call_id="call_1")
+    calls: list[dict] = []
+
+    async def on_transition(edge: dict) -> None:
+        calls.append(edge)
+
+    node = _extract_node(
+        edges=[
+            {
+                "id": "extracted-a",
+                "transition_condition": _prompt_condition("Plan is PPO"),
+                "destination_node_id": "n_ppo",
+            },
+            {
+                "id": "extracted-b",
+                "transition_condition": _prompt_condition("Plan is HMO"),
+                "destination_node_id": "n_hmo",
+            },
+        ]
+    )
+    tool = make_extract_node_tool(
+        node, variables=variables, state=state, on_transition=on_transition
+    )
+    fnc = getattr(tool, "_fnc", None) or getattr(tool, "fnc", tool)
+    _run(fnc({"plan": "PPO"}, None))
+
+    assert variables == {"plan": "PPO"}
+    assert calls == []
 
 
 # ---------------------------------------------------------------------------

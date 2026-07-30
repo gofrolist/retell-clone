@@ -596,17 +596,62 @@ def transition_tool_schema(
 # with) before calling `advance`.
 
 
-def _first_declared_edge(node: dict[str, Any]) -> dict[str, Any] | None:
-    """The node's own first ``edges[]`` entry with a destination, else ``None``.
+def _own_success_edges(node: dict[str, Any]) -> list[dict[str, Any]]:
+    """The node's own ``edges[]`` entries that are actually reachable on success.
 
-    Used by `make_function_node_tool`/`make_extract_node_tool` as the "the
-    call succeeded" / "values were extracted" continuation — see their
-    docstrings for why this, rather than a model-classified prompt edge, is
-    the routing rule applied here.
+    Excludes a dangling edge (no ``destination_node_id`` — authored but never
+    wired up: there is nowhere to send the call) and a synthetic
+    ``global::``-prefixed edge (`is_global_edge`) — a global node is reachable
+    from *any* node, not something a "call succeeded" result routes into
+    specifically, so it is never one of a node's own success continuations.
+
+    Used by `make_function_node_tool`/`make_extract_node_tool` to decide how
+    a success result should route — see `_select_success_edge`, and their own
+    docstrings, for the actual rule.
     """
-    for edge in node.get("edges") or []:
-        if isinstance(edge, dict) and edge.get("destination_node_id"):
-            return edge
+    return [
+        edge
+        for edge in node.get("edges") or []
+        if isinstance(edge, dict) and edge.get("destination_node_id") and not is_global_edge(edge)
+    ]
+
+
+def _select_success_edge(
+    success_edges: list[dict[str, Any]], failure_edge: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Which edge (if any) a *successful* function/extract result should follow.
+
+    Real-fixture regression (``backend/tests/fixtures/retell_flows/
+    prior_auth_hotline.json``): node ``node-1773865257897`` ("Get Member")
+    carries TWO prompt edges — "Successfully get the member information" and
+    "get_member has failed twice to get information" — plus an ``else_edge``,
+    while node ``node-1773865358553`` ("Get Pa Cases") carries exactly ONE.
+    The previous rule (unconditionally follow ``edges[0]`` on any non-error
+    result) made the second "Get Member" edge unreachable forever: an HTTP
+    failure went to ``else_edge``, and *any* HTTP 200 — including a body
+    reporting "member not found" — went to ``edges[0]``, the "success" edge,
+    even though the model was the only thing that could tell the two apart.
+
+    The rule implemented here:
+
+    - Exactly one usable success edge — unambiguous, no reason to spend a
+      model turn — is followed automatically.
+    - More than one usable success edge is ambiguous: this returns ``None``
+      so the caller does *not* auto-advance, leaving the choice to the model
+      through the ordinary ``transition_to`` mechanism, exactly as a
+      ``conversation`` node works — the model just saw the tool result (or
+      the extracted values) and can tell success from a soft failure that
+      still returned normally.
+    - Zero usable success edges falls back to *failure_edge* (``else_edge``):
+      seen on ``clara_outbound.json``'s bare action nodes (``edges: []``,
+      only an ``else_edge`` back to the flow's start node) — there is no
+      success-specific continuation authored at all, so the guaranteed
+      fallback is the only place to go.
+    """
+    if len(success_edges) == 1:
+        return success_edges[0]
+    if not success_edges:
+        return failure_edge
     return None
 
 
@@ -699,16 +744,22 @@ def make_function_node_tool(
     (`tools.py`'s tested behaviour, reused rather than re-implemented); there
     is nothing left to duplicate for either.
 
-    Routing is a GUESS (see `make_extract_node_tool`'s docstring for the twin
-    caveat): the design doc pins only "failure routes to else_edge". A
-    successful call instead advances along `_first_declared_edge` — in both
-    real fixtures with ``function`` nodes (``prior_auth_hotline.json``,
-    ``clara_outbound.json``) the first ``edges[]`` entry reads as exactly the
-    node's own "the call succeeded" continuation. ``wait_for_result: false``
-    fires the request without waiting (`asyncio.create_task` — its
-    ``response_variables`` land only if/when it later completes) and advances
-    immediately along that same edge, per task-6-brief.md's "advance without
-    waiting for the result". Revisit both rules if a real flow disagrees.
+    Routing: the design doc pins only "failure routes to else_edge" — a hard
+    failure (an error result) always follows `fallback_edge` (``else_edge``).
+    A successful call follows `_select_success_edge` over the node's own
+    `_own_success_edges`: exactly one usable success edge auto-advances (the
+    unambiguous case, seen on ``prior_auth_hotline.json``'s "Get Pa Cases"
+    node); more than one leaves the choice to the model instead of guessing
+    (seen on that same fixture's "Get Member" node — see
+    `_select_success_edge`'s docstring for why); zero falls back to
+    ``else_edge`` (seen on ``clara_outbound.json``'s bare action nodes, whose
+    ``edges: []`` carry no success-specific continuation at all).
+    ``wait_for_result: false`` fires the request without waiting
+    (`asyncio.create_task` — its ``response_variables`` land only if/when it
+    later completes) and applies that same edge selection immediately, per
+    task-6-brief.md's "advance without waiting for the result" — there is no
+    result yet to call an error, so only the success side of the rule
+    applies.
 
     Returns ``None`` — nothing to install — if ``tool_id`` does not resolve or
     the resolved entry has no ``url``, mirroring `tools.build_tools`'s
@@ -749,7 +800,7 @@ def make_function_node_tool(
     )
     speak_after = entry.get("speak_after_execution")
     wait_for_result = node.get("wait_for_result", True) is not False
-    success_edge = _first_declared_edge(node)
+    success_edges = _own_success_edges(node)
     failure_edge = fallback_edge(node)
 
     async def handler(raw_arguments: dict[str, object], context: RunContext) -> str | None:
@@ -774,12 +825,17 @@ def make_function_node_tool(
 
         if not wait_for_result:
             asyncio.create_task(run())
-            if success_edge is not None:
-                await on_transition(success_edge)
+            edge = _select_success_edge(success_edges, failure_edge)
+            if edge is not None:
+                await on_transition(edge)
             return json.dumps({"result": "request sent"})
 
         result = await run()
-        edge = failure_edge if _is_error_result(result) else success_edge
+        edge = (
+            failure_edge
+            if _is_error_result(result)
+            else _select_success_edge(success_edges, failure_edge)
+        )
         if edge is not None:
             await on_transition(edge)
         if speak_after is False:
@@ -813,12 +869,20 @@ def make_extract_node_tool(
     *variables* mapping and ``state.collected_dynamic_variables``, exactly
     like that built-in.
 
-    Routing is a GUESS: the design doc pins only "failure or empty extraction
-    routes to else_edge". A non-empty extraction instead advances along
-    `_first_declared_edge` — this node's own "values were extracted"
-    continuation — while an empty one (nothing the model supplied matched a
-    declared variable) advances along `fallback_edge` (``else_edge``) per the
-    design doc. Revisit if a real flow disagrees.
+    Routing: the design doc pins only "failure or empty extraction routes to
+    else_edge" — an empty extraction (nothing the model supplied matched a
+    declared variable) always follows `fallback_edge` (``else_edge``). A
+    non-empty extraction shares `make_function_node_tool`'s
+    `_select_success_edge` rule instead of blindly following ``edges[0]``:
+    exactly one usable success edge auto-advances; more than one leaves the
+    choice to the model (it just extracted the values and is the only thing
+    that can tell which continuation they call for); zero falls back to
+    ``else_edge`` — see `_select_success_edge`'s docstring for the real
+    ``function``-node fixture that motivates this. No real
+    ``extract_dynamic_variables`` fixture node has more than one prompt edge
+    today, but this constructor built its routing on the same
+    `_own_success_edges` helper as `make_function_node_tool`, so it shared
+    the single-edge assumption and gets the same fix.
     """
     from livekit.agents import RunContext, function_tool
 
@@ -831,7 +895,7 @@ def make_extract_node_tool(
         "parameters": parameters,
     }
     known = set(parameters["properties"])
-    success_edge = _first_declared_edge(node)
+    success_edges = _own_success_edges(node)
     failure_edge = fallback_edge(node)
 
     async def handler(raw_arguments: dict[str, object], context: RunContext) -> str:
@@ -849,7 +913,7 @@ def make_extract_node_tool(
         state.collected_dynamic_variables.update(extracted)
         result = json.dumps({"result": "variables extracted", "extracted": extracted})
         state.add_tool_result(name, result, tool_call_id)
-        edge = success_edge if extracted else failure_edge
+        edge = _select_success_edge(success_edges, failure_edge) if extracted else failure_edge
         if edge is not None:
             await on_transition(edge)
         return result
