@@ -11,8 +11,9 @@ The invariants (also written up in docs/AGENT_VERSIONING.md):
 - Agents that predate versioning are seeded lazily on first touch rather than by
   a boot-time data migration, so a rollback to an older image stays harmless.
 
-Only voice agents are versioned. Chat agents and conversation flows keep their
-plain `version` counter.
+Only voice agents are versioned. Chat agents keep their plain `version` counter.
+A flow-backed voice agent's graph is frozen into the version's `flow_snapshot`,
+so the flow's own counter is bookkeeping rather than what a call resolves against.
 """
 
 import logging

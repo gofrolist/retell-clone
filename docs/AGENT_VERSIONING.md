@@ -9,8 +9,26 @@ every write path read the live `agents` / `retell_llms` rows, so saving in the
 dashboard took effect on the next call — and on any config refetch during a call
 already in progress.
 
-Chat agents and conversation flows are **not** versioned; they keep their plain
-`version` counter.
+Chat agents are **not** versioned; they keep their plain `version` counter.
+
+A flow-backed voice agent freezes its whole graph at publish: the version's
+`flow_snapshot` holds the conversation flow's columns, exactly as `llm_snapshot`
+holds the Retell LLM's. Editing a draft flow can never change what a published
+version serves. The `conversation_flows.version` counter still exists and still
+bumps on every PATCH, but it is bookkeeping — it is not what a call resolves
+against.
+
+That freeze only works because `PATCH /update-conversation-flow` opens a draft
+on every agent whose response engine is that flow, exactly as
+`PATCH /update-retell-llm` already does for agents sharing a Retell LLM (see
+`api/llms.py`). This is load-bearing rather than incidental: a flow-backed
+agent's `V0` is created already published, with a `flow_snapshot` taken at
+creation time, so without this an edit to the node graph would have nowhere to
+land — the published version would keep serving the starter graph forever, no
+matter how many nodes the flow's own row picked up. Two consequences fall out
+of that: editing a graph makes every owning agent unpublished until it is
+published again, and a flow shared by several agents drafts all of them at
+once.
 
 ## Model
 
