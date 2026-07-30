@@ -1,6 +1,6 @@
 """Agents whose response engine is a conversation flow."""
 
-from tests.conftest import AUTH_HEADERS, INTERNAL_HEADERS, OTHER_AUTH_HEADERS
+from tests.conftest import AGENT_ID, AUTH_HEADERS, INTERNAL_HEADERS, OTHER_AUTH_HEADERS
 
 NODES = [
     {
@@ -399,6 +399,47 @@ async def test_restore_forks_a_flow_shared_with_another_agent(client):
     assert forked.status_code == 200, forked.text
     assert forked.json()["global_prompt"] == "ORIGINAL"
     assert forked.json()["nodes"] == NODES
+
+
+async def test_get_agent_version_returns_the_frozen_graph(client):
+    """The dashboard's version route must freeze the graph like the worker's.
+
+    `test_published_version_freezes_the_flow` covers /internal/calls/.../config.
+    This covers /get-agent-version, which the editor reads when you select an
+    older version — it used to call `versions.resolve()` (no flow at all), so
+    the canvas would render TODAY's graph under a "Viewing V1 — published
+    versions are immutable" banner.
+    """
+    flow = await create_flow(client, global_prompt="ORIGINAL")
+    flow_id = flow["conversation_flow_id"]
+    agent = await create_flow_agent(client, flow_id=flow_id)
+    agent_id = agent["agent_id"]
+
+    published = await client.post(f"/publish-agent/{agent_id}", headers=AUTH_HEADERS, json={})
+    assert published.status_code == 200, published.text
+    version = published.json()["version"]
+
+    edited = await client.patch(
+        f"/update-conversation-flow/{flow_id}",
+        headers=AUTH_HEADERS,
+        json={"global_prompt": "REWRITTEN AFTER PUBLISH"},
+    )
+    assert edited.status_code == 200, edited.text
+
+    got = await client.get(f"/get-agent-version/{agent_id}/{version}", headers=AUTH_HEADERS)
+    assert got.status_code == 200, got.text
+    served = got.json()["conversation_flow"]
+    assert served is not None
+    assert served["global_prompt"] == "ORIGINAL"
+    assert served["nodes"] == NODES
+
+
+async def test_get_agent_version_flow_is_null_for_a_prompt_agent(client):
+    """The key is always present, so the client never feature-detects."""
+    got = await client.get(f"/get-agent-version/{AGENT_ID}/0", headers=AUTH_HEADERS)
+    assert got.status_code == 200, got.text
+    assert got.json()["conversation_flow"] is None
+    assert got.json()["response_engine_config"] is not None
 
 
 async def test_discard_restores_the_flow_graph(client):
