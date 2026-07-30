@@ -29,6 +29,7 @@ import json
 import logging
 import os
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from functools import lru_cache
 from typing import Any
 
@@ -37,7 +38,28 @@ from livekit import api, rtc
 from livekit.agents import Agent, AgentSession, CloseReason, JobContext, RoomInputOptions, cli
 
 from arhiteq_worker import amd, metrics
-from arhiteq_worker.config import CallConfig, gemini_live_temperature
+from arhiteq_worker.config import CallConfig, ConversationFlowConfig, gemini_live_temperature
+from arhiteq_worker.flow import (
+    TOOL_EXTRACT,
+    TOOL_FUNCTION,
+    TOOL_KB_LOOKUP,
+    TOOL_TRANSITION,
+    FlowError,
+    FlowGraph,
+    classifier_prompt,
+    flow_model_id,
+    make_extract_node_tool,
+    make_flow_kb_lookup_tool,
+    make_function_node_tool,
+    make_transition_tool,
+    match_edge_id,
+    node_instructions,
+    node_tool_kinds,
+    prompt_edges,
+    start_speaker_for,
+    transition_tool_schema,
+)
+from arhiteq_worker.flow_runtime import FlowRuntime
 from arhiteq_worker.goodbye import looks_like_goodbye
 from arhiteq_worker.internal_api import InternalAPI, InternalAPIError
 from arhiteq_worker.state import CallState, now_ms
@@ -84,6 +106,10 @@ DIAL_TIMEOUT_S = float(os.getenv("ARHITEQ_DIAL_TIMEOUT_S", "60"))
 DEFAULT_GEMINI_MODEL = os.getenv("ARHITEQ_GEMINI_MODEL", "gemini-2.5-flash")
 CARTESIA_TTS_MODEL = os.getenv("ARHITEQ_CARTESIA_TTS_MODEL", "sonic-2")
 CARTESIA_STT_MODEL = os.getenv("ARHITEQ_CARTESIA_STT_MODEL", "ink-whisper")
+# How much of the transcript a conversation flow's `branch` classifier sees.
+# It routes on what was just said, so the tail is what matters; capping it
+# keeps that one call cheap on a long call.
+CLASSIFIER_TRANSCRIPT_CHARS = 4000
 
 # Grace before tearing down the SIP room on a hangup that follows a spoken
 # utterance (a goodbye or voicemail message). delete_room stops SIP egress
@@ -279,8 +305,17 @@ def _build_realtime_model(google_plugin: Any, cfg: CallConfig) -> Any:
     return google_plugin.realtime.RealtimeModel(**opts)
 
 
-def build_session(cfg: CallConfig) -> tuple[AgentSession, Any]:
+def build_session(
+    cfg: CallConfig, *, model: str | None = None, temperature: float | None = None
+) -> tuple[AgentSession, Any]:
     """Build the call's AgentSession; return (session, amd_llm).
+
+    *model* / *temperature* override the agent's own LLM settings. A
+    flow-backed agent has no Retell LLM at all (``llm`` comes back null from
+    the control plane) — its engine choice lives on the flow's ``model_choice``
+    / ``model_temperature`` — so the flow branch passes them here. Both default
+    to ``None``, i.e. the agent's own values, leaving the single-prompt path
+    exactly as it was.
 
     Two shapes, chosen by the configured model:
     - Gemini Live model → a single google.realtime.RealtimeModel
@@ -295,7 +330,8 @@ def build_session(cfg: CallConfig) -> tuple[AgentSession, Any]:
     """
     from livekit.plugins import cartesia, google
 
-    if _is_live_model(cfg.llm.model):
+    engine = model or cfg.llm.model
+    if _is_live_model(engine):
         realtime = _build_realtime_model(google, cfg)
         session = _assemble_session(cfg, {"llm": realtime}, realtime=True)
         amd_llm = (
@@ -306,8 +342,8 @@ def build_session(cfg: CallConfig) -> tuple[AgentSession, Any]:
         return session, amd_llm
 
     llm = google.LLM(  # GOOGLE_API_KEY read from env by the plugin
-        model=_gemini_model(cfg.llm.model),
-        temperature=cfg.llm.model_temperature,
+        model=_gemini_model(engine),
+        temperature=cfg.llm.model_temperature if temperature is None else temperature,
     )
     stt = cartesia.STT(  # CARTESIA_API_KEY read from env by the plugin
         model=CARTESIA_STT_MODEL,
@@ -411,6 +447,281 @@ class CallRuntime:
         self._state.set_reason_once("call_transfer")
         self._state.ended_at_ms = self._state.ended_at_ms or now_ms()
         return json.dumps({"result": f"call transferred to {number}"})
+
+
+async def _one_shot_completion(llm: Any, system: str, user: str) -> str:
+    """One completion against *llm*, collected in full. Same shape as `amd`'s.
+
+    livekit-agents' LLM surface is a stream; consuming it to exhaustion once is
+    the non-streaming completion a ``branch`` node's classifier needs. Never
+    raises: a classifier that cannot answer must fall through to the node's
+    fallback edge, not take the call down.
+    """
+    try:
+        from livekit.agents.llm import ChatContext
+
+        chat_ctx = ChatContext()
+        chat_ctx.add_message(role="system", content=system)
+        chat_ctx.add_message(role="user", content=user or "(no conversation yet)")
+        answer = ""
+        async with llm.chat(chat_ctx=chat_ctx) as stream:
+            async for chunk in stream:
+                delta = getattr(chunk, "delta", None)
+                if delta is not None and getattr(delta, "content", None):
+                    answer += delta.content
+        return answer
+    except Exception as exc:  # noqa: BLE001 - routing must survive a bad call
+        logger.warning("flow classification call failed: %s", exc)
+        return ""
+
+
+class _FlowWiring:
+    """The livekit-side seams one flow-backed call's `FlowRuntime` needs.
+
+    `FlowRuntime` and `flow`'s decision layer import no livekit on purpose;
+    every side effect reaches them as an injected callable, and this class is
+    where those callables are actually made of a live `AgentSession`, `Agent`
+    and `CallRuntime`.
+
+    Built *before* the session exists, because its `start_instructions` /
+    `start_tools` are what `ArhiteqAgent` is constructed with — a flow-backed
+    agent opens on its start node, not on ``llm.general_prompt``. `attach` then
+    binds the live session and agent once `session.start` has produced them,
+    and `start` enters the start node.
+
+    Two wiring decisions are load-bearing and easy to get wrong:
+
+    1. **Every tool-driven entry into the runtime is spawned** (`_transition`),
+       never awaited inside the tool handler. livekit runs a function tool
+       inside the speech handle that called it, and a *new* speech handle
+       cannot start until that one finishes — so awaiting speech (which
+       `say`/`generate_reply` below do) from inside a handler would deadlock
+       until the interruption timeout. Spawning moves the whole node walk out
+       of the handler, where awaiting is safe. `tools._make_end_call_tool`
+       solves the same problem the other way, with `context.wait_for_playout`,
+       which only ever waits on the handler's *own* speech.
+    2. **`say`/`generate_reply` wait for playout.** That is what lets an
+       ``end`` or ``transfer_call`` node finish its closing line before the
+       room is deleted or the leg is handed off; without it the last words are
+       cut. It is only safe because of (1).
+
+    A `flow_lock` serializes the three entry points (`start`, `on_user_turn`,
+    an advance) so a caller speaking mid-transition cannot interleave two node
+    walks over the runtime's single "where the call is now" cursor.
+    """
+
+    def __init__(
+        self,
+        *,
+        cfg: CallConfig,
+        flow: ConversationFlowConfig,
+        control: CallRuntime,
+        state: CallState,
+        variables: dict[str, Any],
+        http: httpx.AsyncClient,
+        knowledge: InternalAPI,
+    ) -> None:
+        # Raises FlowError on an unsupported node type or an edge to a missing
+        # node, naming the node — the caller aborts the call on it, before the
+        # greeting, rather than letting it become a dead end mid-call.
+        self._graph = FlowGraph.from_config(flow)
+        self._cfg = cfg
+        self._flow = flow
+        self._control = control
+        self._state = state
+        self._variables = variables
+        self._http = http
+        self._knowledge = knowledge
+        self._session: AgentSession | None = None
+        self._runtime: FlowRuntime | None = None
+        self._classifier_llm: Any = None
+        self._lock = asyncio.Lock()
+
+    # -- what the agent starts with ------------------------------------------
+
+    @property
+    def model(self) -> str:
+        """The flow's raw ``model_choice`` id, for `build_session` to map."""
+        return flow_model_id(self._flow.model_choice)
+
+    @property
+    def temperature(self) -> float | None:
+        return self._flow.model_temperature
+
+    @property
+    def start_instructions(self) -> str:
+        return node_instructions(self._graph.start, self._graph, self._variables)
+
+    def start_tools(self) -> list[Any]:
+        start = self._graph.start
+        return self.build_node_tools(start, prompt_edges(start, self._graph.global_nodes))
+
+    def attach(self, session: AgentSession, agent: Agent) -> FlowRuntime:
+        """Bind the live session/agent and build the runtime that drives them."""
+        self._session = session
+        self._runtime = FlowRuntime(
+            self._graph,
+            # The start node may override who opens the call; FlowRuntime reads
+            # that decision off the config it is handed.
+            replace(
+                self._flow,
+                start_speaker=start_speaker_for(self._graph.start, self._flow.start_speaker),
+            ),
+            self._variables,
+            set_instructions=agent.update_instructions,
+            set_tools=agent.update_tools,
+            say=self.say,
+            classify=self.classify,
+            build_node_tools=self.build_node_tools,
+            end_call=self.end_call,
+            transfer_call=self._control.transfer_call,
+            generate_reply=self.generate_reply,
+            call_id=self._cfg.call_id,
+        )
+        return self._runtime
+
+    # -- entry points --------------------------------------------------------
+
+    async def start(self) -> None:
+        if self._runtime is None:
+            return
+        async with self._lock:
+            await self._runtime.start()
+
+    async def on_user_turn(self) -> None:
+        if self._runtime is None:
+            return
+        async with self._lock:
+            await self._runtime.on_user_turn()
+
+    async def _advance(self, edge: dict[str, Any]) -> None:
+        if self._runtime is None:
+            return
+        async with self._lock:
+            await self._runtime.advance(edge)
+
+    async def _transition(self, edge: dict[str, Any]) -> None:
+        """A node tool chose *edge*: walk it, but not on the handler's stack.
+
+        See the class docstring, decision (1) — this is the seam that keeps the
+        node walk (and its awaited speech) out of the function-tool handler.
+        """
+        _spawn(self._advance(edge))
+
+    def _transition_by_id(self, edges: list[dict[str, Any]]) -> Callable[[str], Awaitable[None]]:
+        """`make_transition_tool`'s callback: resolve the model's edge id, then walk it.
+
+        The model can only name an id (that is all the tool's enum offers), so
+        resolving it back to the edge dict `FlowRuntime.advance` takes is the
+        caller's job — done against the very list the tool was built from, so a
+        synthetic ``global::`` edge resolves like an authored one.
+        """
+
+        async def on_transition(edge_id: str) -> None:
+            edge = next((e for e in edges if e.get("id") == edge_id), None)
+            if edge is None:
+                # Raise, don't swallow: make_transition_tool turns this into
+                # "failed to transition" so the model can pick a real id.
+                raise ValueError(f"unknown transition {edge_id!r}")
+            await self._transition(edge)
+
+        return on_transition
+
+    # -- injected callables --------------------------------------------------
+
+    def build_node_tools(self, node: dict[str, Any], edges: list[dict[str, Any]]) -> list[Any]:
+        """Assemble *node*'s livekit tools. Which ones is `node_tool_kinds`' call."""
+        tools: list[Any] = []
+        for kind in node_tool_kinds(node, edges, knowledge_base_ids=self._flow.knowledge_base_ids):
+            if kind == TOOL_TRANSITION:
+                schema = transition_tool_schema(node, edges)
+                if schema is not None:  # node_tool_kinds already checked
+                    tools.append(
+                        make_transition_tool(
+                            schema, self._transition_by_id(edges), state=self._state
+                        )
+                    )
+            elif kind == TOOL_FUNCTION:
+                tool = make_function_node_tool(
+                    node,
+                    self._flow.tools,
+                    http=self._http,
+                    function_secret=self._cfg.function_secret,
+                    variables=self._variables,
+                    call_info=self._cfg.tool_call_object(),
+                    state=self._state,
+                    on_transition=self._transition,
+                )
+                if tool is not None:  # unresolved tool_id: skipped with a warning
+                    tools.append(tool)
+            elif kind == TOOL_EXTRACT:
+                tools.append(
+                    make_extract_node_tool(
+                        node,
+                        variables=self._variables,
+                        state=self._state,
+                        on_transition=self._transition,
+                    )
+                )
+            elif kind == TOOL_KB_LOOKUP:
+                tools.append(
+                    make_flow_kb_lookup_tool(
+                        self._flow.kb_config,
+                        knowledge=self._knowledge,
+                        call_id=self._cfg.call_id,
+                        knowledge_base_ids=self._flow.knowledge_base_ids,
+                        variables=self._variables,
+                        state=self._state,
+                    )
+                )
+        return tools
+
+    async def say(self, text: str) -> None:
+        session = self._session
+        if session is None:
+            return
+        if getattr(session, "tts", None) is None:
+            # Gemini Live: no TTS, so say() raises. Have the realtime model
+            # voice the line verbatim instead (same fallback ArhiteqAgent's
+            # begin_message takes).
+            await session.generate_reply(
+                instructions=f'Say this to the user, word for word and nothing else: "{text}"'
+            )
+            return
+        await session.say(text)
+
+    async def generate_reply(self, instructions: str | None) -> None:
+        session = self._session
+        if session is None:
+            return
+        if instructions:
+            await session.generate_reply(instructions=instructions)
+        else:
+            await session.generate_reply()
+
+    async def classify(self, instructions: str, edges: list[dict[str, Any]]) -> str | None:
+        """The one extra LLM call in the design: route a ``branch`` node.
+
+        Runs against the flow's own model, mapped onto the Gemini catalogue
+        exactly like the session's — a flow naming ``gpt-5.1`` never reaches a
+        provider. Temperature 0: this is a classification, not a phrasing.
+        """
+        if self._classifier_llm is None:
+            from livekit.plugins import google
+
+            self._classifier_llm = google.LLM(model=_gemini_model(self.model), temperature=0.0)
+        answer = await _one_shot_completion(
+            self._classifier_llm,
+            classifier_prompt(instructions, edges),
+            self._state.transcript_text()[-CLASSIFIER_TRANSCRIPT_CHARS:],
+        )
+        return match_edge_id(answer, edges)
+
+    async def end_call(self, reason: str) -> None:
+        # The closing line has already played (`say` waits for playout);
+        # flush_grace then covers the room->SIP->phone tail, the same pairing
+        # `tools._make_end_call_tool` uses.
+        await self._control.end_call(reason, flush_grace=True)
 
 
 def _is_sip_participant(p: rtc.RemoteParticipant) -> bool:
@@ -558,6 +869,7 @@ def _wire_session_events(
     runtime: CallRuntime,
     amd_speech: list[str],
     amd_window_open: dict[str, bool],
+    on_user_turn: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     last_llm_ttft: dict[str, float] = {}
 
@@ -604,6 +916,11 @@ def _wire_session_events(
             _last_agent_text["text"] = text
         elif role == "user":
             state.add_message("user", text)
+            if on_user_turn is not None:
+                # Flow-backed calls only: the caller's turn is committed, so
+                # the current node re-evaluates its equation / always edges.
+                # None on the single-prompt path — there is no graph to walk.
+                _spawn(on_user_turn())
 
     @session.on("user_input_transcribed")
     def _on_transcribed(ev: Any) -> None:
@@ -816,17 +1133,63 @@ async def entrypoint(ctx: JobContext) -> None:
         resolve_template(cfg.llm.begin_message, variables) if cfg.llm.begin_message else None
     )
 
-    session, llm = build_session(cfg)
+    # A flow-backed agent runs its graph instead of a single prompt: it opens on
+    # the start node's instructions and tools, and the start node's own line is
+    # its opening line, so the three values computed above are replaced rather
+    # than extended. Everything below this block is shared with, and unchanged
+    # for, the single-prompt path.
+    flow_wiring: _FlowWiring | None = None
+    if cfg.conversation_flow is not None:
+        try:
+            flow_wiring = _FlowWiring(
+                cfg=cfg,
+                flow=cfg.conversation_flow,
+                control=runtime,
+                state=state,
+                variables=variables,
+                http=tool_http,
+                knowledge=api_client,
+            )
+        except FlowError as exc:
+            # Abort at start, before a word is spoken: a graph with an
+            # unsupported node type or an edge into nowhere must never become a
+            # dead end ninety seconds into a live call. The message names the
+            # offending node.
+            logger.error("call %s: unusable conversation flow: %s", cfg.call_id, exc)
+            state.set_reason_once("error_unknown")
+            ctx.shutdown(reason="invalid_conversation_flow")
+            return
+        instructions = flow_wiring.start_instructions
+        livekit_tools = flow_wiring.start_tools()
+        begin_message = None
+
+    session, llm = build_session(
+        cfg,
+        model=flow_wiring.model if flow_wiring is not None else None,
+        temperature=flow_wiring.temperature if flow_wiring is not None else None,
+    )
     amd_speech: list[str] = []
     amd_window_open = {"open": _amd_enabled(cfg)}
-    _wire_session_events(session, state, runtime, amd_speech, amd_window_open)
+    _wire_session_events(
+        session,
+        state,
+        runtime,
+        amd_speech,
+        amd_window_open,
+        on_user_turn=flow_wiring.on_user_turn if flow_wiring is not None else None,
+    )
 
     agent = ArhiteqAgent(
         instructions=instructions,
         tools=livekit_tools,
         begin_message=begin_message,
-        start_speaker=cfg.llm.start_speaker,
+        # A flow's start node owns the opening line (FlowRuntime.start speaks
+        # it, and honours a "user" start_speaker by deferring it), so the agent
+        # itself must not also open — "user" is what keeps on_enter quiet.
+        start_speaker="user" if flow_wiring is not None else cfg.llm.start_speaker,
     )
+    if flow_wiring is not None:
+        flow_wiring.attach(session, agent)
 
     async def _do_agent_swap(agent_id: str, entry: Mapping[str, Any]) -> str:
         """agent_swap tool: re-point the live session at another agent's config.
@@ -910,6 +1273,14 @@ async def entrypoint(ctx: JobContext) -> None:
         _post_call_started(),
         _start_recording(lkapi, ctx.room.name, cfg.call_id, state),
     )
+
+    if flow_wiring is not None:
+        # Only now can the start node install instructions/tools and speak —
+        # the agent has to be live first. Spawned, not awaited, so the opening
+        # line plays concurrently with the watchdogs below rather than delaying
+        # them (the single-prompt greeting runs from on_enter for the same
+        # reason).
+        _spawn(flow_wiring.start())
 
     async def _max_duration_watchdog() -> None:
         await asyncio.sleep(cfg.agent.max_call_duration_ms / 1000.0)

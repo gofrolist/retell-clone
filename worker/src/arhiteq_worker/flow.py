@@ -203,6 +203,38 @@ class FlowGraph:
         ]
 
 
+def flow_model_id(model_choice: Mapping[str, Any] | None) -> str:
+    """The raw model id a flow's ``model_choice`` names, or ``""``.
+
+    ``model_choice`` is ``{"type": "cascading", "model": "gpt-5.1",
+    "high_priority": true}`` on the real fixtures — Retell's own catalogue, so
+    the id is frequently an OpenAI one. This only *extracts* it; mapping it
+    onto the Gemini catalogue is ``main.py``'s ``_gemini_model``, the same
+    helper the single-prompt engine's ``llm.model`` goes through, so an OpenAI
+    id can never reach a provider. Kept here (rather than inline in
+    ``main.py``) so the extraction is testable without the livekit stack.
+
+    ``""`` means "the flow named no model": callers fall back to the agent's
+    own model, and from there to the deployment default.
+    """
+    if not isinstance(model_choice, Mapping):
+        return ""
+    model = model_choice.get("model")
+    return model if isinstance(model, str) else ""
+
+
+def start_speaker_for(node: dict[str, Any], default: str) -> str:
+    """Who opens at *node*: its own ``start_speaker`` override, else *default*.
+
+    A ``conversation`` node may carry its own ``start_speaker`` (see the design
+    doc's per-node behaviour table); anything other than the two documented
+    values is ignored rather than trusted, since it decides whether the agent
+    opens the call or waits for the caller.
+    """
+    speaker = node.get("start_speaker")
+    return speaker if speaker in ("agent", "user") else default
+
+
 # Comparison operators documented at
 # https://docs.retellai.com/build/conversation-flow/transitions (equation
 # conditions). ``exists`` is handled separately below since it is unary.
@@ -581,6 +613,55 @@ def transition_tool_schema(
     }
 
 
+# What a `branch` node's classifier is told to answer when no option fits. It
+# matches no edge id, so `match_edge_id` returns ``None`` and `FlowRuntime`
+# falls through to the node's ``else_edge`` — the documented no-match route.
+CLASSIFIER_NO_MATCH = "NONE"
+
+
+def classifier_prompt(instructions: str, edges: list[dict[str, Any]]) -> str:
+    """System prompt for the single classification call a ``branch`` node makes.
+
+    A ``branch`` node speaks nothing and has no turn of its own, so the model
+    is asked one closed question — pick an edge id — rather than being handed
+    the node as a conversation. *instructions* is `node_instructions`' already
+    resolved text (global prompt + the node's own instruction + the rendered
+    transition list); the options are repeated here in the answer format the
+    reply is parsed back out of.
+    """
+    options = "\n".join(
+        f"{edge['id']}: {_condition_prompt_text(edge)}" for edge in edges if edge.get("id")
+    )
+    return (
+        "You route a live phone conversation. Read the routing instructions and "
+        "the conversation so far, then choose exactly one option id from the "
+        "list below. Reply with the id alone and nothing else — no punctuation, "
+        f"no explanation. Reply {CLASSIFIER_NO_MATCH} if none of them fit.\n\n"
+        f"{instructions}\n\nOptions:\n{options}"
+    )
+
+
+def match_edge_id(answer: str, edges: list[dict[str, Any]]) -> str | None:
+    """The edge id a classifier reply names, or ``None``.
+
+    An exact match first; failing that, the longest id that appears anywhere in
+    the reply, since models like to wrap the answer in quotes or a sentence.
+    Longest-first matters when one id is a prefix of another. ``None`` covers
+    both the explicit `CLASSIFIER_NO_MATCH` answer and unparseable prose, and
+    `FlowRuntime` treats both the same: take the node's fallback edge.
+    """
+    text = (answer or "").strip()
+    if not text:
+        return None
+    ids = [edge["id"] for edge in edges if isinstance(edge.get("id"), str) and edge["id"]]
+    if text in ids:
+        return text
+    for edge_id in sorted(ids, key=len, reverse=True):
+        if edge_id in text:
+            return edge_id
+    return None
+
+
 # ---------------------------------------------------------------------------
 # The livekit tool layer (Task 6): turning node behaviours into livekit tools.
 # ---------------------------------------------------------------------------
@@ -670,6 +751,73 @@ def _is_error_result(result: str) -> bool:
     except ValueError:
         return False
     return isinstance(payload, dict) and bool(payload.get("error"))
+
+
+# Tool kinds a node can install, as returned by `node_tool_kinds`. Named
+# constants rather than bare strings so the decision (made here, where it is
+# testable without livekit) and the construction of the tools it names
+# (`main.py`, which needs livekit) cannot drift apart.
+TOOL_TRANSITION = "transition_to"
+TOOL_FUNCTION = "function"
+TOOL_EXTRACT = "extract_dynamic_variables"
+TOOL_KB_LOOKUP = "kb_lookup"
+
+# Node types whose own tool routes their result (`_select_success_edge`).
+_ACTION_NODE_TYPES: frozenset[str] = frozenset({"function", "extract_dynamic_variables"})
+
+
+def node_auto_advances(node: dict[str, Any]) -> bool:
+    """Will *node*'s own action tool route the call onward by itself?
+
+    True exactly when `make_function_node_tool` / `make_extract_node_tool`
+    would find an edge to follow from their result — one usable success edge,
+    or none plus a usable ``else_edge``. False for every other node type (they
+    have no action tool), and false for the ambiguous case
+    `_select_success_edge` deliberately leaves to the model.
+    """
+    if node.get("type") not in _ACTION_NODE_TYPES:
+        return False
+    return _select_success_edge(_own_success_edges(node), fallback_edge(node)) is not None
+
+
+def node_tool_kinds(
+    node: dict[str, Any], edges: list[dict[str, Any]], *, knowledge_base_ids: list[str]
+) -> list[str]:
+    """Which tools *node* installs, by kind, in install order.
+
+    The whole "what goes on this node" decision, expressed over plain data so
+    it stays testable in the dev-only environment; ``main.py`` only maps each
+    kind to its `make_*_tool` constructor.
+
+    - `TOOL_TRANSITION` when the node has prompt edges to offer
+      (`transition_tool_schema` returns ``None`` when it has none) **and**
+      nothing else is going to route it. That second half is the whole point:
+      a ``function`` / ``extract_dynamic_variables`` node with more than one
+      usable edge deliberately does *not* auto-advance — the model, which just
+      saw the tool result, is the only thing that can tell those edges apart
+      (`_select_success_edge`) — so it must be given a transition tool or it
+      stalls with no way forward and the call dies there. This is why the rule
+      is not "conversation nodes get a transition tool". Conversely, a node
+      that *does* auto-advance is not given one: the model could otherwise
+      transition instead of running the node's tool, or transition a second
+      time along a stale edge after the tool already moved the call on.
+    - `TOOL_FUNCTION` / `TOOL_EXTRACT` — the node's own action tool.
+    - `TOOL_KB_LOOKUP` on ``conversation`` / ``subagent`` nodes when the flow
+      carries ``knowledge_base_ids`` (`make_flow_kb_lookup_tool`'s documented
+      attachment rule; a node with its own action tool is deliberately not
+      given a competing one).
+    """
+    kinds: list[str] = []
+    if transition_tool_schema(node, edges) is not None and not node_auto_advances(node):
+        kinds.append(TOOL_TRANSITION)
+    node_type = node.get("type")
+    if node_type == "function":
+        kinds.append(TOOL_FUNCTION)
+    elif node_type == "extract_dynamic_variables":
+        kinds.append(TOOL_EXTRACT)
+    if knowledge_base_ids and node_type in ("conversation", "subagent"):
+        kinds.append(TOOL_KB_LOOKUP)
+    return kinds
 
 
 def make_transition_tool(
