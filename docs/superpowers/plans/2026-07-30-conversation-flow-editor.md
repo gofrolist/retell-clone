@@ -150,7 +150,7 @@ In `backend/src/arhiteq_api/api/agents.py`, `get_agent_version`:
     }
 ```
 
-Import `conversation_flow_to_dict` from `arhiteq_api.schemas_extra` alongside the existing `llm_to_dict` import. `resolve_with_flow` is already exported from `services/versions.py` (`api/internal.py` uses it twice).
+The two serializers live in **different** modules — `llm_to_dict` in `schemas.py`, `conversation_flow_to_dict` in `schemas_extra.py` — so this is a second import statement, not an addition to the existing one. `resolve_with_flow` is already exported from `services/versions.py` (`api/internal.py` uses it twice).
 
 - [ ] **Step 4: Run the backend suite**
 
@@ -238,10 +238,12 @@ cd frontend && bun run lint && bun run build
 Expected: PASS.
 
 ```bash
-git add backend/src/arhiteq_api/api/agents.py backend/tests/test_agent_versions.py \
+git add backend/src/arhiteq_api/api/agents.py backend/tests/contract/test_flow_agents.py \
         frontend/src/lib/api.ts frontend/src/lib/mock.ts
 git commit -m "feat(flows): serve a version's frozen graph and fetch it in the dashboard"
 ```
+
+**Note for Task 8:** demo mode's `/get-agent-version/:id/:version` handler does not return a `conversation_flow` key. That is a pre-existing gap outside this task's file scope, but Task 8 Step 5 wires historical-version viewing — so in `DEMO_MODE` the pinned-version canvas will read `undefined` there. Handle it as "no frozen graph available" rather than crashing, and extend the demo handler if it is cheap.
 
 ---
 
