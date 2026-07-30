@@ -26,7 +26,19 @@ import {
 } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 
-type Tool = NonNullable<RawLlm["general_tools"]>[number];
+/**
+ * One entry of `RawLlm["general_tools"]` — and, verified against
+ * `backend/tests/fixtures/retell_flows/prior_auth_hotline.json`'s
+ * `tools[0]`, structurally the same wire shape a conversation flow's
+ * `tools[]` entries use. A flow tool additionally carries `tool_id`
+ * (matched against a `function` node's own `tool_id`, see
+ * `FunctionSettings.tsx`), `parameter_type`, and `response_variables`; none
+ * of the forms below name those fields, but every one spreads `...initial`
+ * before applying its own patch, so they survive an edit untouched. Exported
+ * so a caller wiring this section to a flow's `tools[]` (an open
+ * `Record<string, unknown>[]` on `RawConversationFlow`) can type its cast.
+ */
+export type Tool = NonNullable<RawLlm["general_tools"]>[number];
 type ToolVariable = NonNullable<Tool["variables"]>[number];
 const TOOL_KINDS = [
   "end_call",

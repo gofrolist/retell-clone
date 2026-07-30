@@ -7,6 +7,7 @@ import "@xyflow/react/dist/style.css";
 
 import {
   useCallback,
+  useEffect,
   useMemo,
   useState,
   type DragEvent,
@@ -27,11 +28,13 @@ import {
   type NodeTypes,
 } from "@xyflow/react";
 import type { RawConversationFlow } from "@/lib/api";
+import { PillTabs } from "@/components/ui/Tabs";
 import { edgeAddress, nodeChangeAction, toReactFlow, type FlowEdgeData } from "./flowGraph";
 import type { FlowAction } from "./flowModel";
 import NodePalette, { NODE_DRAG_MIME } from "./NodePalette";
 import FlowNode from "./nodes/FlowNode";
 import NoteNode from "./nodes/NoteNode";
+import GlobalSettings from "./settings/GlobalSettings";
 import NodeSettings from "./settings/NodeSettings";
 
 // Module-level constants: a fresh object literal each render makes React
@@ -185,6 +188,14 @@ export default function FlowEditor({
   readOnly: boolean;
 }) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [rightTab, setRightTab] = useState<"node" | "global">("node");
+
+  // Picking a node while the Global tab is showing should surface its
+  // settings, not silently do nothing — the same reason a click always
+  // updates `selectedNodeId` regardless of which tab is active.
+  useEffect(() => {
+    if (selectedNodeId) setRightTab("node");
+  }, [selectedNodeId]);
 
   return (
     <ReactFlowProvider>
@@ -197,13 +208,27 @@ export default function FlowEditor({
           selectedNodeId={selectedNodeId}
           setSelectedNodeId={setSelectedNodeId}
         />
-        <div className="h-full w-[320px] shrink-0 overflow-y-auto border-l border-line bg-card">
-          <NodeSettings
-            flow={flow}
-            dispatch={dispatch}
-            selectedNodeId={selectedNodeId}
-            readOnly={readOnly}
-          />
+        <div className="flex h-full w-[320px] shrink-0 flex-col overflow-y-auto border-l border-line bg-card">
+          <div className="sticky top-0 z-10 shrink-0 border-b border-line bg-card p-2">
+            <PillTabs
+              tabs={[
+                { key: "node", label: "Node" },
+                { key: "global", label: "Global Settings" },
+              ]}
+              active={rightTab}
+              onChange={(k) => setRightTab(k === "global" ? "global" : "node")}
+            />
+          </div>
+          {rightTab === "global" ? (
+            <GlobalSettings flow={flow} dispatch={dispatch} readOnly={readOnly} />
+          ) : (
+            <NodeSettings
+              flow={flow}
+              dispatch={dispatch}
+              selectedNodeId={selectedNodeId}
+              readOnly={readOnly}
+            />
+          )}
         </div>
       </div>
     </ReactFlowProvider>

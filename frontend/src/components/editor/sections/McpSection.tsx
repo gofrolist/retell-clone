@@ -75,7 +75,7 @@ export default function McpSection({
     <div>
       <p className="text-[13px] text-sub">
         Connect MCP servers to give your agent access to external tools. Servers are saved with
-        the agent&apos;s LLM; tool execution by the voice worker is rolling out.
+        the agent&apos;s configuration; tool execution by the voice worker is rolling out.
       </p>
 
       {mcps.length > 0 && (
