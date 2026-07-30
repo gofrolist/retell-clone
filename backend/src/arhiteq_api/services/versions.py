@@ -11,20 +11,31 @@ The invariants (also written up in docs/AGENT_VERSIONING.md):
 - Agents that predate versioning are seeded lazily on first touch rather than by
   a boot-time data migration, so a rollback to an older image stays harmless.
 
-Only voice agents are versioned. Chat agents and conversation flows keep their
-plain `version` counter.
+Only voice agents are versioned. Chat agents keep their plain `version` counter.
+A flow-backed voice agent's graph is frozen into the version's `flow_snapshot`,
+so the flow's own counter is bookkeeping rather than what a call resolves against.
 """
 
+import logging
 from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import Agent, AgentVersion, RetellLLM, now_ms
+from ..models import Agent, AgentVersion, ConversationFlow, RetellLLM, now_ms
+
+log = logging.getLogger(__name__)
 
 LATEST = "latest"
 LATEST_PUBLISHED = "latest_published"
+
+# Log-noise guard, not a correctness mechanism: resolve_with_flow's "published
+# with no flow snapshot" warning would otherwise fire once per config fetch —
+# i.e. once per call and again on every worker reconnect. Keyed by
+# (agent_id, version) and kept for the process lifetime so each affected
+# version is still reported at least once per deploy.
+_WARNED_UNFROZEN_VERSIONS: set[tuple[str, int]] = set()
 
 # Columns that identify a row or track version bookkeeping rather than describe
 # the agent's behaviour. Everything else is config and travels in a snapshot,
@@ -43,6 +54,15 @@ _AGENT_EXCLUDED = frozenset(
     }
 )
 _LLM_EXCLUDED = frozenset({"llm_id", "workspace_id", "version", "last_modification_timestamp"})
+_FLOW_EXCLUDED = frozenset(
+    {
+        "conversation_flow_id",
+        "workspace_id",
+        "version",
+        "last_modification_timestamp",
+        "created_at_ms",
+    }
+)
 
 
 def _snapshot(obj: Any, excluded: frozenset[str]) -> dict[str, Any]:
@@ -79,6 +99,13 @@ async def _load_llm(session: AsyncSession, agent: Agent) -> RetellLLM | None:
     if not llm_id:
         return None
     return await session.get(RetellLLM, llm_id)
+
+
+async def _load_flow(session: AsyncSession, agent: Agent) -> ConversationFlow | None:
+    flow_id = (agent.response_engine or {}).get("conversation_flow_id")
+    if not flow_id:
+        return None
+    return await session.get(ConversationFlow, flow_id)
 
 
 async def history(session: AsyncSession, agent_id: str) -> list[AgentVersion]:
@@ -118,6 +145,7 @@ async def ensure_seeded(session: AsyncSession, agent: Agent) -> None:
             agent.published_version = agent.version
         return
     llm = await _load_llm(session, agent)
+    flow = await _load_flow(session, agent)
     session.add(
         AgentVersion(
             agent_id=agent.agent_id,
@@ -128,6 +156,7 @@ async def ensure_seeded(session: AsyncSession, agent: Agent) -> None:
             version_description="Imported from live configuration",
             agent_snapshot=_snapshot(agent, _AGENT_EXCLUDED),
             llm_snapshot=_snapshot(llm, _LLM_EXCLUDED) if llm is not None else None,
+            flow_snapshot=_snapshot(flow, _FLOW_EXCLUDED) if flow is not None else None,
             created_timestamp=agent.last_modification_timestamp,
             last_modification_timestamp=agent.last_modification_timestamp,
             published_timestamp=agent.last_modification_timestamp,
@@ -145,6 +174,7 @@ async def record_initial(session: AsyncSession, agent: Agent) -> AgentVersion:
     immediately — matching the pre-versioning `is_published=True` default.
     """
     llm = await _load_llm(session, agent)
+    flow = await _load_flow(session, agent)
     version = AgentVersion(
         agent_id=agent.agent_id,
         version=agent.version,
@@ -153,6 +183,7 @@ async def record_initial(session: AsyncSession, agent: Agent) -> AgentVersion:
         is_published=True,
         agent_snapshot=_snapshot(agent, _AGENT_EXCLUDED),
         llm_snapshot=_snapshot(llm, _LLM_EXCLUDED) if llm is not None else None,
+        flow_snapshot=_snapshot(flow, _FLOW_EXCLUDED) if flow is not None else None,
         published_timestamp=agent.last_modification_timestamp,
     )
     session.add(version)
@@ -201,6 +232,16 @@ async def agents_using_llm(session: AsyncSession, workspace_id: str, llm_id: str
     return [a for a in agents if (a.response_engine or {}).get("llm_id") == llm_id]
 
 
+async def agents_using_flow(session: AsyncSession, workspace_id: str, flow_id: str) -> list[Agent]:
+    """Agents in this workspace whose response engine is `flow_id`.
+
+    Filtered in Python for the same reason agents_using_llm is: a JSON
+    predicate would need dialect-specific SQL for SQLite and Postgres both.
+    """
+    agents = await session.scalars(select(Agent).where(Agent.workspace_id == workspace_id))
+    return [a for a in agents if (a.response_engine or {}).get("conversation_flow_id") == flow_id]
+
+
 async def publish(
     session: AsyncSession,
     agent: Agent,
@@ -220,8 +261,10 @@ async def publish(
         raise HTTPException(404, detail=f"Agent version {version} not found")
     if not row.is_published:
         llm = await _load_llm(session, agent)
+        flow = await _load_flow(session, agent)
         row.agent_snapshot = _snapshot(agent, _AGENT_EXCLUDED)
         row.llm_snapshot = _snapshot(llm, _LLM_EXCLUDED) if llm is not None else None
+        row.flow_snapshot = _snapshot(flow, _FLOW_EXCLUDED) if flow is not None else None
         row.is_published = True
         row.published_timestamp = now_ms()
         agent.is_published = True
@@ -293,42 +336,72 @@ async def discard(session: AsyncSession, agent: Agent, version: int) -> None:
 
 
 async def _restore_config(session: AsyncSession, agent: Agent, version: AgentVersion) -> None:
-    """Write a version's snapshot back onto the live agent + LLM rows.
+    """Write a version's snapshot back onto the live agent + LLM/flow rows.
 
     Order matters: the agent snapshot carries `response_engine`, so it has to
-    land *before* the LLM is loaded. Loading first would fetch whatever engine
-    the outgoing draft pointed at and then write the restored version's prompt
-    into that unrelated LLM.
+    land *before* the LLM/flow is loaded. Loading first would fetch whatever
+    engine the outgoing draft pointed at and then write the restored version's
+    config into that unrelated LLM/flow.
     """
     _restore(agent, version.agent_snapshot, _AGENT_EXCLUDED)
     llm = await _load_llm(session, agent)
-    if llm is None:
+    if llm is not None:
+        snapshot = version.llm_snapshot or {}
+        if not all(getattr(llm, field, None) == value for field, value in snapshot.items()):
+            # An LLM shared by several agents is one config for all of them
+            # (that is already true of ordinary prompt edits), so restoring
+            # would rewrite the other agents' prompt. Fork a private copy
+            # instead of corrupting theirs.
+            sharers = [
+                a
+                for a in await agents_using_llm(session, agent.workspace_id, llm.llm_id)
+                if a.agent_id != agent.agent_id
+            ]
+            if sharers:
+                copy = RetellLLM(
+                    workspace_id=agent.workspace_id,
+                    **{
+                        c.name: getattr(llm, c.name)
+                        for c in llm.__table__.columns
+                        if c.name not in _LLM_EXCLUDED
+                    },
+                )
+                session.add(copy)
+                await session.flush()
+                agent.response_engine = {**(agent.response_engine or {}), "llm_id": copy.llm_id}
+                llm = copy
+            _restore(llm, version.llm_snapshot, _LLM_EXCLUDED)
+    flow = await _load_flow(session, agent)
+    if flow is None:
         return
-    snapshot = version.llm_snapshot or {}
-    if all(getattr(llm, field, None) == value for field, value in snapshot.items()):
-        return  # already the restored config — nothing to write, nothing to fork
-    # An LLM shared by several agents is one config for all of them (that is
-    # already true of ordinary prompt edits), so restoring would rewrite the
-    # other agents' prompt. Fork a private copy instead of corrupting theirs.
-    sharers = [
+    flow_snapshot = version.flow_snapshot or {}
+    if all(getattr(flow, field, None) == value for field, value in flow_snapshot.items()):
+        return  # already the restored graph — nothing to write, nothing to fork
+    # A flow shared by several agents is one config for all of them (same
+    # reasoning as the LLM fork above), so restoring in place would rewrite
+    # the other agents' graph. Fork a private copy instead of corrupting theirs.
+    flow_sharers = [
         a
-        for a in await agents_using_llm(session, agent.workspace_id, llm.llm_id)
+        for a in await agents_using_flow(session, agent.workspace_id, flow.conversation_flow_id)
         if a.agent_id != agent.agent_id
     ]
-    if sharers:
-        copy = RetellLLM(
+    if flow_sharers:
+        copy = ConversationFlow(
             workspace_id=agent.workspace_id,
             **{
-                c.name: getattr(llm, c.name)
-                for c in llm.__table__.columns
-                if c.name not in _LLM_EXCLUDED
+                c.name: getattr(flow, c.name)
+                for c in flow.__table__.columns
+                if c.name not in _FLOW_EXCLUDED
             },
         )
         session.add(copy)
         await session.flush()
-        agent.response_engine = {**(agent.response_engine or {}), "llm_id": copy.llm_id}
-        llm = copy
-    _restore(llm, version.llm_snapshot, _LLM_EXCLUDED)
+        agent.response_engine = {
+            **(agent.response_engine or {}),
+            "conversation_flow_id": copy.conversation_flow_id,
+        }
+        flow = copy
+    _restore(flow, version.flow_snapshot, _FLOW_EXCLUDED)
 
 
 async def _max_version(session: AsyncSession, agent_id: str) -> int:
@@ -404,6 +477,92 @@ async def resolve(
     pinned.is_published = row.is_published
     pinned_llm = _detach(llm, row.llm_snapshot, _LLM_EXCLUDED) if llm is not None else None
     return pinned, pinned_llm, row.version
+
+
+async def resolve_with_flow(
+    session: AsyncSession,
+    agent: Agent,
+    ref: int | str | None = LATEST_PUBLISHED,
+    *,
+    strict: bool = True,
+) -> tuple[Agent, RetellLLM | None, ConversationFlow | None, int]:
+    """`resolve()` plus the conversation flow pinned at that version.
+
+    Split from resolve() rather than widening its tuple: only the internal
+    config endpoints need the flow, and the other eight call sites would all
+    have to grow an ignored slot.
+
+    Deliberately does NOT shortcut on `version == agent.version` the way the
+    agent/llm snapshot lookups implicitly do inside resolve(): that equality
+    only proves the *agent* row wasn't drafted since publish. A conversation
+    flow keeps its own independent version counter (see module docstring), and
+    `update-conversation-flow` opens the owning agent's draft (like
+    update-retell-llm) but does not itself advance `agent.version` on rows
+    that are still mid-edit, so a flow can still drift out from under a
+    published, untouched agent (e.g. legacy history predating that wiring).
+    The version's own row is always consulted; only a version with no row (a
+    fresh, still-open draft) or no flow_snapshot (pre-Task-5 history, or an
+    agent with no flow) falls back to serving the live flow — and if the live
+    row itself is gone, a transient copy is rebuilt from the snapshot instead
+    of serving null (see `_rebuild_flow`).
+    """
+    pinned, llm, version = await resolve(session, agent, ref, strict=strict)
+    flow = await _load_flow(session, pinned)
+    flow_id = (pinned.response_engine or {}).get("conversation_flow_id")
+    # Single-prompt agents (no conversation_flow_id) are the common case on
+    # this hot path — skip the extra version-row SELECT for them; `flow` is
+    # already known to be None and there is nothing a row could add.
+    row = await _get(session, agent.agent_id, version) if flow_id else None
+    if flow is None:
+        # The live row is gone (deleted flow) but the pinned version's snapshot
+        # still holds the whole graph — rebuild a transient row from it rather
+        # than serve null for a version that is otherwise fully resolvable.
+        if row is not None and row.flow_snapshot:
+            return pinned, llm, _rebuild_flow(pinned, row.flow_snapshot, row), version
+        return pinned, llm, flow, version
+    if row is None or row.flow_snapshot is None:
+        if row is not None and row.is_published:
+            key = (agent.agent_id, version)
+            if key not in _WARNED_UNFROZEN_VERSIONS:
+                _WARNED_UNFROZEN_VERSIONS.add(key)
+                log.warning(
+                    "agent %s version %s is published with no flow snapshot; "
+                    "serving the live conversation flow %s instead of a frozen one",
+                    agent.agent_id,
+                    version,
+                    flow.conversation_flow_id,
+                )
+        return pinned, llm, flow, version
+    return pinned, llm, _detach(flow, row.flow_snapshot, _FLOW_EXCLUDED), version
+
+
+def _rebuild_flow(agent: Agent, snapshot: dict[str, Any], row: AgentVersion) -> ConversationFlow:
+    """A transient ConversationFlow rebuilt from `snapshot` when the live row
+    backing it has been deleted.
+
+    _FLOW_EXCLUDED omits conversation_flow_id, so the snapshot carries no id;
+    take it from the pinned agent's response_engine so the serialized object
+    still identifies itself. Never added to the session — this must not
+    resurrect the deleted row.
+
+    `version` and `last_modification_timestamp` are in _FLOW_EXCLUDED too, and
+    SQLAlchemy column defaults only fire on INSERT, so left alone they'd stay
+    None and conversation_flow_to_dict would serialize them as null for a
+    consumer that types them as int. Stamp them from the resolved version row
+    instead: `row.version` (the agent version this graph is pinned to) and
+    `row.published_timestamp` (falling back to now_ms() for an unpublished
+    row, which has none).
+    """
+    flow = ConversationFlow()
+    columns = flow.__table__.columns
+    for field, value in snapshot.items():
+        if field in columns and field not in _FLOW_EXCLUDED:
+            setattr(flow, field, value)
+    flow.conversation_flow_id = (agent.response_engine or {}).get("conversation_flow_id")
+    flow.workspace_id = agent.workspace_id
+    flow.version = row.version
+    flow.last_modification_timestamp = row.published_timestamp or now_ms()
+    return flow
 
 
 async def published_version_of(session: AsyncSession, agent: Agent) -> int:

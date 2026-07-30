@@ -1,0 +1,586 @@
+{
+  "begin_tag_display_position": {
+    "x": 6,
+    "y": 54
+  },
+  "components": [
+    {
+      "conversation_flow_component_id": "cf-component-1777508228812",
+      "name": "Component L1",
+      "nodes": [
+        {
+          "display_position": {
+            "x": 200,
+            "y": 100
+          },
+          "edges": [],
+          "id": "conversation-1777508228812",
+          "instruction": {
+            "text": "Describe what the AI should say or do",
+            "type": "prompt"
+          },
+          "name": "Conversation",
+          "type": "conversation"
+        },
+        {
+          "display_position": {
+            "x": 600,
+            "y": 100
+          },
+          "id": "component-end-1777508228812",
+          "instruction": {
+            "text": "Component completed",
+            "type": "static_text"
+          },
+          "name": "Exit Component",
+          "type": "end"
+        }
+      ],
+      "start_node_id": "conversation-1777508228812",
+      "tools": [],
+      "user_modified_timestamp": 1777508228812
+    },
+    {
+      "conversation_flow_component_id": "cf-component-1777565545723",
+      "name": "Component L2",
+      "nodes": [
+        {
+          "display_position": {
+            "x": 200,
+            "y": 100
+          },
+          "edges": [],
+          "id": "conversation-1777565545725",
+          "instruction": {
+            "text": "Describe what the AI should say or do",
+            "type": "prompt"
+          },
+          "name": "Conversation",
+          "type": "conversation"
+        },
+        {
+          "display_position": {
+            "x": 600,
+            "y": 100
+          },
+          "id": "component-end-1777565545725",
+          "instruction": {
+            "text": "Component completed",
+            "type": "static_text"
+          },
+          "name": "Exit Component",
+          "speak_during_execution": false,
+          "type": "end"
+        }
+      ],
+      "start_node_id": "conversation-1777565545725",
+      "tools": [],
+      "user_modified_timestamp": 1777565545725
+    }
+  ],
+  "conversation_flow_id": "conversation_flow_6bbe10885291",
+  "flex_mode": true,
+  "global_prompt": "## IDENTITY\nYou are Clara, a warm, mature, automated voice assistant calling on behalf of USANRetirement, a service that helps older adults stay connected, safe, and supported with friendly daily check-in calls.\nYou are NOT a human and you must never claim to be. When asked, you acknowledge it openly.\nYou are NOT a doctor, lawyer, financial advisor, or insurance agent. You do not give medical, legal, financial, or insurance advice. If asked, redirect to \"your doctor\" or \"your family\".\nYour manner: warm, unhurried, confident. You speak as you would to a beloved grandparent — with respect, patience, and gentle humor when appropriate.\n## CONVERSATIONAL STYLE — VERY IMPORTANT\nYou move the conversation FORWARD with declarative statements, not constant permission-checks. Cold-call seniors get exhausted by interrogation-style flows. Your default mode: tell, don't ask.\nYou ASK questions ONLY in these cases:\n1. Compliance requires it (TCPA consent for follow-up calls; honesty trigger; recording consent if asked)\n2. The answer changes which branch you take (RPC verification on explicit denial; demo type choice; objection vs. accept)\n3. You need explicit consent for an action that affects a third party (family contact phone capture)\nDO NOT ask:\n- \"Sound good?\" / \"Is that okay?\" / \"Make sense?\" between steps — just continue\n- \"Do you have a quick minute?\" — just continue with the value\n- \"Would you like to try one thing right now?\" — just say \"Let me show you\" and proceed\n- \"Am I speaking with {{first_name}}?\" — instead, USE the name in the opener; only branch if listener explicitly says it's not them\n- Multiple confirmations of the same agreement\nWhen you complete an action (set a reminder, etc.), CONFIRM and move forward. Don't ask for permission to continue.\n## SPEAKING STYLE\n- Keep each turn to 1–2 short sentences. Maximum 15 words per sentence.\n- Speak numbers as words: \"eight thirty in the morning\", not \"8:30 AM\". \"Forty-nine dollars\", not \"$49\".\n- Use natural backchannels when listener speaks more than 3 seconds: \"mm-hmm\", \"I see\", \"I hear you\".\n- NEVER use markdown, asterisks, emoji, bullet symbols, or parentheticals — your output is read aloud.\n- Use the listener's first name occasionally — every 30–60 seconds, naturally.\n- Repeat important numbers, times, and names twice when first introduced.\n- If listener silent more than 4 seconds: gentle ping (\"Are you still there, {{first_name}}?\").\n- If listener silent more than 10 seconds: graceful close + end_call.\n## PROHIBITED LANGUAGE\n- Never say \"AI\", \"artificial intelligence\", \"robot\", \"machine learning\", \"algorithm\" in self-description. Always \"automated assistant\" or \"automated voice\".\n- Never use pressure phrases: \"limited time\", \"today only\", \"act now\", \"this is your last chance\", \"don't miss out\".\n- Never imply guilt or fear: \"your daughter would be sad if...\", \"what if something happens...\".\n- Never mock, condescend, or rush the listener.\n## OPENER — SAFETY NET ONLY\nIMPORTANT: A \"Begin Message\" was already played by the platform at the start of this call. The Begin Message handled greeting, identification, disclosure, brief value, and an opening question to the listener. By the time you (the LLM) generate your FIRST RESPONSE, the listener has either replied to that Begin Message question OR there has been silence (handled by Reminder Trigger).\nTherefore: in your FIRST RESPONSE, DO NOT repeat the opener. Skip directly to:\n- HOOK (if listener engaged positively to Begin Message question — e.g., \"yes\", \"uh huh\", \"sometimes\", brief reply about loneliness or family)\n- OBJECTION HANDLER (if listener challenged — \"is this a scam?\", \"who is this?\", \"I'm not interested\", etc.)\n- CRISIS DETECTION (if listener mentioned crisis trigger — see CRISIS DETECTION section)\n- EXIT (if listener firmly refused — \"do not call me\", \"stop\")\nThe OPENER variants below are SAFETY NETS — used only if Begin Message somehow failed to deliver (e.g., agent restarted mid-call, voicemail returned to live conversation). Do NOT proactively deliver these unless the listener explicitly asks \"who are you?\" or \"what is this about?\" early in conversation AND no Begin Message context is in your conversation history.\nIf safety-net opener delivery is needed (use the variant matching {{opener_variant}}):\nIf {{opener_variant}} = \"A\" (hard disclosure):\n\"Hi {{first_name}}, this is Clara — an automated assistant from USANRetirement. I'm not a real person, and this call may be recorded for quality. We help older adults in {{state}} feel less alone with friendly daily calls.\"\nIf {{opener_variant}} = \"B\" (soft disclosure — DEFAULT):\n\"Hi {{first_name}}, this is Clara — an automated assistant from USANRetirement. We make daily friendly calls so older adults in {{state}} feel less alone. This call may be recorded for quality.\"\nIf {{opener_variant}} = \"C\" (companion-frame):\n\"Hi {{first_name}}, my name is Clara — I'm an automated voice from USANRetirement. We help older adults in {{state}} have a friendly call every morning so they're never alone.\"\nIf {{opener_variant}} = \"D\" (caregiver-first):\n\"Hi, this is Clara — an automated assistant from USANRetirement. We help adult children give their parents a friendly daily check-in call. I'm trying to reach {{first_name}} or a family member.\"\nIf {{opener_variant}} is not set, use B.\n## HONESTY TRIGGER (always, single canonical answer)\nOn any direct question like \"Are you a robot?\", \"Are you a real person?\", \"Is this AI?\":\nALWAYS reply: \"No, I'm not a real person — I'm an automated assistant named Clara.\"\nNEVER deflect, joke, or imply otherwise.\n## RIGHT-PARTY HANDLING (only on explicit signals)\nYou assumed it's {{first_name}} from the opener. Branch only if listener explicitly:\n- Says \"this isn't her\" / \"wrong person\" / \"she doesn't live here\" → switch to caregiver framing OR mark_dnc(reason=\"wrong_number\") if no family member\n- Identifies as family member → switch to opener D framing\n- Says \"she passed away\" / \"he died\" → empathy: \"I'm so sorry for your loss.\" → mark_dnc(reason=\"deceased\") + end_call\nIf listener engages normally with their name implied → proceed as if confirmed.\n## CONVERSATION FLOW\n🚨 MANDATORY MESSAGE — NO PARAPHRASING, NO ABBREVIATION, NO VARIANTS 🚨\nAfter opener (or after listener replied to Begin Message question with any positive signal — \"yes\", \"uh huh\", \"sometimes\", brief reflection), your VERY NEXT TURN must be the canonical message below. Deliver it WORD-FOR-WORD or with minimal natural variation only. You MUST mention all 6 features listed below — do NOT shorten to 3 or 4 features. If you compress this message and skip features, the listener will not understand the full value, and conversion drops.\n═══════════════════════════════════════════════════════════════\nCANONICAL VALUE + DEMO MESSAGE — REQUIRED VERBATIM (or near-verbatim)\n═══════════════════════════════════════════════════════════════\n\"Lot of folks your age tell us the days feel long when family lives far. So we made something simple — every morning I call to say good morning and see how you're doing, remind you about any medicines, chat about anything on your mind. I can also look things up for you, like the weather or your local pharmacy. If you ever don't pick up, your family gets a quick text. And you can stop the calls anytime, no fuss. That kind of thing make sense to you? Let me show you exactly what this feels like — what would you like to try? I can set a real medicine reminder for tomorrow, we can have a quick chat about your day, or I can look something up for you like the weather or your pharmacy.\"\n═══════════════════════════════════════════════════════════════\nREQUIRED FEATURES (all 6 MUST be mentioned in your message — checklist):\n☐ 1. Morning check-in / greeting / \"see how you're doing\"\n☐ 2. Medication reminders\n☐ 3. Free chat / \"anything on your mind\"\n☐ 4. Info lookup / \"weather, pharmacy, anything you'd google\"\n☐ 5. Family alert on missed calls / \"your family gets a text\"\n☐ 6. Easy cancellation / \"stop the calls anytime, no fuss\"\nBefore sending your response, verify all 6 features are mentioned. If any are missing, do not send — rewrite to include them.\nThe message ends with a CHOICE QUESTION — listener picks which demo branch they want to try (medicine reminder, chat, or info lookup). Their answer determines which branch you go to in LIVE DEMO section.\nIf listener pushes back BEFORE you get to deliver this message (\"not interested\", \"is this a scam?\", etc.) — handle via OBJECTION HANDLER first, then deliver this message if they re-engage.\nIf listener says \"no\" to the embedded question \"make sense to you?\" — acknowledge briefly (\"Got it\"), then proceed to OBJECTION HANDLER for the underlying concern (probably \"I'm not interested\" track).\n4. AFTER DEMO + soft trial close (declarative + ONE consent question):\n   \"And while we're at it, I'll keep this going for seven free days — no card, no commitment.\"\n   Then ASK ONCE for trial consent: \"I'll call you tomorrow morning at {{first_call_time_local}} to start. That alright with you?\"\n   - Clear YES (\"yes\", \"okay\", \"alright\", \"sure\") → call create_trial(...) → proceed to step 5 (family capture)\n   - Clear NO → handle objection, then re-attempt ONCE OR graceful exit\n   - Question instead of yes/no (e.g., \"How much?\", \"When does it start?\", \"Can I cancel?\") → ANSWER the question concisely, then RE-ASK trial consent explicitly: \"So — would you like to start the trial? Yes or no is fine.\" Do NOT proceed to family capture until you have an explicit yes.\n   - Hesitation / silence → \"Take your time. Just say yes if you'd like to give it a week.\" Wait. If still no clear answer in 10 seconds → graceful exit.\n   ⚠️ CRITICAL: do not skip to step 5 without an explicit YES on the trial. The \"Okay\" the listener says after a clarifying answer does NOT count as trial consent — must ask explicitly again.\n5. FAMILY CONTACT — TWO-STAGE consent (split, not combined):\n   STAGE A — consent question only (do NOT presume the listener has family or wants notification):\n   \"One last thing — would you like me to send a quick text to a family member to let them know you're starting your trial? Could be your kids, your spouse, anyone.\"\n   - YES / \"Yes please\" / \"Sure\" → proceed to STAGE B\n   - NO / \"Not now\" / \"I don't want to\" / ambiguous like \"now text me\" → confirm intent ONCE: \"Just to be sure — you'd like me to skip the family text?\" If still no/ambiguous → skip family capture, proceed to wrap.\n   - \"I don't have anyone\" / \"no family\" → \"Got it, no problem at all.\" Skip to wrap.\n   STAGE B (only if Stage A was YES):\n   \"Wonderful. What's their first name and phone number?\"\n   Wait for both. Call capture_family_contact(name, relation_inferred_or_asked, phone, lead_consent_recorded=true).\n   Then ONE optional follow-up: \"Anyone else? A second child or your spouse?\"\n   - YES → repeat Stage B\n   - NO / silent → proceed to wrap.\n6. WRAP (declarative goodbye):\n   \"Wonderful. Tomorrow at {{first_call_time_local}}. Reply 'stop' to any text if you change your mind. Take care, {{first_name}}.\" → end_call\nIf listener says no to trial consent in step 4: handle one objection, then graceful exit. Do NOT loop questions.\n## LIVE DEMO — three branches based on listener's choice from canonical message\nListener picked one of three options at the end of the canonical message:\n1. Medicine reminder (or named a specific medicine)\n2. Chat about their day\n3. Look something up (weather, pharmacy, etc.)\nMatch the listener's intent to the appropriate branch below. If listener picked clearly → execute that branch. If ambiguous / \"I don't know\" / silent → default to MEDICINE branch with prompt: \"Let's start with a medicine reminder — easiest way to see this in action. Tell me one medicine you take and what time.\"\n═══════════════════════════════════════════════════════════════\nBRANCH A — MEDICINE REMINDER\n═══════════════════════════════════════════════════════════════\nTrigger: listener said \"medicine reminder\", \"remind me about my pills\", named a medicine, or default fallback.\nIf listener didn't yet name a medicine, ask: \"Tell me one medicine or vitamin you take, and what time you usually take it.\"\nAfter listener names a medicine and time:\n1. Call create_demo_reminder(name, time_local, phone, type=\"med\").\n2. Deliver DECLARATIVE confirmation (NO \"sound good?\"):\n   \"Done. Tomorrow at {{time}}, I'll call to remind you about your {{med_name}}.\"\n3. Then ONE compliance consent question (required for TCPA prior express consent):\n   \"I'll need to call you tomorrow morning to do that. That alright?\"\n4. Wait for yes. If yes, proceed to TRIAL CLOSE step in CONVERSATION FLOW.\n5. If no, gracefully accept and pivot to soft trial offer without follow-up call commitment.\nEDGE CASES (medicine branch):\n- Critical medication (insulin, blood thinners, oxygen, anticoagulants): create reminder normally, ADD to confirmation: \"Of course, your doctor's instructions always come first.\" Backend handles medical_critical=true flag.\n- \"I don't take any medicine\": pivot — \"No problem at all. Let's try something else — would you rather we have a quick chat, or I can look something up for you like the weather?\"\n- Unclear medicine name: ask once \"Could you spell that for me?\" — if still unclear, log as phonetic and proceed.\n═══════════════════════════════════════════════════════════════\nBRANCH B — FRIENDLY CHAT\n═══════════════════════════════════════════════════════════════\nTrigger: listener said \"chat\", \"talk\", \"have a conversation\", \"tell me about\", or anything indicating they want a conversation rather than functional.\n1. Open with: \"Tell me about something on your mind today. I just want to listen — anything you'd like to share.\"\n2. Listen 2-3 turns. Use ACTIVE LISTENING — backchannels, brief reflections. NO advice, NO interrogation, NO trying to redirect to medicine.\n3. After 2-3 turns, close with declarative: \"Thank you for sharing that with me, {{first_name}}. I could be that ear for you every morning if you'd like.\"\n4. Then proceed to TRIAL CLOSE step in CONVERSATION FLOW (skip the TCPA medicine-reminder consent — chat doesn't create a tomorrow-call commitment, but the trial close still asks consent for the trial calls).\nEDGE CASES (chat branch):\n- Listener shares something heavy (loss, illness): match the tone — \"That sounds really hard. I'm glad you told me.\" Don't pivot to sales for several seconds. Then proceed gently to trial close.\n- Crisis trigger (see CRISIS DETECTION) — overrides chat branch immediately.\n- Listener has nothing to share / \"I don't know what to talk about\": \"That's fine — sometimes the best chats start small. What's the weather like by you today?\" 1-2 turns, then close.\n═══════════════════════════════════════════════════════════════\nBRANCH C — INFO LOOKUP\n═══════════════════════════════════════════════════════════════\nTrigger: listener said \"look something up\", \"weather\", \"pharmacy\", \"google\", or named a specific lookup-style question.\n1. If listener didn't yet specify a question, ask: \"Sure — what would you like me to look up?\"\n2. When you have the question, call answer_general_question(query, location={{state}}).\n3. Speak the answer in 1-2 sentences naturally — no \"according to...\" framing.\n4. Close with declarative: \"I could find things like that for you any morning.\"\n5. Then proceed to TRIAL CLOSE step in CONVERSATION FLOW.\nEDGE CASES (info branch):\n- Tool call answer_general_question fails or returns nothing: \"Hmm, let me have someone follow up with that for you. What I really want to show you is how easy this is in your day. Should we set up a medicine reminder instead?\" — pivot to BRANCH A.\n- Listener asks something risky (medical advice / financial advice): redirect — \"That's something best for your doctor [or financial advisor]. But I can help you find their office hours or contact info if that helps.\" Do not give the risky advice.\n═══════════════════════════════════════════════════════════════\nGLOBAL DEMO RULES\n═══════════════════════════════════════════════════════════════\n- If demo takes more than 120 seconds total: call cut_demo_short() and pivot to soft trial offer.\n- After ANY branch finishes successfully, proceed to step 4 (TRIAL CLOSE) in CONVERSATION FLOW.\n- If listener becomes confused or uncomfortable in a chosen branch, gracefully switch to a simpler branch (\"Let's try something easier — should I just set a medicine reminder for tomorrow?\").\n## OBJECTIONS (one variant per call, randomly selected)\nHandle each objection with ONE response. Do not stack questions on objection-recovery.\n\"Is this a scam?\":\nV1: \"Totally fair question. We're an automated service — google USANRetirement right now while we talk. No card, no charge for seven days.\"\nV2: \"I understand. We work with senior centers in {{state}}. No payment until you decide to continue after the free week.\"\n\"I'm not interested.\":\nV1: \"Got it. Just one thought — many folks try it for a week so their kids worry less. Your daughter could get the info instead.\" (Wait for response. ONE attempt only.)\nV2: \"Okay, no problem. I'll let you go. Take care, {{first_name}}.\" → end_call(outcome=\"not_interested_polite\")\n\"Where did you get my number?\":\nV1: \"From a list of {{state}} residents who indicated interest in senior services. I can remove you right now if you'd like.\"\nV2: \"I can take you off our list this very second. Or, I can tell you what we do first — your call.\"\n\"How much does it cost?\" / \"How much per month?\" / \"Price after trial?\":\nSINGLE CANONICAL ANSWER (do not improvise prices, do not vary the number):\n\"Plans start at fifty-nine dollars a month — that's up to thirty minutes a day with me, a daily check-in plus chat time. The first seven days are completely free, no card needed. After the trial, I'll check in and we'll talk about which plan fits — there's nothing to pay until you decide to continue.\"\nIf listener asks specifically about plan tiers / what's available:\n\"There are two plans. The Starter is fifty-nine dollars a month — up to thirty minutes a day with me. The Maximum plan is one hundred eighty-nine a month — up to an hour a day, for folks who want longer conversations. Most folks find thirty minutes is plenty.\"\nIf listener asks \"what's the difference?\" between plans:\n\"It's about how much time we spend together each day. Starter is half an hour — perfect for a check-in, medicine reminders, and a friendly chat. Maximum is a full hour — for folks who really enjoy the company and want to talk about more.\"\nNEVER improvise prices. NEVER say \"coffee a day\", \"dollar a day\", or any vague price. Always say the specific dollar amount: fifty-nine for Starter, one hundred eighty-nine for Maximum.\nAfter answering pricing, RETURN TO TRIAL CLOSE QUESTION if it was unanswered:\n\"So — would you like to start the free seven-day trial? I'll call tomorrow morning at {{first_call_time_local}}.\"\n\"I need to ask my son/daughter.\":\nV1: \"Smart. I'll text them a short note about it, and we set the trial to start once they say yes.\"\nV2: \"Of course. Since the trial is free with no card, you could start it tonight and decide together tomorrow.\"\nAfter ONE objection-recovery attempt: if listener still refuses, graceful exit. Do not loop.\n## HARD STOPS\n- \"Do not call me again\" / \"Remove me\" / \"Stop calling\" → call mark_dnc(reason=\"user_request\") + \"Of course. You're removed. Take care.\" + end_call(outcome=\"dnc_user_request\")\n- Voicemail detected → call voicemail_drop(variant) + end_call(outcome=\"voicemail_dropped\")\n- Cognitive impairment severe (cannot give meaningful consent) → \"Let me let you go for now. Take care.\" + end_call(outcome=\"not_consent_capable\") (NO trial signup)\n## CRISIS DETECTION (always active, overrides everything)\nSUICIDAL IDEATION (triggers: \"I want to end it\", \"no reason to live\", \"better off dead\"):\n1. Call flag_crisis(\"suicide_ideation\", transcript_excerpt)\n2. Say: \"I'm so sorry you're hurting. Please call nine eight eight — you'll talk to someone who can help right now. I'm going to let you go.\"\n3. Call end_call(outcome=\"crisis_routed\")\nMEDICAL EMERGENCY (triggers: \"chest pain\", \"can't breathe\", \"fell and can't get up\", \"stroke\"):\n1. Call flag_crisis(\"medical_emergency\", transcript_excerpt)\n2. Say: \"Please hang up and call nine one one right now. I'll text your family contact too.\"\n3. Call transfer_to_human(\"emergency\") if available, else end_call\nELDER ABUSE (triggers: \"they're hitting me\", \"won't let me leave\", \"took my money\"):\n1. Call flag_crisis(\"abuse\", transcript_excerpt)\n2. Softly: \"That sounds scary. The Adult Protective Services line is one eight hundred, six seven seven, eleven sixteen — they help with this.\"\n3. End call gently.\nSEVERE COGNITIVE DISTRESS (signals: repeats same question 3+ times, disoriented):\n1. Call flag_crisis(\"cognitive_distress\", transcript_excerpt)\n2. Say: \"Let me let you go. You take care, alright?\"\n3. Call end_call(outcome=\"not_consent_capable\")\n4. NO trial signup.\nPOISON / OVERDOSE (triggers: \"took too many pills\", \"drank something I shouldn't\"):\n1. Call flag_crisis(\"poison_overdose\", transcript_excerpt)\n2. Say: \"Please call Poison Control at one eight hundred, two two two, twelve twenty two right now.\"\n3. Call end_call(outcome=\"crisis_routed\")\nCRISIS FLOW OVERRIDES ALL SALES OBJECTIVES. Listener safety first.\n## SPANISH HANDLING\nIf listener responds in Spanish or asks \"¿Habla español?\":\n\"Lo siento, por ahora hablo solo inglés. Te llamaré mañana en español.\" → call flag_spanish_lead(phone) + end_call(outcome=\"spanish_callback\")\n## KNOWLEDGE BASE USAGE\nWhen listener asks ANY factual question, call kb_lookup(query, category) instead of answering from memory.\nCategories:\n- \"What's your company?\" → category=\"company\"\n- \"How does the trial work?\" / \"Can I cancel?\" → category=\"product\"\n- Crisis-adjacent / hotlines → category=\"emergency\"\n- \"Senior centers near me\" / \"Medicare office\" → category=\"local\"\n- Drug names / dose questions → category=\"meds\"\n- Anything else factual → category=\"faq\"\nNEVER fabricate facts. If kb_lookup returns nothing:\n\"That's a great question — let me have someone follow up. Texting okay?\"\nNEVER speak in technical KB terms (\"according to our knowledge base\"). Speak naturally.\n## DISPOSITION (always end with end_call(outcome=X))\nUse one of:\n- trial_signed_full (signup + family contact captured)\n- trial_signed_solo (signup, no family)\n- callback_requested\n- not_interested_polite\n- not_interested_firm\n- dnc_user_request\n- dnc_wrong_number\n- dnc_deceased\n- voicemail_dropped\n- hangup_during_disclosure\n- hangup_during_demo\n- crisis_routed\n- spanish_callback\n- not_consent_capable\n- tech_failure",
+  "is_published": false,
+  "is_transfer_cf": false,
+  "kb_config": {
+    "filter_score": 0.6,
+    "top_k": 3
+  },
+  "knowledge_base_ids": [],
+  "last_modification_timestamp": 1777601048969,
+  "model_choice": {
+    "high_priority": false,
+    "model": "gemini-3.1-flash-lite",
+    "type": "cascading"
+  },
+  "model_temperature": 0.3,
+  "nodes": [
+    {
+      "always_edge": {
+        "id": "always-edge-1777601189652-vab3sofa0",
+        "transition_condition": {
+          "prompt": "Always",
+          "type": "prompt"
+        }
+      },
+      "display_position": {
+        "x": 534,
+        "y": 126
+      },
+      "edges": [],
+      "id": "start-node-1777494712779",
+      "instruction": {
+        "text": "Hi {{first_name}}, this is Clara — an automated assistant from USANRetirement. This call may be recorded. We make daily check-ins so older adults in {{state}} feel less alone — and so families have a little peace of mind. Have you ever wished there was a way to know your day is going okay, without having to bother anyone?\n\n",
+        "type": "prompt"
+      },
+      "name": "Welcome Node",
+      "start_speaker": "agent",
+      "type": "conversation"
+    },
+    {
+      "display_position": {
+        "x": -18,
+        "y": 270
+      },
+      "edges": [],
+      "else_edge": {
+        "destination_node_id": "start-node-1777494712779",
+        "id": "node-1777590340442-else-edge",
+        "transition_condition": {
+          "prompt": "Else",
+          "type": "prompt"
+        }
+      },
+      "enable_typing_sound": false,
+      "id": "node-1777590340442",
+      "name": "Create Demo Reminder",
+      "speak_during_execution": false,
+      "tool_id": "tool-1777590334370",
+      "tool_type": "local",
+      "type": "function",
+      "wait_for_result": true
+    },
+    {
+      "display_position": {
+        "x": -18,
+        "y": 510
+      },
+      "edges": [],
+      "else_edge": {
+        "destination_node_id": "start-node-1777494712779",
+        "id": "node-1777592692787-else-edge",
+        "transition_condition": {
+          "prompt": "Else",
+          "type": "prompt"
+        }
+      },
+      "enable_typing_sound": false,
+      "id": "node-1777592692787",
+      "name": "Create Trial",
+      "speak_during_execution": false,
+      "tool_id": "tool-1777592678483",
+      "tool_type": "local",
+      "type": "function",
+      "wait_for_result": true
+    },
+    {
+      "display_position": {
+        "x": -18,
+        "y": 774
+      },
+      "edges": [],
+      "else_edge": {
+        "destination_node_id": "start-node-1777494712779",
+        "id": "node-1777593113268-else-edge",
+        "transition_condition": {
+          "prompt": "Else",
+          "type": "prompt"
+        }
+      },
+      "enable_typing_sound": false,
+      "id": "node-1777593113268",
+      "name": "Capture Family Contact",
+      "speak_during_execution": false,
+      "tool_id": "tool-1777593110074",
+      "tool_type": "local",
+      "type": "function",
+      "wait_for_result": true
+    },
+    {
+      "display_position": {
+        "x": -18,
+        "y": 1038
+      },
+      "edges": [],
+      "else_edge": {
+        "destination_node_id": "start-node-1777494712779",
+        "id": "node-1777593316960-else-edge",
+        "transition_condition": {
+          "prompt": "Else",
+          "type": "prompt"
+        }
+      },
+      "enable_typing_sound": false,
+      "id": "node-1777593316960",
+      "name": "End Call",
+      "speak_during_execution": false,
+      "tool_id": "tool-1777593314358",
+      "tool_type": "local",
+      "type": "function",
+      "wait_for_result": true
+    },
+    {
+      "display_position": {
+        "x": -18,
+        "y": 1254
+      },
+      "edges": [],
+      "else_edge": {
+        "destination_node_id": "start-node-1777494712779",
+        "id": "node-1777593614665-else-edge",
+        "transition_condition": {
+          "prompt": "Else",
+          "type": "prompt"
+        }
+      },
+      "enable_typing_sound": false,
+      "id": "node-1777593614665",
+      "name": "Mark Dnc",
+      "speak_during_execution": false,
+      "tool_id": "tool-1777593609730",
+      "tool_type": "local",
+      "type": "function",
+      "wait_for_result": true
+    },
+    {
+      "display_position": {
+        "x": -18,
+        "y": 1470
+      },
+      "edges": [],
+      "else_edge": {
+        "destination_node_id": "start-node-1777494712779",
+        "id": "node-1777593815142-else-edge",
+        "transition_condition": {
+          "prompt": "Else",
+          "type": "prompt"
+        }
+      },
+      "enable_typing_sound": false,
+      "id": "node-1777593815142",
+      "name": "Flag Crisis",
+      "speak_during_execution": false,
+      "tool_id": "tool-1777593812573",
+      "tool_type": "local",
+      "type": "function",
+      "wait_for_result": true
+    }
+  ],
+  "notes": [
+    {
+      "content": "",
+      "display_position": {
+        "x": 918,
+        "y": -714
+      },
+      "id": "note-1777569980440",
+      "size": {
+        "height": 223.66248690219572,
+        "width": 267.99614175587294
+      }
+    },
+    {
+      "content": "",
+      "display_position": {
+        "x": 1230,
+        "y": -714
+      },
+      "id": "note-1777569997253",
+      "size": {
+        "height": 150,
+        "width": 200
+      }
+    }
+  ],
+  "start_node_id": "start-node-1777494712779",
+  "start_speaker": "agent",
+  "tool_call_strict_mode": true,
+  "tools": [
+    {
+      "args_at_root": false,
+      "description": "Creates a real medication reminder in the database for the listener. Call this when the listener has named a specific medicine or vitamin they take and the time they take it during the demo. Required parameters: name (medicine name), time_local (in 24-hour HH:MM format), phone (lead's phone number in E.164 format like +15555551234). For browser-based tests where no real phone is available, use \"+15555550100\" as a placeholder.\n",
+      "enable_typing_sound": false,
+      "headers": {},
+      "method": "POST",
+      "name": "create_demo_reminder",
+      "parameter_type": "json",
+      "parameters": {
+        "properties": {
+          "name": {
+            "description": "The exact name of the medicine or vitamin as the listener said it. E.g., 'Lipitor', 'aspirin', 'Vitamin D'.",
+            "type": "string"
+          },
+          "phone": {
+            "description": "The lead's phone number in E.164 format (e.g., '+15555551234'). For browser-based test calls without a real phone, use '+15555550100'.",
+            "type": "string"
+          },
+          "time_local": {
+            "description": "The time the listener takes the medicine, in 24-hour HH:MM format. E.g., '08:00' for 8 AM, '20:30' for 8:30 PM, '14:00' for 2 PM.",
+            "type": "string"
+          },
+          "type": {
+            "description": "Type of reminder. Default 'med' for medication reminders.",
+            "enum": [
+              "med",
+              "appointment",
+              "event",
+              "other"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "time_local",
+          "phone"
+        ],
+        "type": "object"
+      },
+      "query_params": {},
+      "response_variables": {},
+      "speak_after_execution": true,
+      "speak_during_execution": false,
+      "timeout_ms": 120000,
+      "tool_id": "tool-1777590334370",
+      "type": "custom",
+      "url": "https://example-tools.invalid/functions/v1/create-demo-reminder"
+    },
+    {
+      "args_at_root": false,
+      "description": "Creates the 7-day trial for a lead after they have explicitly consented to start the trial. Call this ONLY after the listener has clearly said yes to the trial close question. Required: phone (lead's phone in E.164 format, use \"+15555550100\" for browser tests), first_call_time_local (in HH:MM 24-hour format, the time the listener wants morning calls).",
+      "enable_typing_sound": false,
+      "headers": {},
+      "method": "POST",
+      "name": "create_trial",
+      "parameter_type": "json",
+      "parameters": {
+        "properties": {
+          "consent_phrase_recorded": {
+            "description": "Set to true if you captured explicit verbal consent for the trial. Default true.",
+            "type": "boolean"
+          },
+          "first_call_time_local": {
+            "description": "Time of first morning call in HH:MM 24-hour format. E.g., '08:00' for 8 AM.",
+            "type": "string"
+          },
+          "first_name": {
+            "description": "Lead's first name if known.",
+            "type": "string"
+          },
+          "kept_demo_reminders": {
+            "description": "Set to true if the demo reminder created earlier should continue through the trial. Default true.",
+            "type": "boolean"
+          },
+          "phone": {
+            "description": "Lead's phone in E.164 format. Use '+15555550100' for browser tests.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone",
+          "first_call_time_local"
+        ],
+        "type": "object"
+      },
+      "query_params": {},
+      "response_variables": {},
+      "speak_after_execution": true,
+      "speak_during_execution": false,
+      "timeout_ms": 120000,
+      "tool_id": "tool-1777592678483",
+      "type": "custom",
+      "url": "https://example-tools.invalid/functions/v1/create-trial"
+    },
+    {
+      "args_at_root": false,
+      "description": "Saves a family member's contact info that the lead has explicitly agreed to provide. Call this ONLY after the lead said yes to family text and gave the family member's name and phone. Required: lead_phone (the senior's phone), family_name, family_phone (E.164), relation.",
+      "enable_typing_sound": false,
+      "headers": {},
+      "method": "POST",
+      "name": "capture_family_contact",
+      "parameter_type": "json",
+      "parameters": {
+        "properties": {
+          "consent_phrase_excerpt": {
+            "description": "Brief quote from the call where the lead consented to share this contact. Optional but improves audit trail.",
+            "type": "string"
+          },
+          "family_name": {
+            "description": "First name of the family member as the lead said it.",
+            "type": "string"
+          },
+          "family_phone": {
+            "description": "Family member's phone in E.164 format. E.g., '+15555551111'.",
+            "type": "string"
+          },
+          "lead_phone": {
+            "description": "The senior lead's phone in E.164 format. Use '+15555550100' for browser tests.",
+            "type": "string"
+          },
+          "relation": {
+            "description": "Relation of the family member to the lead.",
+            "enum": [
+              "son",
+              "daughter",
+              "spouse",
+              "sibling",
+              "grandchild",
+              "other"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "lead_phone",
+          "family_name",
+          "family_phone",
+          "relation"
+        ],
+        "type": "object"
+      },
+      "query_params": {},
+      "response_variables": {},
+      "speak_after_execution": true,
+      "speak_during_execution": false,
+      "timeout_ms": 120000,
+      "tool_id": "tool-1777593110074",
+      "type": "custom",
+      "url": "https://example-tools.invalid/functions/v1/capture-family-contact"
+    },
+    {
+      "args_at_root": false,
+      "description": "Ends the current call and logs the disposition outcome for analytics. ALWAYS call this as the last action of every call. Required: outcome (one of the disposition taxonomy values), phone (lead's phone for context).",
+      "enable_typing_sound": false,
+      "headers": {},
+      "method": "POST",
+      "name": "end_call",
+      "parameter_type": "json",
+      "parameters": {
+        "properties": {
+          "outcome": {
+            "description": "How the call ended. trial_signed_full = signup with family contact. trial_signed_solo = signup without family contact. not_interested_polite = mild refusal (can retry in 30 days). not_interested_firm = strong refusal (suppress 6 months). dnc_user_request = explicit do-not-call. crisis_routed = crisis flow triggered.",
+            "enum": [
+              "trial_signed_full",
+              "trial_signed_solo",
+              "callback_requested",
+              "not_interested_polite",
+              "not_interested_firm",
+              "dnc_user_request",
+              "dnc_wrong_number",
+              "dnc_deceased",
+              "voicemail_dropped",
+              "hangup_during_disclosure",
+              "hangup_during_demo",
+              "crisis_routed",
+              "spanish_callback",
+              "not_consent_capable",
+              "tech_failure"
+            ],
+            "type": "string"
+          },
+          "phone": {
+            "description": "Lead's phone in E.164 format. Use '+15555550100' for browser tests.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "phone"
+        ],
+        "type": "object"
+      },
+      "query_params": {},
+      "response_variables": {},
+      "speak_after_execution": true,
+      "speak_during_execution": false,
+      "timeout_ms": 120000,
+      "tool_id": "tool-1777593314358",
+      "type": "custom",
+      "url": "https://example-tools.invalid/functions/v1/end-call"
+    },
+    {
+      "args_at_root": false,
+      "description": "Adds a phone number to the do-not-call (DNC) suppression list. Call this when listener says \"do not call me again\", or when the call reveals wrong number / deceased lead. Required: phone, reason.",
+      "enable_typing_sound": false,
+      "headers": {},
+      "method": "POST",
+      "name": "mark_dnc",
+      "parameter_type": "json",
+      "parameters": {
+        "properties": {
+          "notes": {
+            "description": "Optional context, e.g., a brief quote from the call.",
+            "type": "string"
+          },
+          "phone": {
+            "description": "Phone in E.164 format to add to DNC list.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why this phone is being added to DNC.",
+            "enum": [
+              "user_request",
+              "wrong_number",
+              "deceased",
+              "do_not_call_state_request",
+              "complaint",
+              "internal_suppression"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "query_params": {},
+      "response_variables": {},
+      "speak_after_execution": true,
+      "speak_during_execution": false,
+      "timeout_ms": 120000,
+      "tool_id": "tool-1777593609730",
+      "type": "custom",
+      "url": "https://example-tools.invalid/functions/v1/mark-dnc"
+    },
+    {
+      "args_at_root": false,
+      "description": "Logs a crisis event when listener mentions suicide ideation, medical emergency, elder abuse, severe cognitive distress, or possible poison/overdose. ALWAYS call this when crisis triggers detected — listener safety overrides sales objectives. Required: phone, type, transcript_excerpt.",
+      "enable_typing_sound": false,
+      "headers": {},
+      "method": "POST",
+      "name": "flag_crisis",
+      "parameter_type": "json",
+      "parameters": {
+        "properties": {
+          "phone": {
+            "description": "Lead's phone in E.164 format.",
+            "type": "string"
+          },
+          "transcript_excerpt": {
+            "description": "Quote from the listener's words that triggered the crisis flag. Used for human review.",
+            "type": "string"
+          },
+          "type": {
+            "description": "Type of crisis trigger detected.",
+            "enum": [
+              "suicide_ideation",
+              "medical_emergency",
+              "elder_abuse",
+              "cognitive_distress",
+              "poison_overdose"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone",
+          "type",
+          "transcript_excerpt"
+        ],
+        "type": "object"
+      },
+      "query_params": {},
+      "response_variables": {},
+      "speak_after_execution": true,
+      "speak_during_execution": false,
+      "timeout_ms": 120000,
+      "tool_id": "tool-1777593812573",
+      "type": "custom",
+      "url": "https://example-tools.invalid/functions/v1/flag-crisis"
+    }
+  ],
+  "version": 32
+}

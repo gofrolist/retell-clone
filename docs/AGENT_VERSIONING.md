@@ -9,8 +9,33 @@ every write path read the live `agents` / `retell_llms` rows, so saving in the
 dashboard took effect on the next call — and on any config refetch during a call
 already in progress.
 
-Chat agents and conversation flows are **not** versioned; they keep their plain
-`version` counter.
+Chat agents are **not** versioned; they keep their plain `version` counter.
+
+A flow-backed voice agent freezes its whole graph at publish: the version's
+`flow_snapshot` holds the conversation flow's columns, exactly as `llm_snapshot`
+holds the Retell LLM's. Editing a draft flow can never change what a published
+version serves. The `conversation_flows.version` counter still exists and still
+bumps on every PATCH, but it is bookkeeping — it is not what a call resolves
+against.
+
+That freeze only works because `PATCH /update-conversation-flow` opens a draft
+on every agent whose response engine is that flow, exactly as
+`PATCH /update-retell-llm` already does for agents sharing a Retell LLM (see
+`api/llms.py`). This is load-bearing rather than incidental: a flow-backed
+agent's `V0` is created already published, with a `flow_snapshot` taken at
+creation time, so without this an edit to the node graph would have nowhere to
+land — the published version would keep serving the starter graph forever, no
+matter how many nodes the flow's own row picked up. Two consequences fall out
+of that: editing a graph makes every owning agent unpublished until it is
+published again, and a flow shared by several agents drafts all of them at
+once.
+
+A served `conversation_flow`'s own `version` and `last_modification_timestamp`
+are **not** frozen by any of this: `resolve_with_flow`'s `_detach` path reports
+the flow row's live counter and timestamp (which a co-owner sharing the same
+flow can still bump), and its deleted-flow rebuild path (`_rebuild_flow`)
+reports the agent version's instead. The two fields are bookkeeping, not a
+cache key — consumers must not cache on a flow's `version`.
 
 ## Model
 
@@ -20,9 +45,9 @@ Chat agents and conversation flows are **not** versioned; they keep their plain
 - Versions number `0..N` monotonically. `agents.published_version` names the one
   live calls resolve against.
 - **Published versions are immutable.** Their config is frozen in
-  `agent_snapshot` + `llm_snapshot` (raw column values for everything except
-  identity/bookkeeping columns, so a column added later is captured without a
-  second allowlist to maintain).
+  `agent_snapshot` + `llm_snapshot` + `flow_snapshot` (raw column values for
+  everything except identity/bookkeeping columns, so a column added later is
+  captured without a second allowlist to maintain).
 - **At most one draft**, and it is always the highest version `N`. A draft stores
   no snapshot — *its content is the live `agents` + `retell_llms` rows*. That is
   what keeps autosave cheap: editing goes through the ordinary

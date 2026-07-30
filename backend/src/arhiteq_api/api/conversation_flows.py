@@ -6,6 +6,7 @@ from ..auth import require_api_key
 from ..db import get_session
 from ..models import ApiKey, ConversationFlow
 from ..schemas_extra import CreateConversationFlowRequest, conversation_flow_to_dict
+from ..services import versions
 from ._deps import apply_keyset_page, apply_patch, get_owned
 
 router = APIRouter(tags=["conversation-flows"])
@@ -18,6 +19,18 @@ _MUTABLE_FIELDS = {
     "model_choice",
     "tools",
     "default_dynamic_variables",
+    "components",
+    "notes",
+    "kb_config",
+    "knowledge_base_ids",
+    "mcps",
+    "begin_tag_display_position",
+    "model_temperature",
+    "tool_call_strict_mode",
+    "is_transfer_cf",
+    "is_transfer_llm",
+    "flex_mode",
+    "is_published",
 }
 
 
@@ -51,6 +64,18 @@ async def create_conversation_flow(
         model_choice=body.model_choice,
         tools=body.tools,
         default_dynamic_variables=body.default_dynamic_variables,
+        components=body.components,
+        notes=body.notes,
+        kb_config=body.kb_config,
+        knowledge_base_ids=body.knowledge_base_ids,
+        mcps=body.mcps,
+        begin_tag_display_position=body.begin_tag_display_position,
+        model_temperature=body.model_temperature,
+        tool_call_strict_mode=body.tool_call_strict_mode,
+        is_transfer_cf=body.is_transfer_cf,
+        is_transfer_llm=body.is_transfer_llm,
+        flex_mode=body.flex_mode,
+        is_published=body.is_published,
     )
     session.add(flow)
     await session.commit()
@@ -105,7 +130,22 @@ async def update_conversation_flow(
 ):
     flow = await _get_workspace_flow(session, api_key.workspace_id, conversation_flow_id)
     payload = await request.json()
+    # The flow is part of the agent's config, so an edit opens the owning
+    # agent's draft too — otherwise it would land on the live row with
+    # nothing in the version history to show for it, and resolve_with_flow
+    # would keep serving the frozen graph forever. Mirrors update_llm in
+    # api/llms.py. Seeding has to happen *before* the patch, or the agent's
+    # initial snapshot would capture the edit it is supposed to predate.
+    owners = (
+        await versions.agents_using_flow(session, api_key.workspace_id, conversation_flow_id)
+        if set(payload) & _MUTABLE_FIELDS
+        else []
+    )
+    for agent in owners:
+        await versions.ensure_seeded(session, agent)
     apply_patch(flow, payload, _MUTABLE_FIELDS, bump_version=True, touch=True)
+    for agent in owners:
+        await versions.touch(session, agent)
     await session.commit()
     return conversation_flow_to_dict(flow)
 

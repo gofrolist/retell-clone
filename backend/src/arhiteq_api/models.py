@@ -348,6 +348,9 @@ class AgentVersion(Base):
     # NULL while this version is a draft (its content is the live rows).
     agent_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     llm_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    # Flow-backed agents freeze their whole graph here, same contract as
+    # llm_snapshot: NULL while the version is a draft.
+    flow_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     created_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
     last_modification_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
     published_timestamp: Mapped[int | None] = mapped_column(BigInteger)
@@ -509,6 +512,22 @@ class ConversationFlow(Base):
     model_choice: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     tools: Mapped[list[Any] | None] = mapped_column(JSON)
     default_dynamic_variables: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    # Fields the live Retell API returns that predate this table's first cut.
+    # All nullable: a flow authored in our dashboard sets few of them.
+    components: Mapped[list[Any] | None] = mapped_column(JSON)
+    notes: Mapped[list[Any] | None] = mapped_column(JSON)
+    kb_config: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    knowledge_base_ids: Mapped[list[Any] | None] = mapped_column(JSON)
+    mcps: Mapped[list[Any] | None] = mapped_column(JSON)
+    begin_tag_display_position: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    model_temperature: Mapped[float | None] = mapped_column(Float)
+    tool_call_strict_mode: Mapped[bool | None] = mapped_column(Boolean)
+    # Retell's docs name this is_transfer_llm, the live API returns
+    # is_transfer_cf. Store both rather than guessing which one a caller sends.
+    is_transfer_cf: Mapped[bool | None] = mapped_column(Boolean)
+    is_transfer_llm: Mapped[bool | None] = mapped_column(Boolean)
+    flex_mode: Mapped[bool | None] = mapped_column(Boolean)
+    is_published: Mapped[bool | None] = mapped_column(Boolean)
     last_modification_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
     created_at_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms, index=True)
 
