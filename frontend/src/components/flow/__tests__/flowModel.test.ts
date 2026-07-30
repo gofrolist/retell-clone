@@ -1,6 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   EDGE_SHAPES,
   flowReducer,
@@ -11,17 +9,7 @@ import {
   type FlowNode,
 } from "../flowModel";
 import type { RawConversationFlow } from "@/lib/api";
-
-// The sanitized real-Retell captures are the shared schema authority for the
-// backend, the worker AND this editor. Reading them from here is deliberate:
-// if the editor drifts from what Retell actually sends, these fail. Task 3
-// lifts these three lines into `__tests__/fixtures.ts` when a second suite
-// needs them; leave them inline here for now.
-const FIXTURES = join(import.meta.dir, "../../../../../backend/tests/fixtures/retell_flows");
-const load = (name: string): RawConversationFlow =>
-  JSON.parse(readFileSync(join(FIXTURES, name), "utf8"));
-
-const NAMES = ["prior_auth_hotline.json", "clara_outbound.json", "identity_verify_transfer.json"];
+import { load, NAMES } from "./fixtures";
 
 describe("fidelity", () => {
   test.each(NAMES)("%s survives a no-op edit byte for byte", (name) => {
