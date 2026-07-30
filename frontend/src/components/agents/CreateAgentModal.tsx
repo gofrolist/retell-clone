@@ -1,5 +1,6 @@
 "use client";
 
+import { seedFlow } from "@/components/flow/flowModel";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
@@ -107,13 +108,28 @@ export default function CreateAgentModal({
     setCreating(true);
     setError(null);
     try {
-      const llm = await api.createLlm({
-        ...(tpl?.prompt ? { general_prompt: tpl.prompt } : {}),
-        ...(tpl?.beginMessage ? { begin_message: tpl.beginMessage } : {}),
-      });
+      // Two steps either way: the engine is created first, then the agent that
+      // points at it. A flow agent's seed graph already reaches an end node, so
+      // it is callable the moment it exists.
+      const response_engine =
+        type === "flow"
+          ? {
+              type: "conversation-flow" as const,
+              conversation_flow_id: (await api.createConversationFlow(seedFlow()))
+                .conversation_flow_id,
+            }
+          : {
+              type: "retell-llm" as const,
+              llm_id: (
+                await api.createLlm({
+                  ...(tpl?.prompt ? { general_prompt: tpl.prompt } : {}),
+                  ...(tpl?.beginMessage ? { begin_message: tpl.beginMessage } : {}),
+                })
+              ).llm_id,
+            };
       const agent = await api.createAgent({
         agent_name: template === "Build from scratch" ? "New Agent" : template,
-        response_engine: { type: "retell-llm", llm_id: llm.llm_id },
+        response_engine,
         voice_id: "cartesia-sonic-english",
       });
       onClose();
@@ -161,26 +177,16 @@ export default function CreateAgentModal({
         ).map((t) => (
           <button
             key={t.key}
-            onClick={() => t.key === "single" && setType(t.key)}
-            disabled={t.key === "flow"}
-            title={t.key === "flow" ? "Conversation flow agents coming soon" : undefined}
+            onClick={() => setType(t.key)}
             className={cn(
-              "rounded-xl border p-4 text-left transition-colors",
-              t.key === "flow"
-                ? "cursor-not-allowed border-line opacity-50"
-                : "cursor-pointer",
+              "cursor-pointer rounded-xl border p-4 text-left transition-colors",
               type === t.key
                 ? "border-ink ring-1 ring-ink"
                 : "border-line hover:border-line-strong",
             )}
           >
             <t.icon className="mb-2 size-5 text-sub" strokeWidth={1.8} />
-            <div className="text-[14px] font-semibold">
-              {t.title}
-              {t.key === "flow" && (
-                <span className="ml-2 text-[11px] font-medium text-faint">Coming soon</span>
-              )}
-            </div>
+            <div className="text-[14px] font-semibold">{t.title}</div>
             <div className="mt-0.5 text-[12.5px] text-sub">{t.desc}</div>
           </button>
         ))}

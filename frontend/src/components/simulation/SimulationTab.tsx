@@ -276,17 +276,6 @@ export default function SimulationTab({
     }
   };
 
-  if (!llm) {
-    return (
-      <div className="flex grow items-center justify-center rounded-xl border border-line bg-card">
-        <p className="max-w-sm text-center text-[13px] text-sub">
-          Simulation testing is available for prompt-based agents. This agent uses a conversation
-          flow.
-        </p>
-      </div>
-    );
-  }
-
   const openRun = openCaseId ? runs[openCaseId] : null;
   const allIds = cases.map((c) => c.test_case_definition_id);
   const selectedIds = allIds.filter((id) => selected.has(id));
@@ -302,185 +291,196 @@ export default function SimulationTab({
   return (
     <>
       <div className="flex min-w-[520px] flex-1 flex-col overflow-hidden rounded-xl border border-line bg-card">
-        <div className="flex items-center gap-2 border-b border-line px-4 py-3">
-          <h2 className="text-[15px] font-semibold">Test cases</h2>
-          {graded.length > 0 && (
-            <Badge tone={passed < graded.length ? "red" : "green"}>
-              {passed}/{graded.length} passing
-            </Badge>
-          )}
-          {running && (
-            <Badge tone="gray">
-              <Loader2 className="size-3 animate-spin" /> Running {batch?.total_count}
-            </Badge>
-          )}
-          <div className="ml-auto flex items-center gap-2">
-            <Button size="sm" onClick={() => void generate()} disabled={busy !== null}>
-              {busy === "generate" ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : (
-                <Sparkles className="size-3.5" />
-              )}
-              {busy === "generate" ? "Writing tests…" : "Generate tests"}
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => {
-                setEditing(null);
-                setModalOpen(true);
-              }}
-            >
-              <Plus className="size-3.5" /> New
-            </Button>
-            <Button
-              size="sm"
-              variant="primary"
-              onClick={() => void runCases(selectedIds.length ? selectedIds : allIds)}
-              disabled={busy !== null || cases.length === 0}
-            >
-              {busy === "run" ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : (
-                <Play className="size-3.5" />
-              )}
-              {selectedIds.length ? `Run ${selectedIds.length}` : "Run all"}
-            </Button>
+        {!llm ? (
+          <div className="flex grow items-center justify-center p-6">
+            <p className="max-w-sm text-center text-[13px] text-sub">
+              Saved test cases and batch runs are available for prompt-based agents. This agent
+              uses a conversation flow — place a test call from the panel on the right.
+            </p>
           </div>
-        </div>
-
-        {dirty && (
-          <p className="flex items-center gap-1.5 border-b border-line bg-amber-50 px-4 py-2 text-xs text-amber-700">
-            <TriangleAlert className="size-3.5 shrink-0" />
-            Runs use the last saved prompt — save the agent to test your current edits.
-          </p>
-        )}
-        {stalled && (
-          <p className="flex items-center gap-1.5 border-b border-line bg-amber-50 px-4 py-2 text-xs text-amber-700">
-            <TriangleAlert className="size-3.5 shrink-0" />
-            This run stopped reporting progress — reload the page, or run the cases again.
-          </p>
-        )}
-        {error && (
-          <p className="border-b border-line bg-red-50 px-4 py-2 text-xs text-bad">{error}</p>
-        )}
-
-        <div className="min-h-0 grow overflow-y-auto">
-          {loading ? (
-            <p className="py-16 text-center text-[13px] text-sub">Loading test cases…</p>
-          ) : cases.length === 0 ? (
-            <EmptyState
-              icon={FlaskConical}
-              title="No test cases yet"
-              description="Write a scenario by hand, or let the agent read its own prompt and functions and draft a suite for itself."
-              action={
-                <Button variant="primary" onClick={() => void generate()} disabled={busy !== null}>
+        ) : (
+          <>
+          <div className="flex items-center gap-2 border-b border-line px-4 py-3">
+            <h2 className="text-[15px] font-semibold">Test cases</h2>
+            {graded.length > 0 && (
+              <Badge tone={passed < graded.length ? "red" : "green"}>
+                {passed}/{graded.length} passing
+              </Badge>
+            )}
+            {running && (
+              <Badge tone="gray">
+                <Loader2 className="size-3 animate-spin" /> Running {batch?.total_count}
+              </Badge>
+            )}
+            <div className="ml-auto flex items-center gap-2">
+              <Button size="sm" onClick={() => void generate()} disabled={busy !== null}>
+                {busy === "generate" ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
                   <Sparkles className="size-3.5" />
-                  {busy === "generate" ? "Writing tests…" : "Generate tests"}
-                </Button>
-              }
-            />
-          ) : (
-            <table className="w-full text-[13px]">
-              <thead className="sticky top-0 bg-card text-xs text-sub">
-                <tr className="border-b border-line">
-                  <th className="w-9 py-2 pl-4">
-                    <input
-                      type="checkbox"
-                      aria-label="Select all test cases"
-                      checked={selectedIds.length === allIds.length && allIds.length > 0}
-                      onChange={(e) =>
-                        setSelected(e.target.checked ? new Set(allIds) : new Set())
-                      }
-                      className="cursor-pointer"
-                    />
-                  </th>
-                  <th className="py-2 text-left font-medium">Name</th>
-                  <th className="py-2 text-left font-medium">Scenario</th>
-                  <th className="py-2 text-left font-medium">Criteria</th>
-                  <th className="py-2 text-left font-medium">Last result</th>
-                  <th className="w-20 py-2 pr-4" />
-                </tr>
-              </thead>
-              <tbody>
-                {cases.map((c) => {
-                  const run = runs[c.test_case_definition_id];
-                  return (
-                    <tr
-                      key={c.test_case_definition_id}
-                      className="border-b border-line/70 hover:bg-app/60"
-                    >
-                      <td className="py-2.5 pl-4">
-                        <input
-                          type="checkbox"
-                          aria-label={`Select ${c.name}`}
-                          checked={selected.has(c.test_case_definition_id)}
-                          onChange={() => toggle(c.test_case_definition_id)}
-                          className="cursor-pointer"
-                        />
-                      </td>
-                      <td className="max-w-48 py-2.5 pr-3">
-                        <button
-                          onClick={() => run && setOpenCaseId(c.test_case_definition_id)}
-                          disabled={!run}
-                          className="truncate text-left font-medium enabled:hover:text-accent-deep enabled:cursor-pointer disabled:cursor-default"
-                          title={run ? "View the last run" : c.name}
-                        >
-                          {c.name}
-                        </button>
-                        {c.source === "generated" && (
-                          <Badge tone="purple" className="ml-1.5">
-                            auto
-                          </Badge>
-                        )}
-                      </td>
-                      <td className="max-w-72 truncate py-2.5 pr-3 text-sub" title={c.user_prompt}>
-                        {c.user_prompt}
-                      </td>
-                      <td className="py-2.5 pr-3 text-sub">{c.metrics.length}</td>
-                      <td className="py-2.5 pr-3">
-                        {run ? (
-                          <RunStatusBadge status={run.status} />
-                        ) : (
-                          <span className="text-faint">—</span>
-                        )}
-                      </td>
-                      <td className="py-2.5 pr-4">
-                        <div className="flex items-center justify-end gap-0.5">
-                          <button
-                            onClick={() => void runCases([c.test_case_definition_id])}
-                            disabled={busy !== null}
-                            aria-label={`Run ${c.name}`}
-                            title="Run this test"
-                            className="rounded-md p-1.5 text-sub hover:bg-app hover:text-ink disabled:opacity-50 cursor-pointer"
-                          >
-                            <Play className="size-3.5" />
-                          </button>
-                          <button
-                            onClick={() => {
-                              setEditing(c);
-                              setModalOpen(true);
-                            }}
-                            aria-label={`Edit ${c.name}`}
-                            className="rounded-md p-1.5 text-sub hover:bg-app hover:text-ink cursor-pointer"
-                          >
-                            <Pencil className="size-3.5" />
-                          </button>
-                          <button
-                            onClick={() => setConfirmDelete(c)}
-                            aria-label={`Delete ${c.name}`}
-                            className="rounded-md p-1.5 text-sub hover:bg-app hover:text-bad cursor-pointer"
-                          >
-                            <Trash2 className="size-3.5" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                )}
+                {busy === "generate" ? "Writing tests…" : "Generate tests"}
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => {
+                  setEditing(null);
+                  setModalOpen(true);
+                }}
+              >
+                <Plus className="size-3.5" /> New
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={() => void runCases(selectedIds.length ? selectedIds : allIds)}
+                disabled={busy !== null || cases.length === 0}
+              >
+                {busy === "run" ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Play className="size-3.5" />
+                )}
+                {selectedIds.length ? `Run ${selectedIds.length}` : "Run all"}
+              </Button>
+            </div>
+          </div>
+
+          {dirty && (
+            <p className="flex items-center gap-1.5 border-b border-line bg-amber-50 px-4 py-2 text-xs text-amber-700">
+              <TriangleAlert className="size-3.5 shrink-0" />
+              Runs use the last saved prompt — save the agent to test your current edits.
+            </p>
           )}
-        </div>
+          {stalled && (
+            <p className="flex items-center gap-1.5 border-b border-line bg-amber-50 px-4 py-2 text-xs text-amber-700">
+              <TriangleAlert className="size-3.5 shrink-0" />
+              This run stopped reporting progress — reload the page, or run the cases again.
+            </p>
+          )}
+          {error && (
+            <p className="border-b border-line bg-red-50 px-4 py-2 text-xs text-bad">{error}</p>
+          )}
+
+          <div className="min-h-0 grow overflow-y-auto">
+            {loading ? (
+              <p className="py-16 text-center text-[13px] text-sub">Loading test cases…</p>
+            ) : cases.length === 0 ? (
+              <EmptyState
+                icon={FlaskConical}
+                title="No test cases yet"
+                description="Write a scenario by hand, or let the agent read its own prompt and functions and draft a suite for itself."
+                action={
+                  <Button variant="primary" onClick={() => void generate()} disabled={busy !== null}>
+                    <Sparkles className="size-3.5" />
+                    {busy === "generate" ? "Writing tests…" : "Generate tests"}
+                  </Button>
+                }
+              />
+            ) : (
+              <table className="w-full text-[13px]">
+                <thead className="sticky top-0 bg-card text-xs text-sub">
+                  <tr className="border-b border-line">
+                    <th className="w-9 py-2 pl-4">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all test cases"
+                        checked={selectedIds.length === allIds.length && allIds.length > 0}
+                        onChange={(e) =>
+                          setSelected(e.target.checked ? new Set(allIds) : new Set())
+                        }
+                        className="cursor-pointer"
+                      />
+                    </th>
+                    <th className="py-2 text-left font-medium">Name</th>
+                    <th className="py-2 text-left font-medium">Scenario</th>
+                    <th className="py-2 text-left font-medium">Criteria</th>
+                    <th className="py-2 text-left font-medium">Last result</th>
+                    <th className="w-20 py-2 pr-4" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {cases.map((c) => {
+                    const run = runs[c.test_case_definition_id];
+                    return (
+                      <tr
+                        key={c.test_case_definition_id}
+                        className="border-b border-line/70 hover:bg-app/60"
+                      >
+                        <td className="py-2.5 pl-4">
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${c.name}`}
+                            checked={selected.has(c.test_case_definition_id)}
+                            onChange={() => toggle(c.test_case_definition_id)}
+                            className="cursor-pointer"
+                          />
+                        </td>
+                        <td className="max-w-48 py-2.5 pr-3">
+                          <button
+                            onClick={() => run && setOpenCaseId(c.test_case_definition_id)}
+                            disabled={!run}
+                            className="truncate text-left font-medium enabled:hover:text-accent-deep enabled:cursor-pointer disabled:cursor-default"
+                            title={run ? "View the last run" : c.name}
+                          >
+                            {c.name}
+                          </button>
+                          {c.source === "generated" && (
+                            <Badge tone="purple" className="ml-1.5">
+                              auto
+                            </Badge>
+                          )}
+                        </td>
+                        <td className="max-w-72 truncate py-2.5 pr-3 text-sub" title={c.user_prompt}>
+                          {c.user_prompt}
+                        </td>
+                        <td className="py-2.5 pr-3 text-sub">{c.metrics.length}</td>
+                        <td className="py-2.5 pr-3">
+                          {run ? (
+                            <RunStatusBadge status={run.status} />
+                          ) : (
+                            <span className="text-faint">—</span>
+                          )}
+                        </td>
+                        <td className="py-2.5 pr-4">
+                          <div className="flex items-center justify-end gap-0.5">
+                            <button
+                              onClick={() => void runCases([c.test_case_definition_id])}
+                              disabled={busy !== null}
+                              aria-label={`Run ${c.name}`}
+                              title="Run this test"
+                              className="rounded-md p-1.5 text-sub hover:bg-app hover:text-ink disabled:opacity-50 cursor-pointer"
+                            >
+                              <Play className="size-3.5" />
+                            </button>
+                            <button
+                              onClick={() => {
+                                setEditing(c);
+                                setModalOpen(true);
+                              }}
+                              aria-label={`Edit ${c.name}`}
+                              className="rounded-md p-1.5 text-sub hover:bg-app hover:text-ink cursor-pointer"
+                            >
+                              <Pencil className="size-3.5" />
+                            </button>
+                            <button
+                              onClick={() => setConfirmDelete(c)}
+                              aria-label={`Delete ${c.name}`}
+                              className="rounded-md p-1.5 text-sub hover:bg-app hover:text-bad cursor-pointer"
+                            >
+                              <Trash2 className="size-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+          </>
+        )}
       </div>
 
       {/* Manual testing lives beside the automated suite, in the same slot the
