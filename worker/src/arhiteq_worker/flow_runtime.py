@@ -181,6 +181,13 @@ class FlowRuntime:
         # speaks, so the start node's verbatim line waits for that turn
         # instead of being dropped.
         self._defer_speech = False
+        # True for the whole of `start()` -- including any skip_response_edge
+        # cascade it walks -- and false at every other entry. It is the one
+        # thing that tells "this node is opening the call" apart from "this
+        # node was transitioned into", which decides whether a ``prompt``
+        # instruction needs a model turn requested for it explicitly. See
+        # `_enter_conversation`.
+        self._opening = False
         # A list of thunks, not a single slot or a list of strings: an
         # auto-follow chain (skip_response_edge cascades) can park more than
         # one thing to do while `_defer_speech` is still true (it is only
@@ -228,6 +235,7 @@ class FlowRuntime:
         self._auto_transitions = 0
         node = self._graph.start
         self._defer_speech = self._config.start_speaker == "user"
+        self._opening = True
         logger.info(
             "flow call=%s starting at node %s (%s)",
             self._call_id,
@@ -238,6 +246,7 @@ class FlowRuntime:
             await self._enter(node)
         finally:
             self._defer_speech = False
+            self._opening = False
 
     async def advance(self, edge: dict[str, Any], *, from_node_id: str | None = None) -> None:
         """Follow *edge* to its destination and enter it.
@@ -536,6 +545,14 @@ class FlowRuntime:
         (`on_user_turn`) — *unless* the node carries a ``skip_response_edge``,
         in which case there is no next user turn to wait for.
 
+        Delivering that line means `_speak_static` for a ``static_text``
+        instruction. A ``prompt`` instruction needs a model turn instead, and
+        this method asks for one in exactly two places: before an auto-follow
+        (below — there is no user turn coming to trigger one), and when the
+        node is *opening the call* (`_opening`) with the agent as the opener.
+        Any other entry already has livekit's ordinary turn-taking about to
+        produce that turn, so asking again would talk over it.
+
         ``skip_response_edge`` means skip WAITING FOR the caller's response,
         not skip speaking: the node installs and speaks exactly like any
         other node — a ``static_text`` line via `_speak_static`, or, when
@@ -563,10 +580,31 @@ class FlowRuntime:
         edges = await self._install(node)
         authored_edges = [edge for edge in edges if not is_global_edge(edge)]
         spoken = await self._speak_static(node)
+        # Nothing was said and the node's line is a ``prompt``: voicing it
+        # takes a model turn, which `_speak_static` deliberately does not do.
+        needs_turn = not spoken and _is_prompt_instruction(node)
         skip = node.get("skip_response_edge")
         if not (isinstance(skip, dict) and skip.get("destination_node_id") and not authored_edges):
+            if needs_turn and self._opening and not self._defer_speech:
+                # Opening the call on a ``prompt`` instruction: `main.py`
+                # builds a flow-backed agent with ``start_speaker="user"`` so
+                # `ArhiteqAgent.on_enter` stays quiet and the flow owns the
+                # opening line -- so if we don't ask for the turn here,
+                # NOTHING does, and the call opens in silence until the caller
+                # speaks. Two of the three real fixtures are exactly this shape
+                # (``clara_outbound.json``, ``identity_verify_transfer.json``),
+                # and on an outbound call silence means the callee hangs up.
+                #
+                # Only at the opening, and only when the agent is the one
+                # opening: a node transitioned into mid-call already gets a
+                # model turn from livekit's ordinary turn-taking (after the
+                # tool call, or after the caller's turn), and asking for a
+                # second one here would talk over it. With
+                # ``start_speaker: "user"`` the caller opens by definition, and
+                # their first turn drives that same natural reply.
+                await self._request_model_turn(None)
             return
-        if not spoken and _is_prompt_instruction(node):
+        if needs_turn:
             # The line has to be phrased and nothing else will trigger a
             # model turn before the auto-follow below — ask for one now,
             # from the instructions `_install` just set.

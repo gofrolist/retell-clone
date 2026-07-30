@@ -13,6 +13,8 @@ import json
 import logging
 from typing import Any
 
+import pytest
+
 from arhiteq_worker.config import CallConfig, ConversationFlowConfig
 from arhiteq_worker.flow import FlowGraph
 from arhiteq_worker.flow_runtime import (
@@ -682,8 +684,14 @@ def test_a_skip_response_edge_speaks_then_transitions_without_waiting() -> None:
     # with no user turn (no on_user_turn()/advance() call) in between.
     assert [node_id for node_id, _edges in fakes.build_calls] == ["n1", "n2"]
     assert len(fakes.instructions) == 2
-    # A static_text line is said verbatim; no model turn is requested for it.
-    assert fakes.generate_reply_calls == []
+    # n1's static_text line was said verbatim and asked for no model turn of
+    # its own. The single recorded turn is n2's: the cascade lands there
+    # while `start()` is still opening the call (`_opening`), and n2's line is
+    # a ``prompt``, so without it the agent would state "There is no case on
+    # file." and then fall silent instead of asking what else they need. See
+    # ``test_the_opening_turn_survives_a_skip_chain_to_a_terminal_prompt_node``.
+    assert fakes.said == ["There is no case on file."]
+    assert fakes.generate_reply_calls == [None]
 
 
 def test_a_skip_response_edge_with_a_prompt_instruction_requests_a_model_turn_before_advancing() -> (
@@ -1424,6 +1432,260 @@ def test_start_speaker_user_defers_a_prompt_instructions_model_turn_too() -> Non
     # static line (n2) parked right behind it during the same skip cascade.
     assert fakes.generate_reply_calls == [None]
     assert fakes.said == ["Anything else?"]
+
+
+def test_an_agent_opened_start_node_with_a_prompt_instruction_requests_a_model_turn() -> None:
+    """Regression: a `prompt` start node used to open the call in silence.
+
+    `_speak_static` only voices a ``static_text`` instruction; a ``prompt``
+    one needs a model turn. That turn used to be requested ONLY on the
+    ``skip_response_edge`` path, so a plain start node carrying a ``prompt``
+    instruction said nothing at all — and `main.py` builds a flow-backed
+    agent with ``start_speaker="user"`` precisely so `ArhiteqAgent.on_enter`
+    leaves the opening line to the flow, meaning nothing else covered it
+    either. On an outbound call that is dead air until the callee hangs up.
+    """
+    flow = {
+        "start_node_id": "n1",
+        "start_speaker": "agent",
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "conversation",
+                "instruction": {"type": "prompt", "text": "Greet the caller warmly."},
+                "edges": [],
+            }
+        ],
+    }
+    fakes = Fakes()
+    runtime = _runtime(flow, fakes)
+    _run(runtime.start())
+
+    # Instructions are installed, so the turn is asked for from them (None).
+    assert fakes.instructions and "Greet the caller warmly." in fakes.instructions[0]
+    assert fakes.generate_reply_calls == [None]
+    assert fakes.said == []  # nothing verbatim to say: the model phrases it
+    assert runtime.current_node_id == "n1"
+
+
+def test_a_static_text_start_node_still_speaks_without_a_model_turn() -> None:
+    """The other half of the pair: a verbatim line must not ALSO ask for a turn."""
+    flow = {
+        "start_node_id": "n1",
+        "start_speaker": "agent",
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "Thanks for calling."},
+                "edges": [],
+            }
+        ],
+    }
+    fakes = Fakes()
+    runtime = _runtime(flow, fakes)
+    _run(runtime.start())
+
+    assert fakes.said == ["Thanks for calling."]
+    assert fakes.generate_reply_calls == []
+
+
+def test_start_speaker_user_does_not_request_an_opening_model_turn() -> None:
+    """The opening turn is for the agent opening — the caller opening is not it.
+
+    With ``start_speaker: "user"`` the caller opens by definition, and their
+    first turn drives livekit's ordinary reply from the instructions
+    `_install` set. Requesting (or parking) an opening turn here as well
+    would have the agent answer twice.
+    """
+    flow = {
+        "start_node_id": "n1",
+        "start_speaker": "user",
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "conversation",
+                "instruction": {"type": "prompt", "text": "Greet the caller warmly."},
+                "edges": [],
+            }
+        ],
+    }
+    fakes = Fakes()
+    runtime = _runtime(flow, fakes)
+    _run(runtime.start())
+    assert fakes.generate_reply_calls == []
+    assert fakes.said == []
+
+    # ...and the first user turn must not release a parked one either: there
+    # is nothing parked, because nothing was ever deferred.
+    _run(runtime.on_user_turn())
+    assert fakes.generate_reply_calls == []
+    assert fakes.said == []
+
+
+def test_a_prompt_instruction_node_entered_mid_call_does_not_request_a_model_turn() -> None:
+    """Only the OPENING gets an explicit turn; a transition already has one coming.
+
+    A node entered by `advance` was reached from a tool call or a user turn,
+    and livekit produces the reply for that turn itself. Asking for a second
+    one here would talk over it — which is why the opening turn is gated on
+    `_opening` rather than "any prompt instruction with nothing said".
+    """
+    flow = {
+        "start_node_id": "n1",
+        "start_speaker": "agent",
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "Thanks for calling."},
+                "edges": [
+                    {
+                        "id": "e1",
+                        "transition_condition": _prompt_condition("Caller is ready"),
+                        "destination_node_id": "n2",
+                    }
+                ],
+            },
+            {
+                "id": "n2",
+                "type": "conversation",
+                "instruction": {"type": "prompt", "text": "Ask for their date of birth."},
+                "edges": [],
+            },
+        ],
+    }
+    fakes = Fakes()
+    runtime = _runtime(flow, fakes)
+    _run(runtime.start())
+    assert fakes.generate_reply_calls == []
+
+    _run(runtime.advance(fakes.offered_edges[0]))
+    assert runtime.current_node_id == "n2"
+    assert fakes.generate_reply_calls == []  # livekit's own post-tool turn covers it
+
+
+def test_the_opening_turn_survives_a_skip_chain_to_a_terminal_prompt_node() -> None:
+    """`_opening` spans the whole of `start()`, cascade included.
+
+    A start node that skips straight into a ``prompt`` node is still opening
+    the call when it lands there: that node is the one that actually greets
+    the caller, and nothing downstream of `start()` will trigger its turn.
+    """
+    flow = {
+        "start_node_id": "n1",
+        "start_speaker": "agent",
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "One moment."},
+                "edges": [],
+                "skip_response_edge": {
+                    "id": "skip-1",
+                    "transition_condition": _prompt_condition("Always"),
+                    "destination_node_id": "n2",
+                },
+            },
+            {
+                "id": "n2",
+                "type": "conversation",
+                "instruction": {"type": "prompt", "text": "Greet the caller warmly."},
+                "edges": [],
+            },
+        ],
+    }
+    fakes = Fakes()
+    runtime = _runtime(flow, fakes)
+    _run(runtime.start())
+
+    assert runtime.current_node_id == "n2"
+    assert fakes.said == ["One moment."]
+    assert fakes.generate_reply_calls == [None]
+
+
+# ---------------------------------------------------------------------------
+# The real Retell fixtures actually open the call
+# ---------------------------------------------------------------------------
+
+
+def _production_runtime(flow_dict: dict[str, Any], fakes: Fakes) -> FlowRuntime:
+    """`_runtime`, but with `main.py`'s start-node start_speaker override applied.
+
+    `_FlowWiring.attach` hands `FlowRuntime` a config whose ``start_speaker``
+    has already been resolved through `start_speaker_for` (the start node may
+    override the flow's own). The fixture tests below assert on who opens the
+    call, so they have to see the same value production does — not the raw
+    flow field `_runtime` passes through.
+    """
+    from dataclasses import replace
+
+    from arhiteq_worker.flow import start_speaker_for
+
+    config = ConversationFlowConfig.from_dict(flow_dict)
+    graph = FlowGraph.from_config(config)
+    config = replace(config, start_speaker=start_speaker_for(graph.start, config.start_speaker))
+    return FlowRuntime(
+        graph,
+        config,
+        {},
+        set_instructions=fakes.set_instructions,
+        set_tools=fakes.set_tools,
+        say=fakes.say,
+        classify=fakes.classify,
+        build_node_tools=fakes.build_node_tools,
+        end_call=fakes.end_call,
+        transfer_call=fakes.transfer_call,
+        generate_reply=fakes.generate_reply,
+        call_id="call_abc",
+    )
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    ["prior_auth_hotline.json", "clara_outbound.json", "identity_verify_transfer.json"],
+)
+def test_every_real_fixture_opens_the_call_with_something(fixture_name: str) -> None:
+    """No real flow may enter its start node and then just sit there silently.
+
+    This is the check that would have caught the ``prompt``-instruction
+    silence: `prior_auth_hotline.json` opens on a ``static_text`` node (so it
+    always worked and was the one the manual live call exercised), while
+    `clara_outbound.json` and `identity_verify_transfer.json` open on
+    ``prompt`` nodes and said nothing at all. All three carry
+    ``start_speaker: "agent"``, so in every case the agent is the one meant
+    to open.
+    """
+    from conftest import load_retell_flow_fixture
+
+    fakes = Fakes()
+    runtime = _production_runtime(load_retell_flow_fixture(fixture_name), fakes)
+    _run(runtime.start())
+
+    assert fakes.instructions, "the start node installed no instructions"
+    assert fakes.said or fakes.generate_reply_calls, (
+        f"{fixture_name} enters its start node without speaking or requesting "
+        "a model turn: the call opens in silence"
+    )
+    assert not runtime.ended
+
+
+def test_the_outbound_fixture_opens_with_a_model_turn_not_a_verbatim_line() -> None:
+    """`clara_outbound.json` — the regression's worst case, pinned specifically.
+
+    Its start node is a ``prompt`` instruction, so the opening line is
+    phrased by the model rather than spoken verbatim. An outbound call that
+    opens in silence is one the callee hangs up on.
+    """
+    from conftest import load_retell_flow_fixture
+
+    fakes = Fakes()
+    runtime = _production_runtime(load_retell_flow_fixture("clara_outbound.json"), fakes)
+    _run(runtime.start())
+
+    assert fakes.said == []
+    assert fakes.generate_reply_calls == [None]
+    assert "Clara" in fakes.instructions[0]
 
 
 def test_on_user_turn_before_start_is_a_no_op() -> None:
