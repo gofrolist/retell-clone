@@ -574,3 +574,36 @@ export function flowReducer(flow: RawConversationFlow, action: FlowAction): RawC
       return assertNever(action);
   }
 }
+
+// ---------------------------------------------------------------------------
+// diffFlowPatch — the autosave PATCH payload, minus whatever didn't change.
+// ---------------------------------------------------------------------------
+
+/**
+ * The subset of *next*'s top-level keys whose value actually differs from
+ * *current*'s, for building an autosave PATCH payload that sends only what
+ * changed rather than the whole flow on every keystroke.
+ *
+ * Compares by **value** (`JSON.stringify`), never by reference (`Object.is`):
+ * `flowReducer` `structuredClone`s the entire flow on every action, so every
+ * non-primitive top-level field (`nodes`, `components`, `kb_config`, …) gets a
+ * fresh reference whether or not its content changed. An `Object.is` diff
+ * therefore "wins" on nearly every key, in effect sending a near-full rewrite
+ * on every 800ms autosave tick — do not "optimise" this back to reference
+ * comparison; it cannot work while the reducer deep-clones. A flow is small,
+ * so stringifying both sides here (at most once per debounce) is cheap.
+ */
+export function diffFlowPatch(
+  current: RawConversationFlow,
+  next: RawConversationFlow,
+): Partial<RawConversationFlow> {
+  const patch: Partial<RawConversationFlow> = {};
+  for (const key of Object.keys(next)) {
+    const before = (current as Record<string, unknown>)[key];
+    const after = (next as Record<string, unknown>)[key];
+    if (JSON.stringify(after) !== JSON.stringify(before)) {
+      (patch as Record<string, unknown>)[key] = after;
+    }
+  }
+  return patch;
+}

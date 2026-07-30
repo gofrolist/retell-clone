@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   addableEdgeShapes,
+  diffFlowPatch,
   EDGE_SHAPES,
   emptyCondition,
   EQUATION_OPERATORS,
@@ -431,6 +432,66 @@ describe("stampToolIds", () => {
   test("a fully-stamped list round-trips unchanged (values, not just presence)", () => {
     const tools = [{ name: "a", tool_id: "tool-1" }, { name: "b", tool_id: "tool-2" }];
     expect(stampToolIds(tools)).toEqual(tools);
+  });
+});
+
+describe("diffFlowPatch", () => {
+  // `dispatchFlow` (frontend/src/app/agents/[id]/page.tsx) runs the reducer
+  // then diffs current vs. next to build the autosave PATCH body. The reducer
+  // `structuredClone`s the whole flow every time, so an `Object.is` diff would
+  // see a fresh reference on every non-primitive key regardless of whether it
+  // changed -- these pin the value-based diff against a real fixture.
+
+  test("a single-field edit against a real fixture yields a one-key patch", () => {
+    const flow = load("clara_outbound.json");
+    const next = flowReducer(flow, {
+      type: "patchFlow",
+      patch: { global_prompt: "changed" },
+    });
+    expect(Object.keys(diffFlowPatch(flow, next))).toEqual(["global_prompt"]);
+  });
+
+  test("a genuine nodes edit still yields nodes", () => {
+    const flow = load("clara_outbound.json");
+    const next = flowReducer(flow, {
+      type: "addNode",
+      nodeType: "end",
+      position: { x: 0, y: 0 },
+    });
+    const patch = diffFlowPatch(flow, next);
+    expect(Object.keys(patch)).toEqual(["nodes"]);
+  });
+
+  test("a reducer pass whose net effect is a no-op yields an empty patch", () => {
+    // Renaming a node to X and back is two real reducer passes -- each one
+    // `structuredClone`s the flow, so `nodes` ends up a different reference
+    // from the original even though its content is identical again. A
+    // reference-based diff would (wrongly) include `nodes` here.
+    const flow = load("clara_outbound.json");
+    const nodeId = (flow.nodes as FlowNode[])[0].id;
+    const renamed = flowReducer(flow, {
+      type: "patchNode",
+      nodeId,
+      patch: { name: "___temp___" },
+    });
+    const restored = flowReducer(renamed, {
+      type: "patchNode",
+      nodeId,
+      patch: { name: (flow.nodes as FlowNode[])[0].name },
+    });
+    expect(diffFlowPatch(flow, restored)).toEqual({});
+  });
+
+  test("reassigning a field to its own existing value is not reported as changed", () => {
+    const flow = load("prior_auth_hotline.json");
+    const next = flowReducer(flow, {
+      type: "patchFlow",
+      patch: { global_prompt: flow.global_prompt },
+    });
+    // `global_prompt` was reassigned to its own value: still expected to
+    // report unchanged, since the diff is by value, not by whether an
+    // assignment happened.
+    expect(diffFlowPatch(flow, next)).toEqual({});
   });
 });
 

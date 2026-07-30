@@ -21,7 +21,12 @@ import WebhookSection from "@/components/editor/sections/WebhookSection";
 import TestPanel from "@/components/editor/TestPanel";
 import SimulationTab from "@/components/simulation/SimulationTab";
 import FlowEditor from "@/components/flow/FlowEditor";
-import { flowReducer, stampToolIds, type FlowAction } from "@/components/flow/flowModel";
+import {
+  diffFlowPatch,
+  flowReducer,
+  stampToolIds,
+  type FlowAction,
+} from "@/components/flow/flowModel";
 import Accordion from "@/components/ui/Accordion";
 import { Field, TextInput } from "@/components/ui/Field";
 import {
@@ -264,18 +269,9 @@ export default function AgentEditorPage({
         const next = flowReducer(current, action);
         // Send only what actually changed: PATCHing all nineteen mutable
         // fields on every keystroke would make each edit look like a full
-        // rewrite in the version history.
-        const patch: Partial<RawConversationFlow> = {};
-        for (const key of Object.keys(next)) {
-          if (
-            !Object.is(
-              (next as Record<string, unknown>)[key],
-              (current as Record<string, unknown>)[key],
-            )
-          ) {
-            (patch as Record<string, unknown>)[key] = (next as Record<string, unknown>)[key];
-          }
-        }
+        // rewrite in the version history. See `diffFlowPatch`'s doc for why
+        // this has to be a value diff, not a reference one.
+        const patch = diffFlowPatch(current, next);
         return { ...prev, ...patch };
       });
     },
