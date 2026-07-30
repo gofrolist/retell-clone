@@ -787,9 +787,9 @@ const instructionText = (node: FlowNode): string => {
 
 export const NODE_META: Record<string, NodeMeta> = {
   conversation: { label: "Conversation", icon: MessagesSquare,
-    accent: "bg-accent-soft text-accent-deep", subtitle: instructionText },
+    accent: "bg-blue-50 text-accent-deep", subtitle: instructionText },
   subagent: { label: "Subagent", icon: Bot,
-    accent: "bg-accent-soft text-accent-deep", subtitle: instructionText },
+    accent: "bg-blue-50 text-accent-deep", subtitle: instructionText },
   branch: { label: "Branch", icon: GitBranch,
     accent: "bg-amber-50 text-amber-900", subtitle: () => "Routes without speaking" },
   function: { label: "Function", icon: ArrowRightLeft,
@@ -818,7 +818,7 @@ export const UNKNOWN_META: NodeMeta = {
 };
 ```
 
-Check every icon name against `lucide-react` before committing — a wrong name is a build failure. Confirm the `accent-soft` / `accent-deep` colour tokens exist in the Tailwind config; if not, use the nearest token the codebase already uses.
+Check every icon name against `lucide-react` before committing — a wrong name is a build failure. On colours: `--color-accent-deep` is a real token in `globals.css`, but there is **no** `accent-soft` — the codebase's "soft accent" idiom is `bg-blue-50 text-accent-deep` (see `components/ui/Badge.tsx`), which is what the snippet above uses. Verify any other token against `globals.css` before reaching for it.
 
 - [ ] **Step 2: `NodeShell.tsx`**
 
