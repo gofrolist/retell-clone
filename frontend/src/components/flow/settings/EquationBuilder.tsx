@@ -105,6 +105,13 @@ export default function EquationBuilder({
           : [{ value: operator, label: operator }, ...OPERATOR_OPTIONS];
 
         return (
+          // An index key, deliberately: a Retell equation is `{left, operator,
+          // right}` with no id of its own, and minting a client-side one would
+          // put a key in the JSON that Retell never sent — the exact thing the
+          // fidelity rule forbids. Safe here because every row is a fully
+          // controlled, stateless leaf bound straight to the equation, so
+          // removing a middle row cannot leak a sibling's value; the only cost
+          // is that focus may land on the neighbouring row after a delete.
           <div key={index} className="space-y-1.5 rounded-lg border border-line p-2.5">
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-medium tracking-wide text-faint uppercase">
@@ -127,6 +134,14 @@ export default function EquationBuilder({
             />
             <Select
               value={operator}
+              // Switching to `exists` hides the right operand but deliberately
+              // does NOT clear it. `exists` is unary — the worker's
+              // `_evaluate_single_equation` never reads `right` for it — so a
+              // leftover value is inert, and dropping it would lose what the
+              // author typed if they switch back. Preserving data the runtime
+              // ignores is the same call the fidelity rule makes everywhere
+              // else: never delete a key just because this editor has no use
+              // for it right now.
               onChange={(v) => patchEquation(index, { operator: v })}
               options={operatorOptions}
             />
