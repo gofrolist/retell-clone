@@ -71,7 +71,8 @@ def iter_node_edges(node: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]
       ``function`` nodes).
     - ``edge`` — the single failure edge (seen on ``transfer_call``).
     - ``always_edge`` — unconditional next.
-    - ``skip_response_edge`` — transition without speaking.
+    - ``skip_response_edge`` — speak the node's own line as usual, then
+      advance without waiting for the caller's response.
 
     Yields ``(shape, edge)`` tuples where ``shape`` is the field name the
     edge came from, so callers don't have to re-inspect the node to recover
@@ -380,10 +381,17 @@ def prompt_edges(node: dict[str, Any], global_nodes: list[dict[str, Any]]) -> li
     Dangling authored edges (no ``destination_node_id``) are excluded: they
     must never be offered to the model since there is nowhere to send it if
     chosen.
+
+    ``always_edge`` and ``skip_response_edge`` are excluded by shape,
+    regardless of their own ``transition_condition``: both are the runtime's
+    own, taken automatically (`FlowRuntime`), never a choice put to the
+    model.
     """
     own_id = node.get("id")
     edges: list[dict[str, Any]] = []
-    for _shape, edge in iter_node_edges(node):
+    for shape, edge in iter_node_edges(node):
+        if shape in ("always_edge", "skip_response_edge"):
+            continue
         condition = edge.get("transition_condition")
         if not isinstance(condition, dict) or condition.get("type") != "prompt":
             continue

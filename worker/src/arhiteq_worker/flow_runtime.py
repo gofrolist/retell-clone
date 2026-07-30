@@ -41,11 +41,12 @@ logger = logging.getLogger("arhiteq-worker.flow")
 
 # How many transitions may be taken in a row without a user turn in between.
 # A flow may legitimately cycle (``wrap up`` -> branch -> ``wrap up``), and
-# branch / skip_response nodes transition without speaking, so a cycle made
-# only of silent nodes would otherwise spin forever inside one turn and hang
-# the call. Twenty is far more than any authored flow chains silently, and
-# every user turn refreshes the budget, so a legitimate long walk is never
-# cut short mid-call.
+# branch / skip_response nodes transition without waiting for a user turn
+# (branch nodes speak nothing; skip_response nodes speak, then advance
+# anyway), so a cycle made only of such nodes would otherwise spin forever
+# inside one turn and hang the call. Twenty is far more than any authored
+# flow chains automatically, and every user turn refreshes the budget, so a
+# legitimate long walk is never cut short mid-call.
 MAX_AUTOMATIC_TRANSITIONS = 20
 
 # Reason recorded when a flow ``end`` node hangs up; matches the built-in
@@ -330,25 +331,45 @@ class FlowRuntime:
         to deliver its line and collect a response first, otherwise a
         greeting could be skipped and the caller would hear dead air. Its
         equation edges are evaluated on the next user turn instead
-        (`on_user_turn`).
+        (`on_user_turn`) — *unless* the node carries a ``skip_response_edge``,
+        in which case there is no next user turn to wait for.
+
+        ``skip_response_edge`` means skip WAITING FOR the caller's response,
+        not skip speaking: the node installs and speaks exactly like any
+        other node (a ``static_text`` line via `_speak_static`, a ``prompt``
+        instruction as a model turn request via `_install`), and only then —
+        with no user turn in between — immediately follows the
+        skip_response_edge, unless an equation edge fires first (equation
+        edges take precedence at every transition point, this one included).
+        A node whose own prompt edges give the model something to choose
+        keeps its turn instead; auto-advancing would strand those edges.
         """
+        await self._install(node)
+        await self._speak_static(node)
         skip = node.get("skip_response_edge")
-        if (
+        if not (
             isinstance(skip, dict)
             and skip.get("destination_node_id")
-            # A node whose own prompt edges give the model something to choose
-            # keeps its turn; skipping would strand those edges.
             and not prompt_edges(self._model_view(node), [])
         ):
+            return
+        edge = select_equation_edge(node, self._variables)
+        if edge is None:
+            edge = skip
             logger.info(
-                "flow call=%s node %s takes its skip_response_edge without speaking",
+                "flow call=%s node %s spoke, now takes its skip_response_edge "
+                "without waiting for a user turn",
                 self._call_id,
                 self._current_node_id,
             )
-            await self._auto_follow(skip)
-            return
-        await self._install(node)
-        await self._speak_static(node)
+        else:
+            logger.info(
+                "flow call=%s node %s spoke, but an equation edge fired ahead of "
+                "its skip_response_edge",
+                self._call_id,
+                self._current_node_id,
+            )
+        await self._auto_follow(edge)
 
     async def _enter_branch(self, node: dict[str, Any]) -> None:
         """Pure routing: a branch node speaks nothing and installs nothing."""

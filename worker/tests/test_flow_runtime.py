@@ -537,14 +537,24 @@ def test_a_branch_with_no_transition_at_all_stays_put_and_logs_an_error(caplog) 
 # ---------------------------------------------------------------------------
 
 
-def test_a_skip_response_edge_transitions_without_speaking() -> None:
+def test_a_skip_response_edge_speaks_then_transitions_without_waiting() -> None:
+    """Corrected reading: ``skip_response_edge`` means skip WAITING FOR the
+    caller's response, not skip speaking. The node says its own line (a
+    ``static_text`` verbatim, a ``prompt`` as a model-turn request) exactly
+    like any other node, and only then — with no user turn in between —
+    follows the skip_response_edge. Do not revert this to "records no `say`
+    call": that was the wrong reading, disproved by the real
+    ``prior_auth_hotline.json`` fixture (see
+    ``test_the_real_fixtures_skip_response_nodes_now_speak_before_advancing``).
+    """
     flow = {
         "start_node_id": "n1",
         "nodes": [
             {
                 "id": "n1",
                 "type": "conversation",
-                "instruction": {"type": "prompt", "text": "Explain that there is no case."},
+                "instruction": {"type": "static_text", "text": "There is no case on file."},
+                "edges": [],
                 "skip_response_edge": {
                     "id": "skip-1",
                     "transition_condition": _prompt_condition("Always"),
@@ -563,12 +573,54 @@ def test_a_skip_response_edge_transitions_without_speaking() -> None:
     _run(runtime.start())
 
     assert runtime.current_node_id == "n2"
-    assert fakes.said == []
-    # No model turn was requested for the departing node: nothing of n1 was
-    # ever installed.
-    assert [node_id for node_id, _edges in fakes.build_calls] == ["n2"]
-    assert all("no case" not in text for text in fakes.instructions)
-    assert len(fakes.instructions) == 1
+    # The static line WAS spoken -- this is the whole point of the fix.
+    assert fakes.said == ["There is no case on file."]
+    # n1 was installed too (like any other node); n2 follows automatically,
+    # with no user turn (no on_user_turn()/advance() call) in between.
+    assert [node_id for node_id, _edges in fakes.build_calls] == ["n1", "n2"]
+    assert len(fakes.instructions) == 2
+
+
+def test_a_chain_of_skip_response_edges_stops_at_the_automatic_transition_budget(
+    caplog,
+) -> None:
+    """A run of skip_response-only nodes must not spin forever inside one turn."""
+    chain_length = MAX_AUTOMATIC_TRANSITIONS + 5
+    nodes = []
+    for i in range(chain_length):
+        nodes.append(
+            {
+                "id": f"n{i}",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": f"Line {i}."},
+                "edges": [],
+                "skip_response_edge": {
+                    "id": f"skip-{i}",
+                    "transition_condition": _prompt_condition("Always"),
+                    "destination_node_id": f"n{i + 1}",
+                },
+            }
+        )
+    # Final node has no skip_response_edge, so the chain would stop there on
+    # its own if the budget didn't cut it off first -- it shouldn't get that
+    # far.
+    nodes.append({"id": f"n{chain_length}", "type": "conversation", "instruction": None})
+
+    flow = {"start_node_id": "n0", "nodes": nodes}
+    fakes = Fakes()
+    runtime = _runtime(flow, fakes)
+    with caplog.at_level(logging.ERROR, logger=FLOW_LOGGER):
+        _run(runtime.start())
+
+    # Exactly MAX_AUTOMATIC_TRANSITIONS auto-follows happened: the entry into
+    # n0 is not itself a transition, so the walk stops at node
+    # `MAX_AUTOMATIC_TRANSITIONS`, never reaching the end of the chain.
+    assert runtime.current_node_id == f"n{MAX_AUTOMATIC_TRANSITIONS}"
+    assert len(fakes.said) == MAX_AUTOMATIC_TRANSITIONS + 1
+    assert any(
+        record.levelno == logging.ERROR and "automatic transitions" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_a_node_with_its_own_prompt_edges_keeps_its_turn_despite_a_skip_response_edge() -> None:
@@ -610,15 +662,50 @@ def test_a_node_with_its_own_prompt_edges_keeps_its_turn_despite_a_skip_response
     assert _ids(fakes.offered_edges) == ["p1"]
 
 
-def test_the_real_fixtures_skip_response_nodes_transition_silently(prior_auth_flow) -> None:
-    fakes = Fakes()
-    runtime = _runtime(prior_auth_flow, fakes)
-    # "No Case" carries a static line plus a skip_response_edge back to the
-    # working-hour branch; the branch's own prompt edges then decide.
-    _run(runtime.advance({"id": "x", "destination_node_id": "node-1773865396835"}))
+# The four `prior_auth_hotline.json` nodes whose only exit is a
+# skip_response_edge, and the static line each one is supposed to say. Under
+# the old (wrong) "never speaks" reading these were silently skipped; the
+# corrected reading (skip response == skip WAITING, not skip speaking) means
+# every one of these lines must now actually reach the caller.
+_SKIP_RESPONSE_STATIC_LINES: dict[str, str] = {
+    "node-1773865396835": (
+        "I'm seeing that member, but I'm not seeing any case information for "
+        "them. Let me transfer you to a specialist to help you further"
+    ),
+    "node-1773865855589": (
+        "I don't have additional information beyond what is in the system. "
+        "Let me transfer you to a specialist to help you further."
+    ),
+    "node-1773866072757": "Please stay on the line while I transfer you",
+    "node-1774302031808": (
+        "It looks like we couldn't get your case information right now. Let me "
+        "transfer you to a specialist to help you further."
+    ),
+}
 
-    assert fakes.said == []
-    assert runtime.current_node_id != "node-1773865396835"
+
+def test_the_real_fixtures_skip_response_nodes_now_speak_before_advancing(
+    prior_auth_flow,
+) -> None:
+    """The four previously-silent static lines are now actually spoken.
+
+    Each of these nodes carries a static line plus a skip_response_edge and
+    no other exit (``edges: []``); under the corrected reading the runtime
+    speaks the line first and only then advances. Three of the four
+    ("No Case", "Conversation" x2) fall through the working-hour branch's
+    ``else_edge`` onto "Please stay on the line while I transfer you" --
+    itself one of the four -- which then reaches the transfer_call node, so
+    those three each speak two lines in a row; the fourth ("Please stay on
+    the line") is reached directly and speaks just its own line.
+    """
+    for node_id, expected_line in _SKIP_RESPONSE_STATIC_LINES.items():
+        fakes = Fakes()
+        runtime = _runtime(prior_auth_flow, fakes)
+        _run(runtime.advance({"id": "x", "destination_node_id": node_id}))
+
+        assert fakes.said[0] == expected_line, node_id
+        assert expected_line in fakes.said
+        assert runtime.current_node_id != node_id
 
 
 def test_an_always_edge_fires_on_the_next_user_turn_and_is_never_offered_to_the_model() -> None:
@@ -975,10 +1062,11 @@ def test_walking_the_real_prior_auth_fixture_ends_on_an_end_node(prior_auth_flow
 
 
 def test_the_real_fixtures_transfer_path_reaches_the_transfer_node(prior_auth_flow) -> None:
-    """ "Please stay on the line" -> skip_response_edge -> transfer_call node."""
+    """ "Please stay on the line" speaks, then skip_response_edge -> transfer_call node."""
     fakes = Fakes()
     runtime = _runtime(prior_auth_flow, fakes)
     _run(runtime.advance({"id": "x", "destination_node_id": "node-1773866072757"}))
 
+    assert fakes.said == ["Please stay on the line while I transfer you"]
     assert runtime.current_node_id == "node-1773866123876"
     assert fakes.transfers == ["+15555550101"]
