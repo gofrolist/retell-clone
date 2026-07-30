@@ -133,6 +133,49 @@ class LLMConfig:
 
 
 @dataclass(slots=True)
+class ConversationFlowConfig:
+    global_prompt: str = ""
+    nodes: list[dict[str, Any]] = field(default_factory=list)
+    start_node_id: str = ""
+    start_speaker: str = "agent"
+    tools: list[dict[str, Any]] = field(default_factory=list)
+    components: list[dict[str, Any]] = field(default_factory=list)
+    model_choice: dict[str, Any] | None = None
+    model_temperature: float | None = None
+    kb_config: dict[str, Any] | None = None
+    knowledge_base_ids: list[str] = field(default_factory=list)
+    default_dynamic_variables: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> ConversationFlowConfig:
+        nodes = [n for n in (d.get("nodes") or []) if isinstance(n, dict)]
+        start_node_id = _str(d.get("start_node_id"), "")
+        if not start_node_id and nodes:
+            first_id = nodes[0].get("id")
+            start_node_id = first_id if isinstance(first_id, str) else ""
+        model_temperature = d.get("model_temperature")
+        return cls(
+            global_prompt=_str(d.get("global_prompt"), ""),
+            nodes=nodes,
+            start_node_id=start_node_id,
+            start_speaker=_str(d.get("start_speaker"), "agent"),
+            tools=[t for t in (d.get("tools") or []) if isinstance(t, dict)],
+            components=[c for c in (d.get("components") or []) if isinstance(c, dict)],
+            model_choice=d.get("model_choice") if isinstance(d.get("model_choice"), dict) else None,
+            model_temperature=_num(model_temperature, 0.0)
+            if model_temperature is not None
+            else None,
+            kb_config=d.get("kb_config") if isinstance(d.get("kb_config"), dict) else None,
+            knowledge_base_ids=[
+                str(i) for i in (d.get("knowledge_base_ids") or []) if isinstance(i, str) and i
+            ],
+            default_dynamic_variables=dict(d.get("default_dynamic_variables") or {}),
+            raw=d,
+        )
+
+
+@dataclass(slots=True)
 class CallConfig:
     call_id: str
     direction: str
@@ -144,6 +187,7 @@ class CallConfig:
     dynamic_variables: dict[str, Any]
     metadata: dict[str, Any]
     function_secret: str
+    conversation_flow: ConversationFlowConfig | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -164,6 +208,11 @@ class CallConfig:
             dynamic_variables=dict(d.get("dynamic_variables") or {}),
             metadata=dict(d.get("metadata") or {}),
             function_secret=_str(d.get("function_secret"), ""),
+            conversation_flow=(
+                ConversationFlowConfig.from_dict(d["conversation_flow"])
+                if isinstance(d.get("conversation_flow"), dict)
+                else None
+            ),
             raw=d,
         )
 
