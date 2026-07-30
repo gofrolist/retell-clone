@@ -162,8 +162,13 @@ describe("reducer actions", () => {
     const added = iterNodeEdges((next.nodes as FlowNode[])[0]).find(
       (e) => e.shape === "edges" && e.edge.destination_node_id === b.id,
     )!;
+    expect(added).toBeDefined();
     expect(added.edge.destination_node_id).toBe(b.id);
     expect(added.edge.transition_condition).toEqual({ type: "prompt", prompt: "" });
+    expect(typeof added.edge.id).toBe("string");
+    // Exactly one edge gained, in the shape asked for: catches a `connect`
+    // that appends twice, or that writes a single-edge shape as well.
+    expect(iterNodeEdges((next.nodes as FlowNode[])[0]).length).toBe(iterNodeEdges(a).length + 1);
   });
 
   test("a single-edge shape replaces rather than appends", () => {
@@ -183,6 +188,55 @@ describe("reducer actions", () => {
     });
     const node = (twice.nodes as FlowNode[]).find((n) => n.id === a.id)!;
     expect(iterNodeEdges(node).filter((e) => e.shape === "else_edge").length).toBe(1);
+  });
+});
+
+describe("notes", () => {
+  // The canvas renders `notes[]` as stickies and persists their positions, so
+  // these three actions round-trip real authored content. The prior-auth
+  // fixture carries real notes, which is what makes these non-synthetic.
+  test("addNote appends to a flow that already has notes", () => {
+    const flow = load("prior_auth_hotline.json");
+    const before = (flow.notes as { id: string }[]).length;
+    expect(before).toBeGreaterThan(0);
+    const next = flowReducer(flow, { type: "addNote", position: { x: 3, y: 4 }, content: "hi" });
+    const notes = next.notes as Record<string, unknown>[];
+    expect(notes.length).toBe(before + 1);
+    expect(notes[notes.length - 1]).toMatchObject({
+      content: "hi",
+      display_position: { x: 3, y: 4 },
+    });
+    expect(new Set(notes.map((n) => n.id)).size).toBe(notes.length);
+  });
+
+  test("addNote works on a flow with no notes key at all", () => {
+    const flow = load("clara_outbound.json");
+    const next = flowReducer(flow, { type: "addNote", position: { x: 0, y: 0 } });
+    expect((next.notes as unknown[]).length).toBe(((flow.notes as unknown[]) ?? []).length + 1);
+  });
+
+  test("patchNote edits one note and leaves its siblings and unknown keys alone", () => {
+    const flow = load("prior_auth_hotline.json");
+    const [first, ...rest] = flow.notes as { id: string }[];
+    const next = flowReducer(flow, {
+      type: "patchNote",
+      noteId: first.id,
+      patch: { content: "rewritten" },
+    });
+    const notes = next.notes as Record<string, unknown>[];
+    expect(notes[0].content).toBe("rewritten");
+    // `size` is a real key on the fixture's notes that the editor never models.
+    expect(notes[0].size).toEqual((first as Record<string, unknown>).size);
+    expect(notes.slice(1)).toEqual(rest as unknown as Record<string, unknown>[]);
+  });
+
+  test("deleteNote removes only the named note", () => {
+    const flow = load("prior_auth_hotline.json");
+    const notes = flow.notes as { id: string }[];
+    const next = flowReducer(flow, { type: "deleteNote", noteId: notes[0].id });
+    const ids = (next.notes as { id: string }[]).map((n) => n.id);
+    expect(ids).not.toContain(notes[0].id);
+    expect(ids.length).toBe(notes.length - 1);
   });
 });
 
