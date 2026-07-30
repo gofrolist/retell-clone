@@ -1,28 +1,63 @@
-"""Conversation-flow graph: indexing and load-time validation.
+"""Conversation-flow graph: indexing, load-time validation, and node tools.
 
 This is the decision layer for Retell conversation flows — a node graph
 walked live during a call (see docs/AGENT_VERSIONING.md and
-docs/ARCHITECTURE.md for where this fits). It holds no ``livekit`` import: the
-worker's CI runs the dev-only dependency group, which deliberately skips the
-heavy livekit-agents stack, and this module must stay importable there.
-Pure stdlib plus ``arhiteq_worker.config`` only.
+docs/ARCHITECTURE.md for where this fits). The graph/edge/instruction logic
+above holds no ``livekit`` import: the worker's CI runs the dev-only
+dependency group, which deliberately skips the heavy livekit-agents stack,
+and this module must stay importable there. Pure stdlib plus
+``arhiteq_worker.config``/``state``/``tools``/``variables`` only — the last of
+those (``tools.py``) is itself livekit-free at import time (it only imports
+``livekit.agents`` lazily, inside each of its own tool factories), so pulling
+names from it here does not add a real livekit dependency.
+
+The ``make_*_tool`` factories at the bottom of the file ARE the livekit-
+touching part (Task 6 of the conversation-flow-runtime plan): they turn a
+node's behaviour into an actual ``function_tool``, mirroring `tools.py`'s
+existing constructors (``_make_transfer_call_tool`` et al.) — including their
+placement convention of importing ``livekit.agents`` lazily, inside the
+factory function itself, so this module's own import stays livekit-free and
+its dev-only tests (``test_flow_transitions.py``, ``test_flow_runtime.py``)
+keep working without the stack installed. Only ``test_flow_tools.py`` needs
+livekit, and it skips itself (``pytest.importorskip``) when the stack is
+absent.
 
 A malformed flow must be caught here, at load time, before a call starts —
 not 90 seconds into a live call when a node walk hits a dead end. Any
 structural problem raises ``FlowError`` naming the offending node id so
 ``main.py`` can abort the call cleanly instead of stalling it.
+
+NOTE: no ``from __future__ import annotations`` here, same reasoning as
+`tools.py`'s own note — it would stringize the ``context: RunContext``
+annotations the ``make_*_tool`` handlers carry, and livekit-agents resolves
+those hints at *execution* time via ``typing.get_type_hints()`` against this
+module's globals, where ``RunContext`` is deliberately not imported (the
+dev-only tests run without the livekit stack). Python 3.14 (PEP 649)
+evaluates the annotation lazily via the handler's closure instead, where the
+factory's local import IS visible — but only when this future import is
+absent to trigger PEP 563's eager stringizing.
 """
 
-from __future__ import annotations
-
+import asyncio
+import json
 import logging
 import math
 import re
-from collections.abc import Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from typing import Any
 
+import httpx
+
 from arhiteq_worker.config import ConversationFlowConfig
-from arhiteq_worker.variables import resolve_template
+from arhiteq_worker.state import CallState
+from arhiteq_worker.tools import (
+    KnowledgeSearch,
+    _make_kb_lookup_tool,
+    extract_variable_parameters,
+    safe_execute_custom_tool,
+    variable_to_string,
+)
+from arhiteq_worker.variables import resolve_deep, resolve_template
 
 logger = logging.getLogger("arhiteq-worker.flow")
 
@@ -544,3 +579,319 @@ def transition_tool_schema(
         + "Choose the id matching the caller's response:\n"
         + "\n".join(lines),
     }
+
+
+# ---------------------------------------------------------------------------
+# The livekit tool layer (Task 6): turning node behaviours into livekit tools.
+# ---------------------------------------------------------------------------
+#
+# `on_transition` for `make_function_node_tool`/`make_extract_node_tool` takes
+# the EDGE DICT to follow (matching `FlowRuntime.advance(edge: dict)`
+# exactly), since the constructor itself already knows which edge that is —
+# there is no id to resolve. `make_transition_tool`'s `on_transition` instead
+# takes the edge id string the model named (there is no dict to hand over: the
+# model can only name an id, per `transition_tool_schema`'s enum), so a caller
+# wiring it to a real `FlowRuntime` must resolve that id back to an edge dict
+# itself (e.g. from the same `edges` list `build_node_tools` was called
+# with) before calling `advance`.
+
+
+def _first_declared_edge(node: dict[str, Any]) -> dict[str, Any] | None:
+    """The node's own first ``edges[]`` entry with a destination, else ``None``.
+
+    Used by `make_function_node_tool`/`make_extract_node_tool` as the "the
+    call succeeded" / "values were extracted" continuation — see their
+    docstrings for why this, rather than a model-classified prompt edge, is
+    the routing rule applied here.
+    """
+    for edge in node.get("edges") or []:
+        if isinstance(edge, dict) and edge.get("destination_node_id"):
+            return edge
+    return None
+
+
+def _is_error_result(result: str) -> bool:
+    """Did a tool result string come back as Retell's ``{"error": ...}`` shape?
+
+    Mirrors `flow_runtime._transfer_failed`'s convention for the same
+    question about a different tool's result. Anything unparseable is *not*
+    treated as an error here (unlike that sibling check) — an
+    `execute_custom_tool` failure always reaches this as ``_tool_error``'s
+    JSON envelope, never as free text, so unparseable text would mean the
+    call actually succeeded with an unusual body.
+    """
+    try:
+        payload = json.loads(result)
+    except ValueError:
+        return False
+    return isinstance(payload, dict) and bool(payload.get("error"))
+
+
+def make_transition_tool(
+    schema: dict[str, Any],
+    on_transition: Callable[[str], Awaitable[None]],
+    *,
+    state: CallState,
+) -> Any:
+    """Wrap `transition_tool_schema`'s enum into the model-facing ``transition_to`` tool.
+
+    One tool per node, named ``transition_to`` — the "single synthetic tool
+    per node" the design doc describes — whose sole argument, also named
+    ``transition_to`` (matching `transition_tool_schema`'s own docstring: "raw
+    JSON schema for the ``transition_to`` argument"), is *schema* itself: an
+    enum of this node's prompt-edge ids.
+
+    The handler records the invocation/result on `state` the way every other
+    tool in `tools.py` does (see ``_make_transfer_call_tool``), then hands the
+    chosen id to *on_transition* — never raising even if that callback fails,
+    since a bug in the graph walk must not kill the model's turn (compare
+    `tools.execute_custom_tool`'s callers, which always convert a failure into
+    a result string rather than an exception).
+    """
+    from livekit.agents import RunContext, function_tool
+
+    name = "transition_to"
+    tool_schema = {
+        "type": "function",
+        "name": name,
+        "description": "Choose the caller's next conversational step.",
+        "parameters": {
+            "type": "object",
+            "properties": {"transition_to": schema},
+            "required": ["transition_to"],
+        },
+    }
+
+    async def handler(raw_arguments: dict[str, object], context: RunContext) -> str:
+        edge_id = str(raw_arguments.get("transition_to") or "")
+        tool_call_id = state.add_tool_invocation(name, json.dumps({"transition_to": edge_id}))
+        result = "ok"
+        try:
+            await on_transition(edge_id)
+        except Exception:  # a graph-walk bug must not kill the model's turn
+            logger.warning("transition_to %r failed", edge_id, exc_info=True)
+            result = "failed to transition"
+        state.add_tool_result(name, result, tool_call_id)
+        return result
+
+    return function_tool(handler, raw_schema=tool_schema)
+
+
+def make_function_node_tool(
+    node: dict[str, Any],
+    flow_tools: list[dict[str, Any]],
+    *,
+    http: httpx.AsyncClient,
+    function_secret: str,
+    variables: dict[str, Any],
+    call_info: Mapping[str, Any] | None,
+    state: CallState,
+    on_transition: Callable[[dict[str, Any]], Awaitable[None]],
+) -> Any | None:
+    """The action tool for a ``function`` node: run its tool, merge variables, advance.
+
+    Resolves the node's ``tool_id`` against the flow's ``tools[]`` list —
+    matched on ``tool_id``, a flow-scoped identifier unrelated to the node id
+    or the tool's own display ``name`` — and executes it with the
+    already-tested `safe_execute_custom_tool`. Passing it ``entry=entry`` and
+    ``state=state`` means it *already* merges the entry's ``response_variables``
+    into *variables* and records the invocation/result on `state` itself
+    (`tools.py`'s tested behaviour, reused rather than re-implemented); there
+    is nothing left to duplicate for either.
+
+    Routing is a GUESS (see `make_extract_node_tool`'s docstring for the twin
+    caveat): the design doc pins only "failure routes to else_edge". A
+    successful call instead advances along `_first_declared_edge` — in both
+    real fixtures with ``function`` nodes (``prior_auth_hotline.json``,
+    ``clara_outbound.json``) the first ``edges[]`` entry reads as exactly the
+    node's own "the call succeeded" continuation. ``wait_for_result: false``
+    fires the request without waiting (`asyncio.create_task` — its
+    ``response_variables`` land only if/when it later completes) and advances
+    immediately along that same edge, per task-6-brief.md's "advance without
+    waiting for the result". Revisit both rules if a real flow disagrees.
+
+    Returns ``None`` — nothing to install — if ``tool_id`` does not resolve or
+    the resolved entry has no ``url``, mirroring `tools.build_tools`'s
+    "skip with a warning" policy for an unsupported/misconfigured tool.
+    """
+    tool_id = node.get("tool_id")
+    entry = next(
+        (t for t in flow_tools if isinstance(t, dict) and t.get("tool_id") == tool_id),
+        None,
+    )
+    if not entry or not entry.get("url"):
+        logger.warning(
+            "function node %r: tool_id %r not found in flow tools", node.get("id"), tool_id
+        )
+        return None
+
+    from livekit.agents import RunContext, function_tool
+
+    name = entry.get("name") or "function_tool"
+    schema = {
+        "type": "function",
+        "name": name,
+        "description": resolve_template(entry.get("description") or "", variables),
+        "parameters": resolve_deep(
+            entry.get("parameters") or {"type": "object", "properties": {}}, variables
+        ),
+    }
+    speak_during = bool(node.get("speak_during_execution"))
+    execution_message = entry.get("execution_message_description") or ""
+    # Same filler-selection rule as `tools._make_http_tool` — a function
+    # node's tool entry is the same shape as a customer HTTP tool, so it may
+    # carry the same execution-message fields even though neither real
+    # fixture's entries happen to.
+    filler = (
+        resolve_template(execution_message, variables)
+        if entry.get("execution_message_type") == "static_text" and execution_message
+        else "One moment, let me check that."
+    )
+    speak_after = entry.get("speak_after_execution")
+    wait_for_result = node.get("wait_for_result", True) is not False
+    success_edge = _first_declared_edge(node)
+    failure_edge = fallback_edge(node)
+
+    async def handler(raw_arguments: dict[str, object], context: RunContext) -> str | None:
+        if speak_during:
+            try:
+                context.session.say(filler, add_to_chat_ctx=False)
+            except Exception:  # filler speech must never break the tool
+                logger.debug("speak_during_execution failed for %s", name, exc_info=True)
+
+        async def run() -> str:
+            return await safe_execute_custom_tool(
+                http,
+                name=name,
+                url=entry["url"],
+                args=raw_arguments,
+                function_secret=function_secret,
+                variables=variables,
+                call_info=call_info,
+                state=state,
+                entry=entry,
+            )
+
+        if not wait_for_result:
+            asyncio.create_task(run())
+            if success_edge is not None:
+                await on_transition(success_edge)
+            return json.dumps({"result": "request sent"})
+
+        result = await run()
+        edge = failure_edge if _is_error_result(result) else success_edge
+        if edge is not None:
+            await on_transition(edge)
+        if speak_after is False:
+            # Retell: speak_after_execution=false -> the agent does not
+            # respond to the tool result (mirrors `tools._make_http_tool`).
+            try:
+                from livekit.agents.llm import StopResponse
+
+                raise StopResponse()
+            except ImportError:
+                logger.debug("StopResponse unavailable; returning result for %s", name)
+        return result
+
+    return function_tool(handler, raw_schema=schema)
+
+
+def make_extract_node_tool(
+    node: dict[str, Any],
+    *,
+    variables: dict[str, Any],
+    state: CallState,
+    on_transition: Callable[[dict[str, Any]], Awaitable[None]],
+) -> Any:
+    """The model-facing tool for an ``extract_dynamic_variables`` node.
+
+    Parameters come from the existing `extract_variable_parameters` — the
+    node's own ``variables`` field is exactly the Retell variable-spec shape a
+    built-in ``extract_dynamic_variable`` tool already consumes
+    (``tools._make_extract_dynamic_variable_tool``), so it is passed straight
+    through with no adapting. Extracted values merge into both the live
+    *variables* mapping and ``state.collected_dynamic_variables``, exactly
+    like that built-in.
+
+    Routing is a GUESS: the design doc pins only "failure or empty extraction
+    routes to else_edge". A non-empty extraction instead advances along
+    `_first_declared_edge` — this node's own "values were extracted"
+    continuation — while an empty one (nothing the model supplied matched a
+    declared variable) advances along `fallback_edge` (``else_edge``) per the
+    design doc. Revisit if a real flow disagrees.
+    """
+    from livekit.agents import RunContext, function_tool
+
+    name = "extract_dynamic_variables"
+    parameters = extract_variable_parameters(node)
+    schema = {
+        "type": "function",
+        "name": name,
+        "description": "Extract variables from the conversation as soon as they are known.",
+        "parameters": parameters,
+    }
+    known = set(parameters["properties"])
+    success_edge = _first_declared_edge(node)
+    failure_edge = fallback_edge(node)
+
+    async def handler(raw_arguments: dict[str, object], context: RunContext) -> str:
+        extracted = {
+            key: variable_to_string(value)
+            for key, value in raw_arguments.items()
+            if key in known and value is not None
+        }
+        tool_call_id = state.add_tool_invocation(name, json.dumps(extracted))
+        if isinstance(variables, dict):
+            # Same mapping the session resolves {{var}} against — extracted
+            # values are immediately usable in prompts, tool configs, and
+            # equation edges.
+            variables.update(extracted)
+        state.collected_dynamic_variables.update(extracted)
+        result = json.dumps({"result": "variables extracted", "extracted": extracted})
+        state.add_tool_result(name, result, tool_call_id)
+        edge = success_edge if extracted else failure_edge
+        if edge is not None:
+            await on_transition(edge)
+        return result
+
+    return function_tool(handler, raw_schema=schema)
+
+
+def make_flow_kb_lookup_tool(
+    kb_config: Mapping[str, Any] | None,
+    *,
+    knowledge: KnowledgeSearch,
+    call_id: str,
+    knowledge_base_ids: list[str],
+    variables: Mapping[str, Any],
+    state: CallState,
+) -> Any:
+    """kb_lookup tool for a flow's ``conversation``/``subagent`` nodes.
+
+    Reuses `tools._make_kb_lookup_tool` (the tested single-prompt
+    implementation) rather than a second one — a caller building this only
+    needs to decide *when* to attach it (every ``conversation``/``subagent``
+    node, when the flow carries ``knowledge_base_ids`` — a decision left to
+    the caller closing over the flow config, per the design doc; nothing
+    about that dispatch belongs here).
+
+    *kb_config* is the flow's ``{top_k, filter_score}``. Only ``top_k`` has
+    anywhere to go today: `KnowledgeSearch.search_knowledge_base`
+    (``internal_api.py``) has no ``filter_score`` parameter yet, so it rides
+    along on the synthetic entry below for forward compatibility, but nothing
+    downstream reads it until that protocol grows one.
+    """
+    entry: dict[str, Any] = {"name": "kb_lookup"}
+    config = kb_config or {}
+    if config.get("top_k") is not None:
+        entry["top_k"] = config["top_k"]
+    if config.get("filter_score") is not None:
+        entry["filter_score"] = config["filter_score"]
+    return _make_kb_lookup_tool(
+        entry,
+        knowledge=knowledge,
+        call_id=call_id,
+        knowledge_base_ids=knowledge_base_ids,
+        variables=variables,
+        state=state,
+    )
