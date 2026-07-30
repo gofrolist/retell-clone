@@ -100,9 +100,15 @@ class FlowGraph:
     sync with Retell's schema.
     """
 
-    def __init__(self, nodes_by_id: dict[str, dict[str, Any]], start_node_id: str) -> None:
+    def __init__(
+        self,
+        nodes_by_id: dict[str, dict[str, Any]],
+        start_node_id: str,
+        global_prompt: str = "",
+    ) -> None:
         self._nodes_by_id = nodes_by_id
         self._start_node_id = start_node_id
+        self._global_prompt = global_prompt
 
     @classmethod
     def from_config(cls, flow: ConversationFlowConfig) -> FlowGraph:
@@ -136,7 +142,7 @@ class FlowGraph:
         if flow.start_node_id not in nodes_by_id:
             raise FlowError(f"start node {flow.start_node_id!r} not found in flow")
 
-        return cls(nodes_by_id, flow.start_node_id)
+        return cls(nodes_by_id, flow.start_node_id, flow.global_prompt)
 
     def node(self, node_id: str) -> dict[str, Any]:
         try:
@@ -147,6 +153,10 @@ class FlowGraph:
     @property
     def start(self) -> dict[str, Any]:
         return self._nodes_by_id[self._start_node_id]
+
+    @property
+    def global_prompt(self) -> str:
+        return self._global_prompt
 
     @property
     def global_nodes(self) -> list[dict[str, Any]]:
@@ -317,3 +327,186 @@ def evaluate_equation_condition(condition: Any, variables: Mapping[str, Any]) ->
     except Exception:
         logger.debug("failed to evaluate equation condition %r", condition, exc_info=True)
         return False
+
+
+# Prefix for a global node's synthetic prompt edge id (see `prompt_edges`).
+# Authored Retell edge ids look like ``edge-1`` or ``edge-<timestamp>-<rand>``;
+# this prefix lives in a namespace real ids never use, so it cannot collide,
+# and it is derived only from the global node's own id, so it is stable
+# across calls to `prompt_edges` for the same flow.
+_GLOBAL_EDGE_ID_PREFIX = "global::"
+
+# The single-edge shapes that can hold a node's guaranteed fallback, in
+# priority order (matches the order `iter_node_edges` yields them in).
+_FALLBACK_SHAPES: frozenset[str] = frozenset({"else_edge", "edge"})
+
+
+def select_equation_edge(
+    node: dict[str, Any], variables: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """First ``equation``-condition edge, in declaration order, whose condition is true.
+
+    Equations are resolved deterministically before the model is ever asked
+    to pick a transition, so ``prompt``-condition edges are ignored here
+    entirely — this only ever returns an ``equation`` edge or ``None``. A
+    dangling edge (no ``destination_node_id``) is never returned even if its
+    condition is true: there is nowhere to send the call, so evaluation
+    continues past it rather than stopping the walk.
+    """
+    for _shape, edge in iter_node_edges(node):
+        condition = edge.get("transition_condition")
+        if not isinstance(condition, dict) or condition.get("type") != "equation":
+            continue
+        if not edge.get("destination_node_id"):
+            continue
+        if evaluate_equation_condition(condition, variables):
+            return edge
+    return None
+
+
+def prompt_edges(node: dict[str, Any], global_nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The node's own ``prompt``-condition edges, plus one synthetic edge per global node.
+
+    Global nodes (``global_node_setting.condition``) are reachable from
+    anywhere without an authored edge, so each becomes a synthetic edge here
+    shaped just like a real one — ``{"id", "transition_condition", "destination_node_id"}``
+    — keyed by a `_GLOBAL_EDGE_ID_PREFIX`-prefixed id derived only from the
+    global node's own id (stable across calls, and cannot collide with an
+    authored edge id). A global node is never synthesized against itself:
+    if *node* itself is one of ``global_nodes`` (a global node is a real,
+    visitable node, not just an entry in other nodes' lists), offering it a
+    transition to itself would be meaningless.
+
+    Dangling authored edges (no ``destination_node_id``) are excluded: they
+    must never be offered to the model since there is nowhere to send it if
+    chosen.
+    """
+    own_id = node.get("id")
+    edges: list[dict[str, Any]] = []
+    for _shape, edge in iter_node_edges(node):
+        condition = edge.get("transition_condition")
+        if not isinstance(condition, dict) or condition.get("type") != "prompt":
+            continue
+        if not edge.get("destination_node_id"):
+            continue
+        edges.append(edge)
+    for global_node in global_nodes:
+        global_id = global_node.get("id")
+        if not isinstance(global_id, str) or not global_id or global_id == own_id:
+            continue
+        condition_text = (global_node.get("global_node_setting") or {}).get("condition")
+        edges.append(
+            {
+                "id": f"{_GLOBAL_EDGE_ID_PREFIX}{global_id}",
+                "transition_condition": {
+                    "type": "prompt",
+                    "prompt": condition_text if isinstance(condition_text, str) else "",
+                },
+                "destination_node_id": global_id,
+            }
+        )
+    return edges
+
+
+def fallback_edge(node: dict[str, Any]) -> dict[str, Any] | None:
+    """The node's guaranteed non-prompt fallback: ``else_edge``, else the single ``edge``.
+
+    Seen on ``branch``/``function`` (``else_edge``) and ``transfer_call``
+    (``edge``, its lone failure edge). A node with neither shape (e.g. a bare
+    ``conversation`` node) has no fallback: ``None``. A dangling fallback (no
+    ``destination_node_id``) is also reported as ``None`` rather than the raw
+    edge — the real ``prior_auth_hotline.json`` fixture has exactly this case
+    (a ``function`` node's ``else_edge`` and a ``transfer_call`` node's
+    ``edge`` both authored with no destination) and there is nowhere to send
+    the call if it fires, so callers must not try to follow it.
+    """
+    for shape, edge in iter_node_edges(node):
+        if shape in _FALLBACK_SHAPES:
+            return edge if edge.get("destination_node_id") else None
+    return None
+
+
+def static_text(node: dict[str, Any], variables: Mapping[str, Any]) -> str | None:
+    """The resolved verbatim line for a ``static_text`` node instruction, else ``None``."""
+    instruction = node.get("instruction")
+    if not isinstance(instruction, dict) or instruction.get("type") != "static_text":
+        return None
+    text = instruction.get("text")
+    if not isinstance(text, str):
+        return None
+    return resolve_template(text, variables)
+
+
+def _condition_prompt_text(edge: dict[str, Any]) -> str:
+    condition = edge.get("transition_condition")
+    if not isinstance(condition, dict):
+        return ""
+    prompt = condition.get("prompt")
+    return prompt if isinstance(prompt, str) else ""
+
+
+def _render_transition_list(edges: list[dict[str, Any]], variables: Mapping[str, Any]) -> str:
+    lines = [
+        f"- {edge.get('id')}: {resolve_template(_condition_prompt_text(edge), variables)}"
+        for edge in edges
+    ]
+    return "\n".join(lines)
+
+
+def node_instructions(node: dict[str, Any], flow: FlowGraph, variables: Mapping[str, Any]) -> str:
+    """Assemble what the model sees at *node*: global prompt, instruction, transitions.
+
+    In order: the flow's ``global_prompt``; the node's own ``instruction.text``
+    when it is a ``prompt`` (a ``static_text`` node is spoken verbatim by
+    `static_text` instead and contributes no phrasing instruction here); then
+    a rendered list of every available transition — the node's own prompt
+    edges plus one synthetic entry per global node, from `prompt_edges` —
+    naming each edge's id beside its (resolved) condition text, because the
+    model's tool call picks a transition by id and cannot choose reliably if
+    it cannot see them. Every piece is passed through `resolve_template`.
+    """
+    parts = [resolve_template(flow.global_prompt, variables)]
+
+    instruction = node.get("instruction")
+    if isinstance(instruction, dict) and instruction.get("type") == "prompt":
+        text = instruction.get("text")
+        if isinstance(text, str):
+            parts.append(resolve_template(text, variables))
+
+    edges = prompt_edges(node, flow.global_nodes)
+    if edges:
+        parts.append("Available transitions:\n" + _render_transition_list(edges, variables))
+
+    return "\n\n".join(parts)
+
+
+def transition_tool_schema(
+    node: dict[str, Any], edges: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Raw JSON schema for the ``transition_to`` argument, or ``None`` with no prompt edges.
+
+    An enum of edge ids — the model must name one exactly, since that id is
+    how the flow walker resolves the destination — with each condition's
+    (unresolved; this function has no ``variables`` to resolve against)
+    prompt text next to its id in the description. This returns only the
+    parameter schema, not a callable tool: wrapping it (and resolving
+    templates in the description) is Task 6's job, so this module — and its
+    CI-installed dev-only tests — never has to import ``livekit``.
+    """
+    ids = [edge["id"] for edge in edges if edge.get("id")]
+    if not ids:
+        return None
+    lines = [f"{edge['id']}: {_condition_prompt_text(edge)}" for edge in edges if edge.get("id")]
+    node_name = node.get("name")
+    prefix = (
+        f"Transition options for node {node_name!r}. "
+        if isinstance(node_name, str) and node_name
+        else ""
+    )
+    return {
+        "type": "string",
+        "enum": ids,
+        "description": prefix
+        + "Choose the id matching the caller's response:\n"
+        + "\n".join(lines),
+    }
