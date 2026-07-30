@@ -1172,6 +1172,79 @@ def test_advancing_along_a_dangling_edge_stays_put(caplog) -> None:
     assert caplog.records
 
 
+def test_advance_drops_a_stale_edge_requested_from_a_node_already_left() -> None:
+    """FIX 2 regression: a spawned advance can act on a stale edge.
+
+    Two parallel `transition_to` calls from the same node each capture their
+    `from_node_id` at request time. The first walks A -> B and enters B; the
+    second must be dropped -- not walked from B -- because the cursor has
+    moved since it was requested. A subsequent, legitimate sequential advance
+    (request -> complete -> request again, `from_node_id` matching the node
+    the runtime is actually on) must still work.
+    """
+    flow = {
+        "start_node_id": "a",
+        "nodes": [
+            {"id": "a", "type": "conversation", "instruction": None},
+            {
+                "id": "b",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "In B."},
+            },
+            {
+                "id": "c",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "In C."},
+            },
+        ],
+    }
+    fakes = Fakes()
+    runtime = _runtime(flow, fakes)
+    _run(runtime.start())
+    assert runtime.current_node_id == "a"
+
+    edge_to_b = {"id": "e-ab", "destination_node_id": "b"}
+    edge_to_c = {"id": "e-ac", "destination_node_id": "c"}
+
+    # Two transitions requested "at the same time" from node "a".
+    _run(runtime.advance(edge_to_b, from_node_id="a"))
+    assert runtime.current_node_id == "b"
+
+    # The second is stale: the cursor moved to "b" before it ran.
+    _run(runtime.advance(edge_to_c, from_node_id="a"))
+    assert runtime.current_node_id == "b"
+    assert fakes.said == ["In B."]  # "In C." never spoken -- the second was dropped
+
+    # A legitimate sequential advance (request -> complete -> request again)
+    # from wherever the runtime now actually is must still work.
+    _run(runtime.advance(edge_to_c, from_node_id="b"))
+    assert runtime.current_node_id == "c"
+    assert fakes.said == ["In B.", "In C."]
+
+
+def test_advance_with_no_from_node_id_is_unguarded() -> None:
+    """Back-compat: omitting `from_node_id` (every pre-existing call site)
+    must behave exactly as before -- no stale-edge check at all.
+    """
+    flow = {
+        "start_node_id": "a",
+        "nodes": [
+            {"id": "a", "type": "conversation", "instruction": None},
+            {
+                "id": "b",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "In B."},
+            },
+        ],
+    }
+    fakes = Fakes()
+    runtime = _runtime(flow, fakes)
+    _run(runtime.start())
+    _run(runtime.advance({"id": "e-ab", "destination_node_id": "b"}))
+    assert runtime.current_node_id == "b"
+    assert fakes.said == ["In B."]
+
+
 def test_a_synthetic_global_edge_routes_by_destination_not_by_edge_id() -> None:
     """`prompt_edges` synthesizes `global::<id>` edge ids that are not node ids."""
     flow = {
@@ -1310,6 +1383,56 @@ def test_start_speaker_user_defers_a_prompt_instructions_model_turn_too() -> Non
     # static line (n2) parked right behind it during the same skip cascade.
     assert fakes.generate_reply_calls == [None]
     assert fakes.said == ["Anything else?"]
+
+
+def test_on_user_turn_before_start_is_a_no_op() -> None:
+    """FIX 1 regression: the first user turn can beat `start()`.
+
+    `on_user_turn` gets wired into the live session, and `start()` is
+    spawned separately (see `_FlowWiring` in `main.py`) -- if the caller
+    speaks before `start()` has run, `on_user_turn` must not evaluate the
+    start node's edges (it hasn't been entered yet: no instructions, no
+    tools, nothing to react to). It must be a total no-op, and the
+    subsequent `start()` must still enter the start node normally
+    afterwards.
+    """
+    flow = {
+        "start_node_id": "n1",
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "Hello, how can I help?"},
+                "always_edge": {
+                    "id": "always-1",
+                    "transition_condition": _prompt_condition("Always"),
+                    "destination_node_id": "n2",
+                },
+            },
+            {
+                "id": "n2",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "Moving on."},
+            },
+        ],
+    }
+    fakes = Fakes()
+    runtime = _runtime(flow, fakes)
+
+    # The caller's first turn lands before `start()` has run.
+    _run(runtime.on_user_turn())
+
+    assert runtime.current_node_id == "n1"
+    assert fakes.instructions == []
+    assert fakes.tools == []
+    assert fakes.said == []
+
+    # `start()` must still enter the start node normally afterwards.
+    _run(runtime.start())
+
+    assert runtime.current_node_id == "n1"
+    assert fakes.said == ["Hello, how can I help?"]
+    assert len(fakes.instructions) == 1
 
 
 def test_nothing_is_spoken_after_the_call_has_ended() -> None:

@@ -150,6 +150,14 @@ class FlowRuntime:
         self._current_node_id = config.start_node_id
         self._auto_transitions = 0
         self._ended = False
+        # Guards the start/first-user-turn race: `_FlowWiring` (main.py) wires
+        # `on_user_turn` into the live session and calls `attach()` before
+        # `session.start()`, but `start()` itself is only spawned afterward,
+        # behind a couple of internal-API round trips. If the caller speaks
+        # in that window, `on_user_turn` must not evaluate the start node's
+        # equation/always edges -- it has never been entered (no instructions,
+        # no tools installed) -- so it is a no-op until `start()` sets this.
+        self._started = False
         # start_speaker == "user": the agent stays silent until the caller
         # speaks, so the start node's verbatim line waits for that turn
         # instead of being dropped.
@@ -197,6 +205,7 @@ class FlowRuntime:
 
     async def start(self) -> None:
         """Enter the start node."""
+        self._started = True
         self._auto_transitions = 0
         node = self._graph.start
         self._defer_speech = self._config.start_speaker == "user"
@@ -211,22 +220,49 @@ class FlowRuntime:
         finally:
             self._defer_speech = False
 
-    async def advance(self, edge: dict[str, Any]) -> None:
+    async def advance(self, edge: dict[str, Any], *, from_node_id: str | None = None) -> None:
         """Follow *edge* to its destination and enter it.
 
         Called when something outside the runtime decided — the model's
         transition tool, a function node's tool result. That counts as a
         fresh turn, so the automatic-transition budget resets.
+
+        *from_node_id*, when given, is the node the caller was on at the
+        moment the transition was *requested* -- captured before the call was
+        spawned off the handler's stack and queued behind the lock (see
+        `main.py`'s `_transition`). If the runtime's cursor has since moved
+        (a second `transition_to` requested from the same node while the
+        first was still in flight, or a user-turn edge firing while a
+        transition was already queued), this advance is stale: walking it
+        from wherever the runtime now actually is would land the call two
+        nodes deep off a single decision. Dropping it is a no-op, not an
+        error -- the first, non-stale advance already did the real work.
+        Omitting *from_node_id* (every call site that predates this guard)
+        keeps the old, unguarded behaviour.
         """
         if self._ended:
             logger.debug("flow call=%s ignoring advance after the call ended", self._call_id)
+            return
+        if from_node_id is not None and from_node_id != self._current_node_id:
+            logger.info(
+                "flow call=%s dropping stale advance requested from %s: now at %s",
+                self._call_id,
+                from_node_id,
+                self._current_node_id,
+            )
             return
         self._auto_transitions = 0
         await self._follow(edge)
 
     async def on_user_turn(self) -> None:
-        """Re-evaluate the current node's equation edges, then its always_edge."""
-        if self._ended:
+        """Re-evaluate the current node's equation edges, then its always_edge.
+
+        A no-op until `start()` has actually run (see `_started`): called
+        before that, the "current node" has never been entered, so there are
+        no edges of its own to evaluate yet -- doing so anyway is the
+        start/first-user-turn race this guard closes.
+        """
+        if not self._started or self._ended:
             return
         self._auto_transitions = 0
         if self._pending_speech:

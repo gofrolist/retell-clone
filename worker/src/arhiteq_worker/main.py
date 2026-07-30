@@ -83,6 +83,24 @@ def _spawn(coro: Any) -> asyncio.Task[Any]:
     return task
 
 
+def _cancel_background_tasks() -> None:
+    """Cancel every task `_spawn` is still tracking.
+
+    `entrypoint`'s `_finalize` only ever cancelled its own `tasks` list
+    (the long-lived watchdogs/pumps registered via `_track`); a `_spawn`ed
+    flow transition — `_FlowWiring._transition`'s node walk, or the initial
+    `flow_wiring.start()` — was not in it, so an in-flight one could keep
+    running after teardown and `session.say`/`generate_reply` into a session
+    that no longer exists. `_background_tasks` already exists for exactly
+    this purpose (`_spawn` populates it and a livekit-agents job runs one
+    call per process, so there is nothing else in it to disturb); reusing it
+    here is the smallest change that closes the gap, rather than adding a
+    second tracking list alongside `tasks`.
+    """
+    for task in list(_background_tasks):
+        task.cancel()
+
+
 def _log_task_exception(task: asyncio.Task[Any]) -> None:
     """Surface a crashed background task instead of letting it die silently."""
     if not task.cancelled() and task.exception() is not None:
@@ -594,19 +612,27 @@ class _FlowWiring:
         async with self._lock:
             await self._runtime.on_user_turn()
 
-    async def _advance(self, edge: dict[str, Any]) -> None:
+    async def _advance(self, edge: dict[str, Any], *, from_node_id: str | None = None) -> None:
         if self._runtime is None:
             return
         async with self._lock:
-            await self._runtime.advance(edge)
+            await self._runtime.advance(edge, from_node_id=from_node_id)
 
     async def _transition(self, edge: dict[str, Any]) -> None:
         """A node tool chose *edge*: walk it, but not on the handler's stack.
 
         See the class docstring, decision (1) — this is the seam that keeps the
         node walk (and its awaited speech) out of the function-tool handler.
+
+        The node the runtime is on *right now* is captured before spawning,
+        not inside the spawned coroutine: two parallel `transition_to` calls
+        from the same node each capture the same id here, and only the one
+        that reaches `FlowRuntime.advance` while the cursor still matches it
+        is honoured — the other is a stale edge and is dropped there instead
+        of walking from wherever the first one already moved the call to.
         """
-        _spawn(self._advance(edge))
+        from_node_id = self._runtime.current_node_id if self._runtime is not None else None
+        _spawn(self._advance(edge, from_node_id=from_node_id))
 
     def _transition_by_id(self, edges: list[dict[str, Any]]) -> Callable[[str], Awaitable[None]]:
         """`make_transition_tool`'s callback: resolve the model's edge id, then walk it.
@@ -1037,6 +1063,11 @@ async def entrypoint(ctx: JobContext) -> None:
         state.finalized = True
         for task in tasks:
             task.cancel()
+        # Also cancel anything still in flight via `_spawn` (flow transitions,
+        # the goodbye timer, ...): none of those are in `tasks` above, so
+        # without this an in-flight one could outlive the call. See
+        # `_cancel_background_tasks`.
+        _cancel_background_tasks()
         state.ended_at_ms = state.ended_at_ms or now_ms()
         try:
             if state.call_id:

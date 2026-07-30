@@ -19,9 +19,13 @@ from arhiteq_worker.config import CallConfig, ConversationFlowConfig
 from arhiteq_worker.flow import FlowError, FlowGraph, prompt_edges
 from arhiteq_worker.main import (
     DEFAULT_GEMINI_MODEL,
+    _background_tasks,
+    _cancel_background_tasks,
     _FlowWiring,
     _gemini_model,
     _one_shot_completion,
+    _spawn,
+    _wire_session_events,
 )
 from arhiteq_worker.state import CallState
 
@@ -450,3 +454,115 @@ def test_a_classification_call_that_fails_answers_nothing() -> None:
     # Never raises: a branch that cannot be classified falls through to its
     # else_edge rather than taking the call down.
     assert _run(_one_shot_completion(_BrokenLLM(), "system", "user")) == ""
+
+
+# ---------------------------------------------------------------------------
+# FIX 3: spawned flow transitions are cancellable at teardown
+# ---------------------------------------------------------------------------
+
+
+def test_cancel_background_tasks_cancels_a_spawned_flow_transition() -> None:
+    """`_finalize` must be able to stop an in-flight `_spawn`ed advance.
+
+    `_spawn`ed work (a `_FlowWiring._transition` node walk, the initial
+    `flow_wiring.start()`) previously outlived `_finalize`, since only the
+    watchdog/pump `tasks` list was cancelled there -- an in-flight advance
+    could keep running and `say`/`generate_reply` into an already-closed
+    session. `_cancel_background_tasks` reuses the `_background_tasks` set
+    `_spawn` already tracks every such task in.
+    """
+
+    async def scenario() -> asyncio.Task:
+        never_settles = asyncio.get_event_loop().create_future()
+
+        async def pretend_flow_transition() -> None:
+            await never_settles
+
+        task = _spawn(pretend_flow_transition())
+        assert task in _background_tasks
+        await asyncio.sleep(0)  # let it start awaiting
+        assert not task.done()
+
+        _cancel_background_tasks()
+        await asyncio.sleep(0)  # let cancellation propagate
+        return task
+
+    task = _run(scenario())
+    assert task.cancelled()
+
+
+# ---------------------------------------------------------------------------
+# FIX 4: the session-event wiring that actually calls on_user_turn
+# ---------------------------------------------------------------------------
+
+
+class _FakeItem:
+    def __init__(self, role: str, text: str) -> None:
+        self.role = role
+        self.text_content = text
+
+
+class _FakeItemEvent:
+    def __init__(self, item: _FakeItem) -> None:
+        self.item = item
+
+
+class _EmitterSession(_FakeSession):
+    """`_FakeSession` plus the `.on(event)` decorator wiring actually uses."""
+
+    def __init__(self, *, tts: bool = True) -> None:
+        super().__init__(tts=tts)
+        self._handlers: dict[str, object] = {}
+
+    def on(self, event: str):
+        def decorator(fn):
+            self._handlers[event] = fn
+            return fn
+
+        return decorator
+
+    def fire(self, event: str, ev) -> None:
+        handler = self._handlers.get(event)
+        assert handler is not None, f"no handler registered for {event!r}"
+        handler(ev)
+
+
+class _FakeCallRuntime:
+    async def end_call(self, reason: str = "agent_hangup", *, flush_grace: bool = False) -> None:
+        pass
+
+
+def test_conversation_item_added_drives_on_user_turn_once_per_committed_user_turn() -> None:
+    """Nothing previously exercised `_wire_session_events`'s
+    `conversation_item_added` handler itself -- `on_user_turn` was only ever
+    called directly in tests. This drives the real handler through a fake
+    session's event emitter and checks it fires `on_user_turn` exactly once
+    per committed *user* turn, and not at all for agent turns.
+    """
+
+    calls: list[None] = []
+
+    async def on_user_turn() -> None:
+        calls.append(None)
+
+    async def scenario() -> None:
+        session = _EmitterSession()
+        state = CallState(call_id="call_1")
+        _wire_session_events(
+            session,
+            state,
+            _FakeCallRuntime(),
+            [],
+            {"open": False},
+            on_user_turn=on_user_turn,
+        )
+
+        session.fire("conversation_item_added", _FakeItemEvent(_FakeItem("assistant", "Hi there")))
+        session.fire("conversation_item_added", _FakeItemEvent(_FakeItem("user", "Hello")))
+        session.fire("conversation_item_added", _FakeItemEvent(_FakeItem("user", "Again")))
+        await _settle()
+
+        assert state.transcript_text()  # both roles were recorded either way
+
+    _run(scenario())
+    assert len(calls) == 2
