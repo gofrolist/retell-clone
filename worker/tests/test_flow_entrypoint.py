@@ -566,3 +566,88 @@ def test_conversation_item_added_drives_on_user_turn_once_per_committed_user_tur
 
     _run(scenario())
     assert len(calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# Backlogged user turns must not walk a chain of always_edges
+# ---------------------------------------------------------------------------
+
+
+class _GatedSession(_FakeSession):
+    """A session whose FIRST `say` blocks until the test releases it.
+
+    That is what holds `_FlowWiring`'s lock long enough for a second user turn
+    to queue up behind the first — the interleaving the guard exists for.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = asyncio.Event()
+        self._gated = True
+
+    async def say(self, text: str) -> None:
+        if self._gated:
+            self._gated = False
+            await self.gate.wait()
+        self.said.append(text)
+
+
+def _always_edge(edge_id: str, destination: str) -> dict:
+    return {
+        "id": edge_id,
+        "transition_condition": {"type": "prompt", "prompt": "Next"},
+        "destination_node_id": destination,
+    }
+
+
+def test_two_backlogged_user_turns_take_only_one_always_edge() -> None:
+    """`main.py` spawns `on_user_turn` per committed item, so a caller who
+    produces two turns while the agent is mid-`say` queues two of them behind
+    the flow lock. Unguarded, the first takes n1's ``always_edge`` to n2 and
+    the second immediately takes n2's to n3 — n2 is entered and left without
+    ever speaking to or hearing from the caller. The second turn is stale
+    (it was committed while the call was still on n1) and must be dropped,
+    exactly as `advance` drops a stale transition.
+    """
+    flow = {
+        "start_node_id": "n1",
+        "start_speaker": "agent",
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "Hi."},
+                "always_edge": _always_edge("a1", "n2"),
+            },
+            {
+                "id": "n2",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "Second."},
+                "always_edge": _always_edge("a2", "n3"),
+            },
+            {
+                "id": "n3",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "Third."},
+            },
+        ],
+    }
+
+    async def scenario():
+        wiring = _wiring(flow)
+        session, agent = _GatedSession(), _FakeAgent()
+        runtime = wiring.attach(session, agent)
+        start = asyncio.create_task(wiring.start())
+        await _settle()  # start is now inside the gated say, holding the lock
+
+        first = asyncio.create_task(wiring.on_user_turn())
+        second = asyncio.create_task(wiring.on_user_turn())
+        await _settle()  # both queue behind the lock, both while still on n1
+
+        session.gate.set()
+        await asyncio.gather(start, first, second)
+        return runtime, session
+
+    runtime, session = _run(scenario())
+    assert session.said == ["Hi.", "Second."]
+    assert runtime.current_node_id == "n2"

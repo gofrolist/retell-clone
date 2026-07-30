@@ -54,9 +54,28 @@ MAX_AUTOMATIC_TRANSITIONS = 20
 # end_call tool so call records stay consistent between the two paths.
 HANGUP_REASON = "agent_hangup"
 
+# Reason recorded when a node that can only route has nowhere to route to
+# (`_dead_end`). Not `HANGUP_REASON`: the agent did not decide to hang up, the
+# graph ran out of usable edges — the same reason `main.py` records when a flow
+# is rejected at load, so both graph problems read alike on the call record.
+DEAD_END_REASON = "error_unknown"
+
 # Same shape the built-in transfer tool enforces: a destination that reaches
 # the SIP leg must be strict E.164 unless the node opts out.
 _E164_RE = re.compile(r"^\+[1-9]\d{7,14}$")
+
+# Node types that exist only to ROUTE. They install no conversation of their
+# own (a ``branch`` speaks nothing at all; a ``transfer_call`` has said
+# whatever it was going to say before dialing) and cannot advance without an
+# edge, so one of these with nowhere to go is not "staying put" — it is
+# silence for the rest of the call, with the agent still holding the PREVIOUS
+# node's instructions and tools. `_dead_end` ends the call for these.
+# ``conversation``/``subagent`` are deliberately absent: they hold a live
+# model turn, so a node of theirs with no usable edge keeps talking, which is
+# a legitimate terminal-ish state rather than a dead end.
+_ROUTING_NODE_TYPES: frozenset[str] = frozenset(
+    {"branch", "function", "extract_dynamic_variables", "transfer_call"}
+)
 
 SetInstructions = Callable[[str], Awaitable[None]]
 SetTools = Callable[[list[Any]], Awaitable[None]]
@@ -254,21 +273,37 @@ class FlowRuntime:
         self._auto_transitions = 0
         await self._follow(edge)
 
-    async def on_user_turn(self) -> None:
+    async def on_user_turn(self, *, from_node_id: str | None = None) -> None:
         """Re-evaluate the current node's equation edges, then its always_edge.
 
         A no-op until `start()` has actually run (see `_started`): called
         before that, the "current node" has never been entered, so there are
         no edges of its own to evaluate yet -- doing so anyway is the
         start/first-user-turn race this guard closes.
+
+        *from_node_id* is the same cursor guard `advance` carries, for the
+        same reason. `main.py` spawns one of these per committed user item, so
+        a caller who produces two turns while the agent is mid-``say`` (the
+        lock is held) queues two of them: unguarded, the first takes N's
+        ``always_edge`` to M and the second immediately takes M's, so M is
+        entered and left without ever speaking to or hearing from the caller.
+        The second turn was committed while the call was still on N, so it is
+        stale and dropping it is a no-op, not an error. Omitting the argument
+        (every call site that predates this guard, and the tests that drive
+        turns one at a time) keeps the old, unguarded behaviour.
         """
         if not self._started or self._ended:
             return
+        if from_node_id is not None and from_node_id != self._current_node_id:
+            logger.info(
+                "flow call=%s dropping a stale user turn from %s: now at %s",
+                self._call_id,
+                from_node_id,
+                self._current_node_id,
+            )
+            return
         self._auto_transitions = 0
-        if self._pending_speech:
-            pending, self._pending_speech = self._pending_speech, []
-            for action in pending:
-                await action()
+        await self._flush_pending_speech()
         node = self._current_node()
         if node is None:
             return
@@ -353,6 +388,63 @@ class FlowRuntime:
             return
         await handler(node)
 
+    # -- injected-callable containment ---------------------------------------
+
+    async def _safely(self, what: str, action: Callable[..., Awaitable[Any]], *args: Any) -> bool:
+        """Await one injected callable, containing a failure to this one step.
+
+        Every side effect the runtime has is somebody else's callable (`say`,
+        `set_tools`, `set_instructions`, `generate_reply` — see the module
+        docstring). A raising one used to propagate straight out of `_enter`,
+        killing the spawned task that was walking the graph and leaving the
+        call on a HALF-entered node: instructions swapped, tools not, and
+        nothing left running to notice. Degrading instead — log the failure
+        against the node id and carry on with the rest of the entry — is
+        strictly better: the worst case becomes one missing line or one stale
+        tool set, not a stranded call.
+
+        Returns whether the callable succeeded, for callers that care.
+        """
+        try:
+            await action(*args)
+            return True
+        except Exception:
+            logger.exception(
+                "flow call=%s node %s: %s failed",
+                self._call_id,
+                self._current_node_id,
+                what,
+            )
+            return False
+
+    async def _flush_pending_speech(self) -> None:
+        """Run everything `_defer_speech` parked, in the order it was parked.
+
+        Called on the first user turn (the deferral's normal release) and by
+        `_enter_end` on the way out: a line parked by a ``start_speaker:
+        "user"`` start node whose ``skip_response_edge`` chain reaches an
+        ``end`` node has no user turn left to release it, and `_speak_static`
+        already reported it as spoken, so without this the closing line is
+        silently dropped and the call just hangs up.
+        """
+        if not self._pending_speech:
+            return
+        pending, self._pending_speech = self._pending_speech, []
+        for action in pending:
+            await action()
+
+    async def _clear_tools(self) -> None:
+        """Drop the installed tools before asking for a closing model turn.
+
+        `_enter_end` / `_enter_transfer_call` request a turn to phrase a
+        ``prompt`` instruction while the PREVIOUS node's tools are still
+        installed — so the model could call that stale ``transition_to``
+        instead of speaking the closing line, and the advance it spawns would
+        then race the hang-up/transfer immediately below. Neither node type
+        offers the model any tool of its own, so clearing is the whole fix.
+        """
+        await self._safely("set_tools", self._set_tools, [])
+
     # -- what the model is shown ---------------------------------------------
 
     def _model_view(self, node: dict[str, Any]) -> dict[str, Any]:
@@ -375,8 +467,25 @@ class FlowRuntime:
         """Hand the model this node: instructions plus its tools."""
         view = self._model_view(node)
         edges = prompt_edges(view, self._graph.global_nodes)
-        await self._set_instructions(node_instructions(view, self._graph, self._variables))
-        await self._set_tools(self._build_node_tools(node, edges))
+        # Contained, not awaited bare: a failing `set_instructions` must not
+        # abort the entry before the tools are installed (see `_safely`).
+        await self._safely(
+            "set_instructions",
+            self._set_instructions,
+            node_instructions(view, self._graph, self._variables),
+        )
+        try:
+            tools = self._build_node_tools(node, edges)
+        except Exception:
+            # Also injected (it constructs livekit tools), so also contained:
+            # a node with no tools still talks, a half-entered node does not.
+            logger.exception(
+                "flow call=%s node %s: build_node_tools failed",
+                self._call_id,
+                self._current_node_id,
+            )
+            tools = []
+        await self._safely("set_tools", self._set_tools, tools)
         return edges
 
     async def _speak_static(self, node: dict[str, Any]) -> bool:
@@ -391,9 +500,9 @@ class FlowRuntime:
         if not line:
             return False
         if self._defer_speech:
-            self._pending_speech.append(lambda line=line: self._say(line))
+            self._pending_speech.append(lambda line=line: self._safely("say", self._say, line))
             return True
-        await self._say(line)
+        await self._safely("say", self._say, line)
         return True
 
     async def _request_model_turn(self, instructions: str | None) -> None:
@@ -408,10 +517,12 @@ class FlowRuntime:
         """
         if self._defer_speech:
             self._pending_speech.append(
-                lambda instructions=instructions: self._generate_reply(instructions)
+                lambda instructions=instructions: self._safely(
+                    "generate_reply", self._generate_reply, instructions
+                )
             )
             return
-        await self._generate_reply(instructions)
+        await self._safely("generate_reply", self._generate_reply, instructions)
 
     # -- node handlers -------------------------------------------------------
 
@@ -511,10 +622,16 @@ class FlowRuntime:
         ):
             # A ``prompt`` instruction has to be phrased, and hanging up
             # right below is the last thing this node does — request a
-            # model turn now, or the line is lost entirely.
+            # model turn now, or the line is lost entirely. Drop the previous
+            # node's tools first, so the model voices the closing line instead
+            # of calling that node's stale ``transition_to``.
+            await self._clear_tools()
             await self._request_model_turn(
                 node_instructions(self._model_view(node), self._graph, self._variables)
             )
+        # Anything a ``start_speaker: "user"`` deferral parked has no user turn
+        # left to release it — this is the last chance to voice it.
+        await self._flush_pending_speech()
         self._ended = True
         logger.info("flow call=%s ending the call at node %s", self._call_id, self._current_node_id)
         await self._end_call(HANGUP_REASON)
@@ -526,7 +643,10 @@ class FlowRuntime:
                 # A ``prompt`` instruction has to be phrased, and a
                 # successful transfer ends this leg right below — request a
                 # model turn now, before dialing, or the line is lost
-                # entirely (same shape as the ``end``-node fix above).
+                # entirely (same shape as the ``end``-node fix above), with
+                # the previous node's tools dropped first so the model cannot
+                # call a stale ``transition_to`` in place of the line.
+                await self._clear_tools()
                 await self._request_model_turn(
                     node_instructions(self._model_view(node), self._graph, self._variables)
                 )
@@ -608,10 +728,45 @@ class FlowRuntime:
         """Take the node's guaranteed fallback (``else_edge``, else ``edge``)."""
         edge = fallback_edge(node)
         if edge is None:
-            logger.error(
-                "flow call=%s node %s has no transition to follow; staying put",
-                self._call_id,
-                self._current_node_id,
-            )
+            await self._dead_end(node)
             return
         await self._auto_follow(edge)
+
+    async def _dead_end(self, node: dict[str, Any]) -> None:
+        """*node* has no usable transition left. End the call, or stay put.
+
+        A dangling fallback edge (authored with no ``destination_node_id``)
+        cannot be caught by `FlowGraph.from_config` — there is no destination
+        to validate against — and the real
+        ``backend/tests/fixtures/retell_flows/prior_auth_hotline.json`` has two
+        of them, so this state is reachable on a real flow and the graph must
+        keep loading. What must not happen is what used to: log "staying put"
+        and return, leaving the agent on the PREVIOUS node's instructions and
+        tools with ``_ended`` false, so the caller hears nothing at all until
+        the inactivity watchdog fires. That is exactly the transfer-failure
+        trace on that fixture — `CallRuntime.transfer_call` errors on every
+        non-SIP (i.e. every web) call, the failure edge is dangling, and the
+        call goes silent.
+
+        So: a node that can hold a conversation stays put (the model keeps
+        talking — legitimate). A node that can only route
+        (`_ROUTING_NODE_TYPES`) ends the call instead of stalling it.
+        """
+        node_type = node.get("type")
+        if node_type not in _ROUTING_NODE_TYPES:
+            logger.error(
+                "flow call=%s node %s (%s) has no transition to follow; staying put",
+                self._call_id,
+                self._current_node_id,
+                node_type,
+            )
+            return
+        logger.error(
+            "flow call=%s node %s (%s) has no usable transition and cannot hold the "
+            "conversation; ending the call instead of stalling it",
+            self._call_id,
+            self._current_node_id,
+            node_type,
+        )
+        self._ended = True
+        await self._end_call(DEAD_END_REASON)

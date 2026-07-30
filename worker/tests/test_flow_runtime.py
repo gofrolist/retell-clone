@@ -13,9 +13,13 @@ import json
 import logging
 from typing import Any
 
-from arhiteq_worker.config import ConversationFlowConfig
+from arhiteq_worker.config import CallConfig, ConversationFlowConfig
 from arhiteq_worker.flow import FlowGraph
-from arhiteq_worker.flow_runtime import MAX_AUTOMATIC_TRANSITIONS, FlowRuntime
+from arhiteq_worker.flow_runtime import (
+    DEAD_END_REASON,
+    MAX_AUTOMATIC_TRANSITIONS,
+    FlowRuntime,
+)
 
 FLOW_LOGGER = "arhiteq-worker.flow"
 
@@ -582,16 +586,53 @@ def test_a_branch_whose_classify_names_an_unknown_edge_follows_the_else_edge() -
     assert runtime.current_node_id == "fallback"
 
 
-def test_a_branch_with_no_transition_at_all_stays_put_and_logs_an_error(caplog) -> None:
+def test_a_branch_with_no_transition_at_all_ends_the_call_instead_of_stalling(caplog) -> None:
+    """A routing node with no usable edge must END the call, never stay put.
+
+    This test used to pin the opposite ("stays put and logs an error"), which
+    enshrined the bug: a ``branch`` node speaks nothing and installs nothing,
+    so a branch that cannot route leaves the agent holding the PREVIOUS node's
+    instructions and tools with `_ended` still false — the caller hears
+    silence until the inactivity watchdog fires minutes later. Staying put is
+    only legitimate for a node that can hold a conversation
+    (``conversation``/``subagent``): the model keeps talking there. Do not
+    revert this to the stall.
+    """
     branch = {"id": "b1", "type": "branch"}
     fakes = Fakes()
     runtime = _runtime(_branch_flow(branch), fakes)
     with caplog.at_level(logging.ERROR, logger=FLOW_LOGGER):
         _run(runtime.start())
 
-    assert runtime.current_node_id == "b1"
     assert fakes.classify_calls == []
-    assert any(record.levelno == logging.ERROR for record in caplog.records)
+    assert fakes.ended == [DEAD_END_REASON]
+    assert runtime.ended is True
+    assert any("b1" in record.getMessage() for record in caplog.records if record.levelno >= 40)
+
+
+def test_a_conversation_node_with_nowhere_to_go_still_stays_put() -> None:
+    """The other half of the rule: a node that CAN hold a conversation is not
+    a dead end. It has instructions and tools installed and the model keeps
+    talking, so there is nothing to end.
+    """
+    flow = {
+        "start_node_id": "n1",
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "How can I help?"},
+            }
+        ],
+    }
+    fakes = Fakes()
+    runtime = _runtime(flow, fakes)
+    _run(runtime.start())
+    _run(runtime.on_user_turn())
+
+    assert runtime.current_node_id == "n1"
+    assert runtime.ended is False
+    assert fakes.ended == []
 
 
 # ---------------------------------------------------------------------------
@@ -1521,3 +1562,303 @@ def test_the_real_fixtures_stay_on_the_line_node_auto_transfers(prior_auth_flow)
     assert fakes.classify_calls == []
     assert fakes.transfers == ["+15555550101"]
     assert runtime.current_node_id == _TRANSFER_CALL_NODE_ID
+
+
+def test_the_real_fixtures_failed_transfer_ends_the_call_rather_than_stranding_the_caller(
+    prior_auth_flow, caplog
+) -> None:
+    """The live-caller case this whole rule exists for.
+
+    ``node-1773866123876`` ("Transfer Call") carries a single failure ``edge``
+    with NO ``destination_node_id`` — a dangling edge in the real sanitized
+    Retell capture, which `fallback_edge` rightly reports as ``None`` (there is
+    nowhere to send the call) and which `FlowGraph.from_config` cannot reject at
+    load (there is no destination to validate). `CallRuntime.transfer_call`
+    fails on every non-SIP call — i.e. every web call — so this path is not
+    exotic. Before the fix the runtime logged "staying put" and returned: the
+    agent still held the previous node's instructions and tools, ``_ended`` was
+    false, and the caller heard nothing at all until the inactivity watchdog
+    fired. Ending the call is the honest outcome.
+    """
+    fakes = Fakes(transfer_result=json.dumps({"error": "transfer not supported on this call"}))
+    runtime = _runtime(prior_auth_flow, fakes)
+    with caplog.at_level(logging.ERROR, logger=FLOW_LOGGER):
+        _run(runtime.advance({"id": "x", "destination_node_id": _TRANSFER_CALL_NODE_ID}))
+
+    assert fakes.transfers == ["+15555550101"]
+    assert fakes.ended == [DEAD_END_REASON]
+    assert runtime.ended is True
+    assert any(
+        _TRANSFER_CALL_NODE_ID in record.getMessage()
+        for record in caplog.records
+        if record.levelno >= logging.ERROR
+    )
+
+
+# ---------------------------------------------------------------------------
+# A flow's default_dynamic_variables
+# ---------------------------------------------------------------------------
+
+
+def _defaults_flow() -> dict[str, Any]:
+    return {
+        "start_node_id": "n1",
+        "default_dynamic_variables": {"caller_name": "Dana", "plan_tier": "gold"},
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "Hi {{caller_name}}."},
+                "edges": [
+                    {
+                        "id": "e-gold",
+                        "transition_condition": _equation_condition("{{plan_tier}}", "==", "gold"),
+                        "destination_node_id": "n2",
+                    }
+                ],
+            },
+            {
+                "id": "n2",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "Connecting you to the gold desk."},
+            },
+        ],
+    }
+
+
+def _flow_call_variables(flow: dict[str, Any], **dynamic_variables: Any) -> Any:
+    """The live variables mapping a flow-backed call actually runs on."""
+    cfg = CallConfig.from_dict(
+        {
+            "call_id": "call_abc",
+            "call_type": "web_call",
+            "conversation_flow": flow,
+            "dynamic_variables": dynamic_variables,
+        }
+    )
+    return cfg.resolution_variables()
+
+
+def test_a_flows_default_dynamic_variables_reach_the_live_call() -> None:
+    """Nothing read ``default_dynamic_variables`` end to end before this.
+
+    A flow-backed agent has ``llm: null``, so the control plane's own
+    defaults-merge (which only runs when an LLM exists) never fires for it:
+    the flow's defaults reached the worker in the call config and were then
+    dropped on the floor. Two visible consequences, both asserted here — the
+    greeting speaks the raw ``{{caller_name}}`` placeholder, and every
+    ``equation`` edge testing a defaulted variable reads *missing* (hence
+    False), silently degrading equation routing to the else/fallback path.
+    """
+    flow = _defaults_flow()
+    fakes = Fakes()
+    runtime = _runtime(flow, fakes, variables=_flow_call_variables(flow))
+
+    _run(runtime.start())
+    assert fakes.said == ["Hi Dana."]
+
+    # The equation edge tests a variable that only the flow's defaults supply.
+    _run(runtime.on_user_turn())
+    assert runtime.current_node_id == "n2"
+    assert fakes.said == ["Hi Dana.", "Connecting you to the gold desk."]
+
+
+def test_a_call_level_variable_still_beats_the_flows_default() -> None:
+    """Precedence matches the single-prompt path: defaults < call-level."""
+    flow = _defaults_flow()
+    fakes = Fakes()
+    runtime = _runtime(
+        flow, fakes, variables=_flow_call_variables(flow, caller_name="Renata", plan_tier="silver")
+    )
+
+    _run(runtime.start())
+    _run(runtime.on_user_turn())
+
+    assert fakes.said == ["Hi Renata."]
+    assert runtime.current_node_id == "n1"  # plan_tier is silver: no gold edge
+
+
+# ---------------------------------------------------------------------------
+# Deferred speech must not be lost on the way out
+# ---------------------------------------------------------------------------
+
+
+def test_an_end_node_flushes_speech_deferred_by_start_speaker_user() -> None:
+    """``start_speaker: "user"`` parks the start node's line in
+    `_pending_speech`; `_speak_static` reports it as spoken, so an ``end``
+    node downstream of a ``skip_response_edge`` chain hung up on a queue that
+    nothing ever drained and the caller heard neither line.
+    """
+    flow = {
+        "start_node_id": "n1",
+        "start_speaker": "user",
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "One moment."},
+                "skip_response_edge": {
+                    "id": "skip",
+                    "transition_condition": _prompt_condition("Skip response"),
+                    "destination_node_id": "n_end",
+                },
+            },
+            {
+                "id": "n_end",
+                "type": "end",
+                "speak_during_execution": True,
+                "instruction": {"type": "static_text", "text": "Goodbye."},
+            },
+        ],
+    }
+    fakes = Fakes()
+    runtime = _runtime(flow, fakes)
+    _run(runtime.start())
+
+    assert fakes.said == ["One moment.", "Goodbye."]
+    assert fakes.ended == ["agent_hangup"]
+
+
+# ---------------------------------------------------------------------------
+# The closing line must not be pre-empted by the previous node's tools
+# ---------------------------------------------------------------------------
+
+
+def _closing_line_events(fakes: Fakes) -> list[str]:
+    """Record the order of `set_tools` / `generate_reply` calls on *fakes*."""
+    events: list[str] = []
+    original_set_tools = fakes.set_tools
+    original_generate_reply = fakes.generate_reply
+
+    async def set_tools(tools: list[Any]) -> None:
+        events.append(f"set_tools:{len(tools)}")
+        await original_set_tools(tools)
+
+    async def generate_reply(instructions: str | None) -> None:
+        events.append("generate_reply")
+        await original_generate_reply(instructions)
+
+    fakes.set_tools = set_tools  # type: ignore[method-assign]
+    fakes.generate_reply = generate_reply  # type: ignore[method-assign]
+    return events
+
+
+def test_an_end_node_drops_the_previous_nodes_tools_before_its_closing_turn() -> None:
+    """Otherwise the model can call the *previous* node's still-installed
+    ``transition_to`` instead of voicing the closing line — and that spawned
+    advance then races the hang-up right below it.
+    """
+    flow = {
+        "start_node_id": "n1",
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "Anything else?"},
+                "edges": [
+                    {
+                        "id": "e-done",
+                        "transition_condition": _prompt_condition("Caller is done"),
+                        "destination_node_id": "n_end",
+                    }
+                ],
+            },
+            {
+                "id": "n_end",
+                "type": "end",
+                "speak_during_execution": True,
+                "instruction": {"type": "prompt", "text": "Thank the caller and say goodbye."},
+            },
+        ],
+    }
+    fakes = Fakes()
+    events = _closing_line_events(fakes)
+    runtime = _runtime(flow, fakes)
+    _run(runtime.start())
+    _run(runtime.advance({"id": "e-done", "destination_node_id": "n_end"}))
+
+    assert events[-2:] == ["set_tools:0", "generate_reply"]
+    assert fakes.ended == ["agent_hangup"]
+
+
+def test_a_transfer_node_drops_the_previous_nodes_tools_before_its_closing_turn() -> None:
+    fakes = Fakes()
+    events = _closing_line_events(fakes)
+    runtime = _runtime(
+        _transfer_flow(
+            {"type": "predefined", "number": "+15555550101"},
+            speak_during_execution=True,
+            instruction={"type": "prompt", "text": "Tell the caller you are transferring them."},
+        ),
+        fakes,
+    )
+    _run(runtime.start())
+
+    assert events[-2:] == ["set_tools:0", "generate_reply"]
+    assert fakes.transfers == ["+15555550101"]
+
+
+# ---------------------------------------------------------------------------
+# A raising injected callable degrades; it never strands the call mid-entry
+# ---------------------------------------------------------------------------
+
+
+def _one_node_flow() -> dict[str, Any]:
+    return {
+        "start_node_id": "n1",
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "Hello there."},
+            }
+        ],
+    }
+
+
+def test_a_raising_set_tools_still_leaves_the_node_entered(caplog) -> None:
+    fakes = Fakes()
+
+    async def set_tools(tools: list[Any]) -> None:
+        raise RuntimeError("session closed")
+
+    fakes.set_tools = set_tools  # type: ignore[method-assign]
+    runtime = _runtime(_one_node_flow(), fakes)
+    with caplog.at_level(logging.ERROR, logger=FLOW_LOGGER):
+        _run(runtime.start())
+
+    # The node's line is still delivered: entry degraded, it did not abort.
+    assert fakes.said == ["Hello there."]
+    assert runtime.current_node_id == "n1"
+    assert any(record.levelno >= logging.ERROR for record in caplog.records)
+
+
+def test_a_raising_say_does_not_propagate_out_of_entry(caplog) -> None:
+    fakes = Fakes()
+
+    async def say(text: str) -> None:
+        raise RuntimeError("no audio track")
+
+    fakes.say = say  # type: ignore[method-assign]
+    runtime = _runtime(_one_node_flow(), fakes)
+    with caplog.at_level(logging.ERROR, logger=FLOW_LOGGER):
+        _run(runtime.start())
+
+    assert runtime.current_node_id == "n1"
+    assert any(record.levelno >= logging.ERROR for record in caplog.records)
+
+
+def test_a_raising_set_instructions_does_not_propagate_out_of_entry(caplog) -> None:
+    fakes = Fakes()
+
+    async def set_instructions(text: str) -> None:
+        raise RuntimeError("agent detached")
+
+    fakes.set_instructions = set_instructions  # type: ignore[method-assign]
+    runtime = _runtime(_one_node_flow(), fakes)
+    with caplog.at_level(logging.ERROR, logger=FLOW_LOGGER):
+        _run(runtime.start())
+
+    # Tools still installed and the line still spoken: no half-entered node.
+    assert fakes.tools and fakes.said == ["Hello there."]
+    assert any(record.levelno >= logging.ERROR for record in caplog.records)

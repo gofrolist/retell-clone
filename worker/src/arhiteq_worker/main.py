@@ -607,10 +607,22 @@ class _FlowWiring:
             await self._runtime.start()
 
     async def on_user_turn(self) -> None:
+        """A user turn was committed: re-evaluate the node it was committed on.
+
+        The cursor is captured HERE, before the lock — the same guard, and for
+        the same reason, as `_transition` captures it before spawning an
+        advance. `_wire_session_events` spawns one of these per committed user
+        item, so a caller who produces two turns while the agent is mid-`say`
+        (holding the lock) queues two: unguarded, the first takes N's
+        ``always_edge`` to M and the second takes M's straight away, and M is
+        entered and left without ever speaking or listening. Both capture N
+        here, so the second is recognised as stale and dropped.
+        """
         if self._runtime is None:
             return
+        from_node_id = self._runtime.current_node_id
         async with self._lock:
-            await self._runtime.on_user_turn()
+            await self._runtime.on_user_turn(from_node_id=from_node_id)
 
     async def _advance(self, edge: dict[str, Any], *, from_node_id: str | None = None) -> None:
         if self._runtime is None:

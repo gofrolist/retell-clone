@@ -227,9 +227,26 @@ class CallConfig:
         {{session_duration}}, …) resolve lazily underneath user variables —
         see ResolutionVariables. Un-suffixed time variables use the agent's
         configured timezone ("Current Time Awareness").
+
+        A conversation flow's own ``default_dynamic_variables`` go in
+        UNDERNEATH ``dynamic_variables``, matching the single-prompt path's
+        precedence (defaults < call-level, already merged control-plane side
+        for an LLM-backed agent). A flow-backed agent has ``llm: null``, so
+        that control-plane merge never runs for it and the flow's defaults
+        would otherwise be parsed and then dropped — a greeting would speak
+        the raw ``{{caller_name}}`` and every ``equation`` edge testing a
+        defaulted variable would read *missing*, silently degrading equation
+        routing to the else/fallback path. Nothing changes for the
+        single-prompt path: without a flow this merges an empty mapping.
         """
+        flow_defaults = (
+            self.conversation_flow.default_dynamic_variables
+            if self.conversation_flow is not None
+            else {}
+        )
         return ResolutionVariables(
             {
+                **flow_defaults,
                 **self.dynamic_variables,
                 "call.call_id": self.call_id,
                 "call.direction": self.direction,

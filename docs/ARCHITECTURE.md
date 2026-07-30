@@ -205,6 +205,26 @@ An unsupported node type or an edge into a missing node aborts the call
 immediately, naming the offending node id in the log — never a dead end
 discovered ninety seconds into a live call.
 
+**A routing node with nowhere to go ends the call.** One dead end load-time
+validation cannot catch is a *dangling* edge — authored with no
+`destination_node_id` at all, so there is no destination to check against.
+Real Retell captures contain these (a `transfer_call` node's failure edge, a
+`function` node's `else_edge`), and a transfer fails on every non-SIP call, so
+the path is ordinary rather than exotic. A node that can hold a conversation
+(`conversation` / `subagent`) simply stays where it is — the model keeps
+talking, which is a legitimate end state. A node that can only route
+(`branch`, `function`, `extract_dynamic_variables`, `transfer_call`) speaks
+nothing and cannot advance, so staying put would be silence for the rest of
+the call: the worker logs the node id at error and hangs up instead.
+
+**A flow's `default_dynamic_variables`** are merged underneath the call's own
+`dynamic_variables`, exactly as the control plane merges an LLM's defaults on
+the single-prompt path (defaults < call-level). A flow-backed agent has no
+LLM, so that control-plane merge never runs for it and the worker does it —
+otherwise a greeting would speak the raw `{{caller_name}}` and every
+`equation` edge testing a defaulted variable would read *missing*, silently
+degrading equation routing to the fallback edge.
+
 **A bounded automatic-transition budget** stops a cycle of nodes that never
 wait for a user turn (an all-equation `branch` looping back on itself, say)
 from spinning forever inside a single turn; the budget resets on every real
