@@ -100,6 +100,36 @@ Good news discovered during mapping (see `docs/RETELL_INTEGRATION_MAP.md`):
 | `RETELL_FUNCTION_SECRET` | unchanged (= `ARHITEQ_FUNCTION_SECRET`) |
 | `ENFORCE_WEBHOOK_SIGNATURES` / `ENFORCE_CALLER_AUTH` | `true` after stabilization |
 
+## Known gap — legacy flow-backed agents don't freeze their published graph
+
+`agent_versions.flow_snapshot` (see `docs/AGENT_VERSIONING.md`) is only ever
+written when a version is published or when `services/versions.ensure_seeded`
+lazily seeds an agent's *first* version row. An agent that was published
+before conversation-flow snapshotting shipped already had that first row —
+seeding is a no-op for it — so its published version keeps `flow_snapshot =
+NULL` forever. `resolve_with_flow` degrades a `NULL` snapshot to serving the
+**live** flow row instead of a frozen one.
+
+- **Affected:** flow-backed agents published before this change — in
+  practice, exactly the agents `scripts/import_usan_agents.py` creates during
+  Phase 1 of this runbook, if any of them are later converted to a
+  conversation flow rather than a plain prompt.
+- **Consequence:** editing that flow's graph reaches every in-flight call
+  pinned to the affected published version, not just new calls — the one
+  thing this feature exists to prevent.
+- **Remedy:** publish the agent once more (with no other change needed). A
+  publish always snapshots the current draft/live config, so the resulting
+  version carries a real `flow_snapshot` and the freeze guarantee applies from
+  then on. This does **not** get automated at boot — see
+  `docs/AGENT_VERSIONING.md`; backfilling a snapshot for an already-published
+  version would freeze today's graph as though it were what was actually
+  published, which is not something safe to do without an operator's
+  sign-off.
+- **How to spot one:** `resolve_with_flow` logs a warning naming the agent id
+  and version — `"agent %s version %s is published with no flow snapshot;
+  serving the live conversation flow ... instead of a frozen one"` — the
+  first time a pinned call resolves it (see `services/versions.py`).
+
 ## Open items to agree with stakeholders (spec §10)
 
 - Voicemail: Arhiteq sets **both** `call_analysis.in_voicemail` and

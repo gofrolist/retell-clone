@@ -30,6 +30,13 @@ of that: editing a graph makes every owning agent unpublished until it is
 published again, and a flow shared by several agents drafts all of them at
 once.
 
+A served `conversation_flow`'s own `version` and `last_modification_timestamp`
+are **not** frozen by any of this: `resolve_with_flow`'s `_detach` path reports
+the flow row's live counter and timestamp (which a co-owner sharing the same
+flow can still bump), and its deleted-flow rebuild path (`_rebuild_flow`)
+reports the agent version's instead. The two fields are bookkeeping, not a
+cache key — consumers must not cache on a flow's `version`.
+
 ## Model
 
 `agent_versions` (composite PK `(agent_id, version)`), plus
@@ -38,9 +45,9 @@ once.
 - Versions number `0..N` monotonically. `agents.published_version` names the one
   live calls resolve against.
 - **Published versions are immutable.** Their config is frozen in
-  `agent_snapshot` + `llm_snapshot` (raw column values for everything except
-  identity/bookkeeping columns, so a column added later is captured without a
-  second allowlist to maintain).
+  `agent_snapshot` + `llm_snapshot` + `flow_snapshot` (raw column values for
+  everything except identity/bookkeeping columns, so a column added later is
+  captured without a second allowlist to maintain).
 - **At most one draft**, and it is always the highest version `N`. A draft stores
   no snapshot — *its content is the live `agents` + `retell_llms` rows*. That is
   what keeps autosave cheap: editing goes through the ordinary
