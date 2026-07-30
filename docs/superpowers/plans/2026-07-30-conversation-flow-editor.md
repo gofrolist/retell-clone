@@ -435,9 +435,20 @@ describe("reducer actions", () => {
       shape: "edges",
       destinationNodeId: b.id,
     });
-    const added = iterNodeEdges((next.nodes as FlowNode[])[0]).at(-1)!;
-    expect(added.edge.destination_node_id).toBe(b.id);
+    // Locate the addition by shape+destination, NOT by position. This
+    // fixture's "Welcome Node" already carries an `always_edge` and zero
+    // `edges[]`, and `iterNodeEdges` sorts single-edge shapes after `edges[]`
+    // — so `.at(-1)` would return that pre-existing always_edge instead.
+    const added = iterNodeEdges((next.nodes as FlowNode[])[0]).find(
+      (e) => e.shape === "edges" && e.edge.destination_node_id === b.id,
+    )!;
+    expect(added).toBeDefined();
     expect(added.edge.transition_condition).toEqual({ type: "prompt", prompt: "" });
+    expect(typeof added.edge.id).toBe("string");
+    // The node gained exactly one edge, in the shape asked for.
+    expect(iterNodeEdges((next.nodes as FlowNode[])[0]).length).toBe(
+      iterNodeEdges(a).length + 1,
+    );
   });
 
   test("a single-edge shape replaces rather than appends", () => {
