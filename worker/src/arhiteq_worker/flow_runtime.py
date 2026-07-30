@@ -154,11 +154,17 @@ class FlowRuntime:
         # speaks, so the start node's verbatim line waits for that turn
         # instead of being dropped.
         self._defer_speech = False
-        # A list, not a single slot: an auto-follow chain (skip_response_edge
-        # cascades) can park more than one line while `_defer_speech` is
-        # still true (it is only reset in `start`'s ``finally``), and each
-        # one must reach the caller once the first user turn arrives.
-        self._pending_speech: list[str] = []
+        # A list of thunks, not a single slot or a list of strings: an
+        # auto-follow chain (skip_response_edge cascades) can park more than
+        # one thing to do while `_defer_speech` is still true (it is only
+        # reset in `start`'s ``finally``) -- a static line to `say`, a model
+        # turn to `generate_reply` for a ``prompt`` instruction, or both, in
+        # whichever order they were produced -- and each one must run, in
+        # that order, once the first user turn arrives. Storing thunks
+        # (rather than e.g. a tagged union) keeps the two speech paths
+        # symmetric: neither is special-cased over the other, both are just
+        # "a deferred thing to await".
+        self._pending_speech: list[Callable[[], Awaitable[None]]] = []
 
         self._handlers: dict[str, Callable[[dict[str, Any]], Awaitable[None]]] = {
             # ``subagent``'s field set is a strict subset of
@@ -225,8 +231,8 @@ class FlowRuntime:
         self._auto_transitions = 0
         if self._pending_speech:
             pending, self._pending_speech = self._pending_speech, []
-            for line in pending:
-                await self._say(line)
+            for action in pending:
+                await action()
         node = self._current_node()
         if node is None:
             return
@@ -341,18 +347,35 @@ class FlowRuntime:
         """Speak a ``static_text`` instruction verbatim. True if there was one.
 
         A ``prompt`` instruction is not handled here at all — phrasing one
-        needs a model turn, which is `_generate_reply`'s job, not this
+        needs a model turn, which is `_request_model_turn`'s job, not this
         method's; callers that must voice a prompt instruction with no user
-        turn to trigger one naturally call `_generate_reply` themselves.
+        turn to trigger one naturally call `_request_model_turn` themselves.
         """
         line = static_text(node, self._variables)
         if not line:
             return False
         if self._defer_speech:
-            self._pending_speech.append(line)
+            self._pending_speech.append(lambda line=line: self._say(line))
             return True
         await self._say(line)
         return True
+
+    async def _request_model_turn(self, instructions: str | None) -> None:
+        """Ask for a model turn to phrase a ``prompt`` instruction, deferring like `_speak_static`.
+
+        Symmetric with `_speak_static`: when `_defer_speech` is set (a
+        ``start_speaker: "user"`` node must not have the agent open the
+        conversation), the turn is parked in `_pending_speech` instead of
+        requested immediately, so it lands only once the caller's first turn
+        releases the deferral -- in the same relative order as any static
+        line parked alongside it.
+        """
+        if self._defer_speech:
+            self._pending_speech.append(
+                lambda instructions=instructions: self._generate_reply(instructions)
+            )
+            return
+        await self._generate_reply(instructions)
 
     # -- node handlers -------------------------------------------------------
 
@@ -370,7 +393,7 @@ class FlowRuntime:
         not skip speaking: the node installs and speaks exactly like any
         other node — a ``static_text`` line via `_speak_static`, or, when
         that line is a ``prompt`` instead, by requesting a model turn via
-        `_generate_reply` (there is no next user turn to trigger one
+        `_request_model_turn` (there is no next user turn to trigger one
         naturally here) — and only then, with no user turn in between,
         immediately follows the skip_response_edge, unless an equation edge
         fires first (equation edges take precedence at every transition
@@ -400,7 +423,7 @@ class FlowRuntime:
             # The line has to be phrased and nothing else will trigger a
             # model turn before the auto-follow below — ask for one now,
             # from the instructions `_install` just set.
-            await self._generate_reply(None)
+            await self._request_model_turn(None)
         edge = select_equation_edge(node, self._variables, exclude_edge=skip)
         if edge is None:
             edge = skip
@@ -453,7 +476,7 @@ class FlowRuntime:
             # A ``prompt`` instruction has to be phrased, and hanging up
             # right below is the last thing this node does — request a
             # model turn now, or the line is lost entirely.
-            await self._generate_reply(
+            await self._request_model_turn(
                 node_instructions(self._model_view(node), self._graph, self._variables)
             )
         self._ended = True
@@ -462,7 +485,15 @@ class FlowRuntime:
 
     async def _enter_transfer_call(self, node: dict[str, Any]) -> None:
         if node.get("speak_during_execution"):
-            await self._speak_static(node)
+            spoken = await self._speak_static(node)
+            if not spoken and _is_prompt_instruction(node):
+                # A ``prompt`` instruction has to be phrased, and a
+                # successful transfer ends this leg right below — request a
+                # model turn now, before dialing, or the line is lost
+                # entirely (same shape as the ``end``-node fix above).
+                await self._request_model_turn(
+                    node_instructions(self._model_view(node), self._graph, self._variables)
+                )
         number = self._transfer_number(node)
         if not number:
             await self._follow_fallback(node)

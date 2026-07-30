@@ -381,6 +381,56 @@ def test_a_transfer_node_speaks_its_line_when_speak_during_execution_is_true() -
 
     assert fakes.said == ["Please stay on the line."]
     assert fakes.transfers == ["+15555550101"]
+    # A static_text line is said verbatim; no model turn is requested for it.
+    assert fakes.generate_reply_calls == []
+
+
+def test_a_transfer_node_requests_a_model_turn_for_a_prompt_instruction_before_transferring() -> (
+    None
+):
+    """The same shape as the ``end``-node bug: a successful transfer sets
+    ``_ended`` and hands the leg off, so nothing would ever trigger a model
+    turn after the fact. A ``prompt`` instruction with
+    ``speak_during_execution: true`` must be requested BEFORE the transfer is
+    attempted, or the line is silently lost and the call transfers in
+    silence.
+    """
+    events: list[str] = []
+    fakes = Fakes()
+    original_generate_reply = fakes.generate_reply
+    original_transfer_call = fakes.transfer_call
+
+    async def generate_reply(instructions: str | None) -> None:
+        events.append("generate_reply")
+        await original_generate_reply(instructions)
+
+    async def transfer_call(number: str) -> str:
+        events.append("transfer_call")
+        return await original_transfer_call(number)
+
+    fakes.generate_reply = generate_reply  # type: ignore[method-assign]
+    fakes.transfer_call = transfer_call  # type: ignore[method-assign]
+
+    runtime = _runtime(
+        _transfer_flow(
+            {"type": "predefined", "number": "+15555550101"},
+            speak_during_execution=True,
+            instruction={
+                "type": "prompt",
+                "text": "Tell them you're connecting them to a specialist",
+            },
+        ),
+        fakes,
+    )
+    _run(runtime.start())
+
+    # No say() for the prompt line -- it was requested as a model turn instead.
+    assert fakes.said == []
+    assert len(fakes.generate_reply_calls) == 1
+    assert "connecting them to a specialist" in (fakes.generate_reply_calls[0] or "")
+    assert fakes.transfers == ["+15555550101"]
+    # The model turn happened strictly before the transfer was attempted.
+    assert events == ["generate_reply", "transfer_call"]
 
 
 # ---------------------------------------------------------------------------
@@ -1212,6 +1262,54 @@ def test_start_speaker_user_accumulates_pending_speech_across_a_skip_chain() -> 
 
     _run(runtime.on_user_turn())
     assert fakes.said == ["First line.", "Second line."]
+
+
+def test_start_speaker_user_defers_a_prompt_instructions_model_turn_too() -> None:
+    """`_generate_reply` must be gated by `_defer_speech` exactly like `_speak_static` is.
+
+    A start node with ``start_speaker: "user"``, a ``prompt`` instruction,
+    and a ``skip_response_edge`` (so nothing but the runtime itself would
+    ever trigger the model turn) must not have the agent speak first: the
+    turn is parked until the caller's first turn, mirroring
+    ``test_a_skip_response_edge_with_a_prompt_instruction_requests_a_model_turn_before_advancing``
+    but with the greeting deferred.
+    """
+    flow = {
+        "start_node_id": "n1",
+        "start_speaker": "user",
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "conversation",
+                "instruction": {"type": "prompt", "text": "Say there is no case on file."},
+                "edges": [],
+                "skip_response_edge": {
+                    "id": "skip-1",
+                    "transition_condition": _prompt_condition("Always"),
+                    "destination_node_id": "n2",
+                },
+            },
+            {
+                "id": "n2",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "Anything else?"},
+            },
+        ],
+    }
+    fakes = Fakes()
+    runtime = _runtime(flow, fakes)
+    _run(runtime.start())
+
+    # Deferred: no model turn requested yet, and nothing said -- the agent
+    # must not open the conversation.
+    assert fakes.generate_reply_calls == []
+    assert fakes.said == []
+
+    _run(runtime.on_user_turn())
+    # Released in order: the deferred model turn (n1), then the deferred
+    # static line (n2) parked right behind it during the same skip cascade.
+    assert fakes.generate_reply_calls == [None]
+    assert fakes.said == ["Anything else?"]
 
 
 def test_nothing_is_spoken_after_the_call_has_ended() -> None:
