@@ -328,42 +328,72 @@ async def discard(session: AsyncSession, agent: Agent, version: int) -> None:
 
 
 async def _restore_config(session: AsyncSession, agent: Agent, version: AgentVersion) -> None:
-    """Write a version's snapshot back onto the live agent + LLM rows.
+    """Write a version's snapshot back onto the live agent + LLM/flow rows.
 
     Order matters: the agent snapshot carries `response_engine`, so it has to
-    land *before* the LLM is loaded. Loading first would fetch whatever engine
-    the outgoing draft pointed at and then write the restored version's prompt
-    into that unrelated LLM.
+    land *before* the LLM/flow is loaded. Loading first would fetch whatever
+    engine the outgoing draft pointed at and then write the restored version's
+    config into that unrelated LLM/flow.
     """
     _restore(agent, version.agent_snapshot, _AGENT_EXCLUDED)
     llm = await _load_llm(session, agent)
-    if llm is None:
+    if llm is not None:
+        snapshot = version.llm_snapshot or {}
+        if not all(getattr(llm, field, None) == value for field, value in snapshot.items()):
+            # An LLM shared by several agents is one config for all of them
+            # (that is already true of ordinary prompt edits), so restoring
+            # would rewrite the other agents' prompt. Fork a private copy
+            # instead of corrupting theirs.
+            sharers = [
+                a
+                for a in await agents_using_llm(session, agent.workspace_id, llm.llm_id)
+                if a.agent_id != agent.agent_id
+            ]
+            if sharers:
+                copy = RetellLLM(
+                    workspace_id=agent.workspace_id,
+                    **{
+                        c.name: getattr(llm, c.name)
+                        for c in llm.__table__.columns
+                        if c.name not in _LLM_EXCLUDED
+                    },
+                )
+                session.add(copy)
+                await session.flush()
+                agent.response_engine = {**(agent.response_engine or {}), "llm_id": copy.llm_id}
+                llm = copy
+            _restore(llm, version.llm_snapshot, _LLM_EXCLUDED)
+    flow = await _load_flow(session, agent)
+    if flow is None:
         return
-    snapshot = version.llm_snapshot or {}
-    if all(getattr(llm, field, None) == value for field, value in snapshot.items()):
-        return  # already the restored config — nothing to write, nothing to fork
-    # An LLM shared by several agents is one config for all of them (that is
-    # already true of ordinary prompt edits), so restoring would rewrite the
-    # other agents' prompt. Fork a private copy instead of corrupting theirs.
-    sharers = [
+    flow_snapshot = version.flow_snapshot or {}
+    if all(getattr(flow, field, None) == value for field, value in flow_snapshot.items()):
+        return  # already the restored graph — nothing to write, nothing to fork
+    # A flow shared by several agents is one config for all of them (same
+    # reasoning as the LLM fork above), so restoring in place would rewrite
+    # the other agents' graph. Fork a private copy instead of corrupting theirs.
+    flow_sharers = [
         a
-        for a in await agents_using_llm(session, agent.workspace_id, llm.llm_id)
+        for a in await agents_using_flow(session, agent.workspace_id, flow.conversation_flow_id)
         if a.agent_id != agent.agent_id
     ]
-    if sharers:
-        copy = RetellLLM(
+    if flow_sharers:
+        copy = ConversationFlow(
             workspace_id=agent.workspace_id,
             **{
-                c.name: getattr(llm, c.name)
-                for c in llm.__table__.columns
-                if c.name not in _LLM_EXCLUDED
+                c.name: getattr(flow, c.name)
+                for c in flow.__table__.columns
+                if c.name not in _FLOW_EXCLUDED
             },
         )
         session.add(copy)
         await session.flush()
-        agent.response_engine = {**(agent.response_engine or {}), "llm_id": copy.llm_id}
-        llm = copy
-    _restore(llm, version.llm_snapshot, _LLM_EXCLUDED)
+        agent.response_engine = {
+            **(agent.response_engine or {}),
+            "conversation_flow_id": copy.conversation_flow_id,
+        }
+        flow = copy
+    _restore(flow, version.flow_snapshot, _FLOW_EXCLUDED)
 
 
 async def _max_version(session: AsyncSession, agent_id: str) -> int:
@@ -470,13 +500,17 @@ async def resolve_with_flow(
     """
     pinned, llm, version = await resolve(session, agent, ref, strict=strict)
     flow = await _load_flow(session, pinned)
-    row = await _get(session, agent.agent_id, version)
+    flow_id = (pinned.response_engine or {}).get("conversation_flow_id")
+    # Single-prompt agents (no conversation_flow_id) are the common case on
+    # this hot path — skip the extra version-row SELECT for them; `flow` is
+    # already known to be None and there is nothing a row could add.
+    row = await _get(session, agent.agent_id, version) if flow_id else None
     if flow is None:
         # The live row is gone (deleted flow) but the pinned version's snapshot
         # still holds the whole graph — rebuild a transient row from it rather
         # than serve null for a version that is otherwise fully resolvable.
         if row is not None and row.flow_snapshot:
-            return pinned, llm, _rebuild_flow(pinned, row.flow_snapshot), version
+            return pinned, llm, _rebuild_flow(pinned, row.flow_snapshot, row), version
         return pinned, llm, flow, version
     if row is None or row.flow_snapshot is None:
         if row is not None and row.is_published:
@@ -491,7 +525,7 @@ async def resolve_with_flow(
     return pinned, llm, _detach(flow, row.flow_snapshot, _FLOW_EXCLUDED), version
 
 
-def _rebuild_flow(agent: Agent, snapshot: dict[str, Any]) -> ConversationFlow:
+def _rebuild_flow(agent: Agent, snapshot: dict[str, Any], row: AgentVersion) -> ConversationFlow:
     """A transient ConversationFlow rebuilt from `snapshot` when the live row
     backing it has been deleted.
 
@@ -499,6 +533,14 @@ def _rebuild_flow(agent: Agent, snapshot: dict[str, Any]) -> ConversationFlow:
     take it from the pinned agent's response_engine so the serialized object
     still identifies itself. Never added to the session — this must not
     resurrect the deleted row.
+
+    `version` and `last_modification_timestamp` are in _FLOW_EXCLUDED too, and
+    SQLAlchemy column defaults only fire on INSERT, so left alone they'd stay
+    None and conversation_flow_to_dict would serialize them as null for a
+    consumer that types them as int. Stamp them from the resolved version row
+    instead: `row.version` (the agent version this graph is pinned to) and
+    `row.published_timestamp` (falling back to now_ms() for an unpublished
+    row, which has none).
     """
     flow = ConversationFlow()
     columns = flow.__table__.columns
@@ -507,6 +549,8 @@ def _rebuild_flow(agent: Agent, snapshot: dict[str, Any]) -> ConversationFlow:
             setattr(flow, field, value)
     flow.conversation_flow_id = (agent.response_engine or {}).get("conversation_flow_id")
     flow.workspace_id = agent.workspace_id
+    flow.version = row.version
+    flow.last_modification_timestamp = row.published_timestamp or now_ms()
     return flow
 
 

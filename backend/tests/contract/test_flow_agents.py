@@ -226,3 +226,40 @@ async def test_deleted_flow_still_serves_its_published_snapshot(client):
     assert served is not None, "deleted flow served null instead of the frozen snapshot"
     assert served["nodes"] == NODES
     assert served["conversation_flow_id"] == flow_id
+    assert isinstance(served["version"], int), "rebuilt flow left version null"
+    assert isinstance(served["last_modification_timestamp"], int), (
+        "rebuilt flow left last_modification_timestamp null"
+    )
+
+
+async def test_branching_restores_the_flow_graph(client):
+    """Rolling back to an old version must roll the graph back with it."""
+    agent = await create_flow_agent(client)
+    agent_id = agent["agent_id"]
+    flow_id = agent["response_engine"]["conversation_flow_id"]
+
+    first = await client.post(f"/publish-agent/{agent_id}", headers=AUTH_HEADERS, json={})
+    assert first.status_code == 200, first.text
+    original_version = first.json()["version"]
+
+    edited = await client.patch(
+        f"/update-conversation-flow/{flow_id}",
+        headers=AUTH_HEADERS,
+        json={"global_prompt": "V2 PROMPT"},
+    )
+    assert edited.status_code == 200, edited.text
+    second = await client.post(f"/publish-agent/{agent_id}", headers=AUTH_HEADERS, json={})
+    assert second.status_code == 200, second.text
+
+    branched = await client.post(
+        f"/create-agent-version/{agent_id}",
+        headers=AUTH_HEADERS,
+        json={"base_version": original_version},
+    )
+    assert branched.status_code in (200, 201), branched.text
+
+    flow = await client.get(f"/get-conversation-flow/{flow_id}", headers=AUTH_HEADERS)
+    assert flow.status_code == 200, flow.text
+    assert flow.json()["global_prompt"] != "V2 PROMPT", (
+        "branching from the original version left the V2 graph live"
+    )
