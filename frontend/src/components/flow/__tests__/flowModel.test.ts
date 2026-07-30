@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   EDGE_SHAPES,
+  emptyCondition,
+  EQUATION_OPERATORS,
   flowReducer,
   iterNodeEdges,
   knownVariables,
@@ -267,5 +269,31 @@ describe("newNodeId", () => {
   test("is unique across rapid successive calls", () => {
     const ids = Array.from({ length: 50 }, () => newNodeId("conversation"));
     expect(new Set(ids).size).toBe(50);
+  });
+});
+
+describe("conditions", () => {
+  test("the operator list matches the worker's", () => {
+    // worker/src/arhiteq_worker/flow.py: _NUMERIC_OPERATORS, _EQUALITY_OPERATORS,
+    // _CONTAINMENT_OPERATORS, plus the unary `exists`. Offering an operator the
+    // worker does not implement produces an edge that silently never fires.
+    expect([...EQUATION_OPERATORS]).toEqual([
+      "==", "!=", ">", "<", "CONTAINS", "NOT CONTAINS", "exists",
+    ]);
+  });
+
+  test("switching condition type produces the shape the worker parses", () => {
+    expect(emptyCondition("prompt")).toEqual({ type: "prompt", prompt: "" });
+    expect(emptyCondition("equation")).toEqual({
+      type: "equation",
+      operator: "&&",
+      equations: [{ left: "", operator: "==", right: "" }],
+    });
+  });
+
+  test("an equation condition with no equations is rejected by the worker", () => {
+    // `evaluate_equation_condition` returns False for an empty `equations`
+    // list, so the editor must never produce one -- hence the seeded row above.
+    expect((emptyCondition("equation").equations as unknown[]).length).toBeGreaterThan(0);
   });
 });

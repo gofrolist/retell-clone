@@ -92,6 +92,43 @@ export const NODE_TYPES: readonly string[] = [
   "end",
 ];
 
+/**
+ * Every `equation` comparison operator the worker actually implements
+ * (`worker/src/arhiteq_worker/flow.py`'s `_EQUALITY_OPERATORS` |
+ * `_NUMERIC_OPERATORS` | `_CONTAINMENT_OPERATORS`, plus the unary `exists`).
+ * An operator offered here that the worker does not recognize produces an
+ * edge whose condition silently evaluates to `False` forever
+ * (`_evaluate_single_equation`'s "unrecognized operator" fallthrough) — this
+ * list must never drift ahead of that module's.
+ */
+export const EQUATION_OPERATORS: readonly string[] = [
+  "==",
+  "!=",
+  ">",
+  "<",
+  "CONTAINS",
+  "NOT CONTAINS",
+  "exists",
+];
+
+/**
+ * A fresh `transition_condition` of *type*, in the shape the worker parses.
+ *
+ * `equation` seeds exactly one row rather than an empty array:
+ * `evaluate_equation_condition` (`flow.py`) returns `False` for an empty
+ * `equations` list, so a condition with none would silently never fire — the
+ * editor must never produce that shape, even transiently after a type
+ * switch.
+ */
+export function emptyCondition(type: "prompt" | "equation"): TransitionCondition {
+  if (type === "prompt") return { type: "prompt", prompt: "" };
+  return {
+    type: "equation",
+    operator: "&&",
+    equations: [{ left: "", operator: "==", right: "" }],
+  };
+}
+
 function isEdgeObject(value: unknown): value is FlowEdge {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
