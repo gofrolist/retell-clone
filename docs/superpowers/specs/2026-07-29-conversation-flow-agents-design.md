@@ -267,10 +267,14 @@ from the enum.
   per-node `interruption_sensitivity` is parsed but not yet honoured.
 - **`branch`** — speaks nothing; pure routing. Equation edges resolve in code
   with no model call at all, which is the common case for a branch. If the node
-  has prompt edges and no equation matched, one cheap classification call
-  (flash-lite) scores them against the transcript so far. No match routes to
-  `else_edge`. This is the only extra LLM call in the design, and an
-  all-equation branch avoids even that.
+  has prompt edges and no equation matched, one classification call scores them
+  against the transcript so far, using the flow's own mapped model rather than a
+  fixed cheap one — the flow author chose that model, and routing the decision
+  through a different one could disagree with how the same model is reading the
+  conversation everywhere else. No match routes to `else_edge`. This is the only
+  extra LLM call in the design, and an all-equation branch avoids even that. If
+  the cost of using a large model for routing ever matters, pinning this one
+  call to a cheaper model is the obvious lever.
 - **`extract_dynamic_variables`** — runs a structured extraction over the
   transcript using the node's `variables` spec, which is `AnalysisData` — the
   same shape as `post_call_analysis_data` (`schemas.py:146`), so it follows the
