@@ -100,6 +100,39 @@ FOOTER:   plan pill ("Pay As You Go"), account email row, Help | Updates
    "+ New" / edit opens the test-case modal: Name, Scenario, Success criteria
    rows, Function mocks (tool dropdown + JSON output). Right: the test panel
    (Test Audio | Test LLM), moved here from the Create tab.
+   **Agent detail (Conversation Flow editor)** — same route and header as the
+   Single Prompt editor (Create | Simulation tabs, share, version chip,
+   Publish, Conductor); the Create tab becomes a three-pane node-graph editor
+   instead of a prompt textarea. Each pane owns one thing:
+   - **Left — node palette.** Drag-to-add cards for exactly the seven node
+     types the worker executes at runtime (`docs/ARCHITECTURE.md` §
+     Conversation flow execution, `docs/API_COVERAGE.md`): Conversation,
+     Branch, Function, Extract variables, Transfer, Subagent, End call.
+   - **Center — canvas.** A `@xyflow/react` graph: the seed flow is a fixed
+     `Start` conversation node wired to an `End` node; added nodes/edges are
+     draggable and pannable, zoom/fit-view/lock controls bottom-left. Edges
+     render their transition condition inline (the prompt text, or the
+     equation) as a label on the curve. The header's save chip cycles
+     "Unsaved changes" → "Saving…" → "Saved" as edits autosave.
+   - **Right — inspector.** Selecting a node shows its own settings (text/
+     static vs. prompt for Conversation/End, the edge list for Branch, and
+     type-specific fields for Function/Transfer/Extract variables/Subagent)
+     plus, per outgoing edge, an expandable transition-condition editor
+     toggling between **Prompt** (free text) and **Equation** (variable /
+     operator / value rows, `+ Add condition` for multiple ANDed checks).
+     The Transfer editor has no field for Retell's `ignore_e164_validation`
+     — deliberate, not a gap: the worker refuses to honor it and always
+     enforces strict E.164 on dial-out (`docs/SECURITY.md` § Transfer
+     destinations), so exposing the toggle would promise something the
+     runtime declines to do. With nothing selected, the same right-rail
+     accordions as the Single Prompt editor apply (Functions, Knowledge
+     Base, Speech Settings, …).
+   - The version chip (top right, "V*n*") opens a **Versions** panel: the
+     open draft plus published history. Selecting a published version
+     switches the whole editor to a read-only view of that version (banner:
+     "Viewing V*n* — published versions are immutable. Use Edit as new
+     draft to change it."); node/edge fields stop accepting input and
+     Publish is replaced by "Edit as new draft" / "Restore".
 4. **Knowledge Base** — list panel (KB names, "+") + detail: title, "ID:
    know…" copy, "Uploaded by: <date>" green check, Edit/trash. Document rows:
    type icon (MD/PDF), name, size, download.
