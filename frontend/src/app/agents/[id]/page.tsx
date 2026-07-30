@@ -8,7 +8,7 @@ import SelectorRow from "@/components/editor/SelectorRow";
 import WelcomeMessage from "@/components/editor/WelcomeMessage";
 import { SIDE_PANEL_WIDTH } from "@/components/editor/panelLayout";
 import CallSettingsSection from "@/components/editor/sections/CallSettingsSection";
-import FunctionsSection from "@/components/editor/sections/FunctionsSection";
+import FunctionsSection, { type Tool } from "@/components/editor/sections/FunctionsSection";
 import KnowledgeBaseSection from "@/components/editor/sections/KnowledgeBaseSection";
 import McpSection from "@/components/editor/sections/McpSection";
 import PostCallSection from "@/components/editor/sections/PostCallSection";
@@ -20,13 +20,17 @@ import TranscriptionSection from "@/components/editor/sections/TranscriptionSect
 import WebhookSection from "@/components/editor/sections/WebhookSection";
 import TestPanel from "@/components/editor/TestPanel";
 import SimulationTab from "@/components/simulation/SimulationTab";
+import FlowEditor from "@/components/flow/FlowEditor";
+import { flowReducer, stampToolIds, type FlowAction } from "@/components/flow/flowModel";
 import Accordion from "@/components/ui/Accordion";
 import { Field, TextInput } from "@/components/ui/Field";
 import {
   api,
   rawAgentFromChatAgent,
+  type McpServer,
   type RawAgent,
   type RawAgentVersion,
+  type RawConversationFlow,
   type RawLlm,
 } from "@/lib/api";
 import type { Voice } from "@/lib/types";
@@ -62,6 +66,7 @@ export default function AgentEditorPage({
   const { id } = use(params);
   const [agent, setAgent] = useState<RawAgent | null>(null);
   const [llm, setLlm] = useState<RawLlm | null>(null);
+  const [flow, setFlow] = useState<RawConversationFlow | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [voices, setVoices] = useState<Voice[]>([]);
   // Chat agent: no voice, telephony, versions or call simulation. Everything
@@ -72,6 +77,7 @@ export default function AgentEditorPage({
   // values are `{...server, ...draft}`; the autosave timer PATCHes the drafts.
   const [agentDraft, setAgentDraft] = useState<Partial<RawAgent>>({});
   const [llmDraft, setLlmDraft] = useState<Partial<RawLlm>>({});
+  const [flowDraft, setFlowDraft] = useState<Partial<RawConversationFlow>>({});
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [publishing, setPublishing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -109,6 +115,7 @@ export default function AgentEditorPage({
         if (cancelled) return;
         setAgent(detail.agent);
         setLlm(detail.llm);
+        setFlow(detail.flow);
         setIsChat(detail.is_chat);
         // Chat agents have no version endpoints — asking would 404.
         if (!detail.is_chat) void loadVersions();
@@ -132,19 +139,30 @@ export default function AgentEditorPage({
   // read current values without re-arming on every keystroke.
   const agentDraftRef = useRef(agentDraft);
   const llmDraftRef = useRef(llmDraft);
+  const flowDraftRef = useRef(flowDraft);
   const llmIdRef = useRef<string | null>(null);
+  const flowIdRef = useRef<string | null>(null);
   useEffect(() => {
     agentDraftRef.current = agentDraft;
     llmDraftRef.current = llmDraft;
+    flowDraftRef.current = flowDraft;
     llmIdRef.current = llm?.llm_id ?? null;
+    flowIdRef.current = flow?.conversation_flow_id ?? null;
   });
 
   /** Save pending edits; returns the agent as the server now has it. */
   const flush = useCallback(async (): Promise<RawAgent | null> => {
     const pendingAgent = agentDraftRef.current;
     const pendingLlm = llmDraftRef.current;
+    const pendingFlow = flowDraftRef.current;
     const llmId = llmIdRef.current;
-    if (!Object.keys(pendingAgent).length && !Object.keys(pendingLlm).length) return null;
+    const flowId = flowIdRef.current;
+    if (
+      !Object.keys(pendingAgent).length &&
+      !Object.keys(pendingLlm).length &&
+      !Object.keys(pendingFlow).length
+    )
+      return null;
     setSaveState("saving");
     setActionError(null);
     let saved: RawAgent | null = null;
@@ -171,6 +189,19 @@ export default function AgentEditorPage({
           setAgent(saved);
         }
       }
+      if (flowId && Object.keys(pendingFlow).length) {
+        setFlow(await api.updateConversationFlow(flowId, pendingFlow));
+        setFlowDraft((prev) => omitSent(prev, pendingFlow));
+        // A flow edit forks the agent's draft server-side (update-conversation-flow
+        // seeds and touches every agent using the flow), so the agent's version
+        // moved even though we did not PATCH it -- exactly like the LLM branch
+        // above. Without this refresh the editor still believes it is on the
+        // published version and locks itself read-only mid-edit.
+        if (!isChat && !Object.keys(pendingAgent).length) {
+          saved = await api.getAgent(id);
+          setAgent(saved);
+        }
+      }
       setSaveState("saved");
       // The first edit after a publish opens a draft — reflect that in the panel.
       if (!isChat) void loadVersions();
@@ -181,19 +212,26 @@ export default function AgentEditorPage({
     return saved;
   }, [id, isChat, loadVersions]);
 
-  const dirty = Object.keys(agentDraft).length > 0 || Object.keys(llmDraft).length > 0;
+  const dirty =
+    Object.keys(agentDraft).length > 0 ||
+    Object.keys(llmDraft).length > 0 ||
+    Object.keys(flowDraft).length > 0;
 
   useEffect(() => {
     if (!dirty) return;
     setSaveState("pending");
     const timer = setTimeout(() => void flush(), AUTOSAVE_MS);
     return () => clearTimeout(timer);
-  }, [agentDraft, llmDraft, dirty, flush]);
+  }, [agentDraft, llmDraft, flowDraft, dirty, flush]);
 
   // A reload mid-debounce would drop the pending edit silently.
   useEffect(() => {
     const warn = (e: BeforeUnloadEvent) => {
-      if (Object.keys(agentDraftRef.current).length || Object.keys(llmDraftRef.current).length) {
+      if (
+        Object.keys(agentDraftRef.current).length ||
+        Object.keys(llmDraftRef.current).length ||
+        Object.keys(flowDraftRef.current).length
+      ) {
         e.preventDefault();
       }
     };
@@ -209,6 +247,41 @@ export default function AgentEditorPage({
   const setLlmField = <K extends keyof RawLlm & string>(field: K, value: RawLlm[K]) =>
     setLlmDraft((prev) => ({ ...prev, [field]: value }));
 
+  // The flow the editor edits is the server value overlaid with unsaved
+  // edits, exactly like `view` / `llmView` below.
+  const flowView: RawConversationFlow | null = flow ? { ...flow, ...flowDraft } : null;
+
+  /**
+   * Bridges `FlowEditor`'s `dispatch(action)` onto the draft the autosave
+   * effect above PATCHes. `flow` is a dependency (not just read once at
+   * mount) so a save landing mid-edit is picked up rather than silently
+   * overwritten by a stale closure's view of the pre-save flow.
+   */
+  const dispatchFlow = useCallback(
+    (action: FlowAction) => {
+      setFlowDraft((prev) => {
+        const current = { ...flow, ...prev } as RawConversationFlow;
+        const next = flowReducer(current, action);
+        // Send only what actually changed: PATCHing all nineteen mutable
+        // fields on every keystroke would make each edit look like a full
+        // rewrite in the version history.
+        const patch: Partial<RawConversationFlow> = {};
+        for (const key of Object.keys(next)) {
+          if (
+            !Object.is(
+              (next as Record<string, unknown>)[key],
+              (current as Record<string, unknown>)[key],
+            )
+          ) {
+            (patch as Record<string, unknown>)[key] = (next as Record<string, unknown>)[key];
+          }
+        }
+        return { ...prev, ...patch };
+      });
+    },
+    [flow],
+  );
+
   // ----------------------------------------------------------- version moves
 
   /** Load a version into the editor: the latest is editable, older ones aren't. */
@@ -222,13 +295,21 @@ export default function AgentEditorPage({
         const detail = await api.getAgentDetail(id);
         setAgent(detail.agent);
         setLlm(detail.llm);
+        setFlow(detail.flow);
       } else {
         const pinned = await api.getAgentVersion(id, version);
         setAgent(pinned);
         setLlm(pinned.response_engine_config);
+        // `conversation_flow` is the frozen graph this version actually ran
+        // (Task 1) — without it, viewing an older version of a flow agent
+        // would keep showing today's live graph under a "published versions
+        // are immutable" banner, which is exactly the lie this feature
+        // exists to prevent.
+        setFlow(pinned.conversation_flow ?? null);
       }
       setAgentDraft({});
       setLlmDraft({});
+      setFlowDraft({});
       setSaveState("idle");
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Failed to load version");
@@ -242,8 +323,10 @@ export default function AgentEditorPage({
     const detail = await api.getAgentDetail(id);
     setAgent(detail.agent);
     setLlm(detail.llm);
+    setFlow(detail.flow);
     setAgentDraft({});
     setLlmDraft({});
+    setFlowDraft({});
     setSaveState("idle");
     await loadVersions();
   };
@@ -295,6 +378,7 @@ export default function AgentEditorPage({
     // Pending edits belong to the draft being thrown away.
     setAgentDraft({});
     setLlmDraft({});
+    setFlowDraft({});
     try {
       await api.deleteAgentVersion(id, version);
       await reload();
@@ -374,12 +458,20 @@ export default function AgentEditorPage({
           )
         ) : (
           <>
-        {/* left: prompt column — takes whatever the fixed panel leaves.
+        {/* left: prompt/flow column — takes whatever the fixed panel leaves.
             `fieldset disabled` freezes a published version without threading a
-            readOnly prop through every settings section. */}
+            readOnly prop through every settings section (`FlowEditor` also
+            takes its own explicit `readOnly`, since it is a canvas, not form
+            controls — a disabled `<fieldset>` alone would not stop a drag).
+            A flow agent still gets `overflow-y-auto`'s scroll only for
+            `MetaRow`/`SelectorRow` above; the editor itself manages its own
+            interior scrolling/panning, so it gets `overflow-hidden` instead
+            of fighting the ancestor for scroll. */}
         <fieldset
           disabled={readOnly}
-          className="flex min-w-[420px] flex-1 flex-col overflow-y-auto rounded-xl border border-line bg-card p-4"
+          className={`flex min-w-[420px] flex-1 flex-col rounded-xl border border-line bg-card p-4 ${
+            flowView ? "overflow-hidden" : "overflow-y-auto"
+          }`}
         >
           <MetaRow agentId={agent.agent_id} llm={llmView} chat={isChat} />
           <div className="mt-3">
@@ -397,7 +489,17 @@ export default function AgentEditorPage({
               voices={voices}
             />
           </div>
-          {llmView ? (
+          {/* `llm` and `flow` are never both set for one agent (exactly one
+              engine is populated server-side, see `api.ts`'s `getAgentDetail`),
+              so `onModel`/`onTemperature` above are already `undefined` in the
+              flow branch — the model/temperature controls disappear from
+              `SelectorRow` on their own; `GlobalSettings` inside `FlowEditor`
+              is the only place that edits them for a flow agent. */}
+          {flowView ? (
+            <div className="mt-3 flex min-h-0 grow flex-col">
+              <FlowEditor flow={flowView} dispatch={dispatchFlow} readOnly={readOnly} />
+            </div>
+          ) : llmView ? (
             <>
               <div className="mt-3 flex min-h-0 grow flex-col">
                 <PromptEditor
@@ -415,8 +517,10 @@ export default function AgentEditorPage({
               />
             </>
           ) : (
+            // Neither engine populated: a `custom-llm` response engine, which
+            // this dashboard has no create path for and does not edit here.
             <p className="mt-4 text-[13px] text-sub">
-              This agent uses a conversation flow; prompt editing is not available yet.
+              This agent&rsquo;s response engine is not editable from this page.
             </p>
           )}
         </fieldset>
@@ -427,23 +531,39 @@ export default function AgentEditorPage({
           className={`${SIDE_PANEL_WIDTH} overflow-y-auto rounded-xl border border-line bg-card`}
         >
           <Accordion icon={LayoutGrid} title="Functions">
-            {llmView ? (
+            {flowView ? (
+              <FunctionsSection
+                tools={(flowView.tools ?? []) as Tool[]}
+                onChange={(tools) =>
+                  dispatchFlow({ type: "patchFlow", patch: { tools: stampToolIds(tools) } })
+                }
+              />
+            ) : llmView ? (
               <FunctionsSection
                 tools={llmView.general_tools ?? []}
                 onChange={(tools) => setLlmField("general_tools", tools)}
               />
             ) : (
-              <p className="text-[13px] text-sub">Not available for conversation-flow agents.</p>
+              <p className="text-[13px] text-sub">Not available for this agent&rsquo;s response engine.</p>
             )}
           </Accordion>
           <Accordion icon={Library} title="Knowledge Base">
-            {llmView ? (
+            {flowView ? (
+              <KnowledgeBaseSection
+                attachedIds={flowView.knowledge_base_ids ?? []}
+                onChange={(ids) =>
+                  dispatchFlow({ type: "patchFlow", patch: { knowledge_base_ids: ids } })
+                }
+                kbConfig={flowView.kb_config ?? null}
+                onKbConfig={(v) => dispatchFlow({ type: "patchFlow", patch: { kb_config: v } })}
+              />
+            ) : llmView ? (
               <KnowledgeBaseSection
                 attachedIds={llmView.knowledge_base_ids ?? []}
                 onChange={(ids) => setLlmField("knowledge_base_ids", ids)}
               />
             ) : (
-              <p className="text-[13px] text-sub">Not available for conversation-flow agents.</p>
+              <p className="text-[13px] text-sub">Not available for this agent&rsquo;s response engine.</p>
             )}
           </Accordion>
           {/* Everything below is voice/telephony-only: a chat agent has no
@@ -558,13 +678,23 @@ export default function AgentEditorPage({
             )}
           </Accordion>
           <Accordion icon={Plug} title="MCPs">
-            {llmView ? (
+            {flowView ? (
+              <McpSection
+                mcps={(flowView.mcps ?? []) as unknown as McpServer[]}
+                onChange={(v) =>
+                  dispatchFlow({
+                    type: "patchFlow",
+                    patch: { mcps: v as unknown as Record<string, unknown>[] | null },
+                  })
+                }
+              />
+            ) : llmView ? (
               <McpSection
                 mcps={llmView.mcps ?? []}
                 onChange={(v) => setLlmField("mcps", v)}
               />
             ) : (
-              <p className="text-[13px] text-sub">Not available for conversation-flow agents.</p>
+              <p className="text-[13px] text-sub">Not available for this agent&rsquo;s response engine.</p>
             )}
           </Accordion>
         </fieldset>

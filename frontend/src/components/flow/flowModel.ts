@@ -233,6 +233,42 @@ function newNoteId(): string {
   return `note-${Date.now()}-${noteIdCounter++}`;
 }
 
+let toolIdCounter = 0;
+
+/**
+ * A fresh flow tool id: `tool-<ms>-<counter>`. Real Retell tool ids look like
+ * `tool-<ms>`; the counter suffix is the same collision-proofing `newNodeId`
+ * uses above, needed here for the same reason — `stampToolIds` can mint
+ * several of these in one `Array.map` pass, all within the same millisecond.
+ */
+export function newToolId(): string {
+  return `tool-${Date.now()}-${toolIdCounter++}`;
+}
+
+/**
+ * Stamps a `newToolId()` onto any flow tool missing one, leaving every other
+ * tool untouched.
+ *
+ * `FunctionSettings.tsx`'s tool picker, and the worker's
+ * `make_function_node_tool` (`worker/src/arhiteq_worker/flow.py`), both
+ * resolve a `function` node's action by matching its `tool_id` against
+ * `flow.tools[]` entries' own `tool_id` — a flow-scoped id unrelated to the
+ * tool's `name`. `FunctionsSection` was built for the LLM-agent
+ * `general_tools[]` shape, which has no such id, so a tool added through it
+ * saves with none — the worker then silently skips wiring that node's action
+ * on a live call. This is called from the page level (the one place that
+ * knows it is writing to a flow's `tools[]` rather than an LLM's
+ * `general_tools[]`); `FunctionsSection` itself stays agnostic of which
+ * source it edits. Pure: returns a new array and never mutates *tools* or
+ * its entries, so the fidelity rule (spread, don't rebuild) still holds for
+ * every field this function doesn't touch.
+ */
+export function stampToolIds(tools: Record<string, unknown>[]): Record<string, unknown>[] {
+  return tools.map((tool) =>
+    typeof tool.tool_id === "string" && tool.tool_id ? tool : { ...tool, tool_id: newToolId() },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // knownVariables
 // ---------------------------------------------------------------------------

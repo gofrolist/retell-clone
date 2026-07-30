@@ -690,7 +690,18 @@ export function demoResponse<T>(path: string, init?: RequestInit): T {
     if (!a) throw new Error("Agent not found");
     const entry = demoVersions(a).find((v) => v.version === Number(version));
     if (!entry) throw new Error("Agent version not found");
-    return { ...entry, response_engine_config: rawLlm(a) } as T;
+    // A flow agent's pinned version needs its own frozen graph, same as the
+    // real backend's `conversation_flow` field (Task 1) — otherwise the
+    // editor's pinned-version view reads `undefined` for every version of a
+    // demo flow agent, not just the ones that would genuinely lack one.
+    // Exactly one of the two is non-null, mirroring
+    // `backend/src/arhiteq_api/api/agents.py:get_agent_version`.
+    const isFlow = a.agent_type === "conversation-flow";
+    return {
+      ...entry,
+      response_engine_config: isFlow ? null : rawLlm(a),
+      conversation_flow: isFlow ? demoFlow(`flow_demo_${a.agent_id.slice(-8)}`) : null,
+    } as T;
   }
   if (route.startsWith("/get-retell-llm/")) {
     const id = route.split("/").pop();

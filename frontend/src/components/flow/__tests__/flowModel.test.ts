@@ -8,7 +8,9 @@ import {
   iterNodeEdges,
   knownVariables,
   newNodeId,
+  newToolId,
   seedFlow,
+  stampToolIds,
   type FlowNode,
 } from "../flowModel";
 import type { RawConversationFlow } from "@/lib/api";
@@ -384,6 +386,51 @@ describe("newNodeId", () => {
   test("is unique across rapid successive calls", () => {
     const ids = Array.from({ length: 50 }, () => newNodeId("conversation"));
     expect(new Set(ids).size).toBe(50);
+  });
+});
+
+describe("newToolId", () => {
+  test("is unique across rapid successive calls", () => {
+    const ids = Array.from({ length: 50 }, () => newToolId());
+    expect(new Set(ids).size).toBe(50);
+  });
+
+  test("looks like a Retell tool id", () => {
+    expect(newToolId()).toMatch(/^tool-\d+-\d+$/);
+  });
+});
+
+describe("stampToolIds", () => {
+  test("stamps a tool_id onto tools that lack one, leaves an existing one alone", () => {
+    const tools = [
+      { name: "a", type: "custom" },
+      { name: "b", type: "custom", tool_id: "tool-existing" },
+      { name: "c", type: "end_call" },
+    ];
+    const stamped = stampToolIds(tools);
+    expect(typeof stamped[0].tool_id).toBe("string");
+    expect(stamped[0].tool_id).not.toBe("");
+    expect(stamped[1].tool_id).toBe("tool-existing");
+    expect(typeof stamped[2].tool_id).toBe("string");
+    // Two tools stamped in the same pass must not collide.
+    expect(stamped[0].tool_id).not.toBe(stamped[2].tool_id);
+  });
+
+  test("treats an empty-string tool_id as missing", () => {
+    const stamped = stampToolIds([{ name: "a", tool_id: "" }]);
+    expect(stamped[0].tool_id).not.toBe("");
+  });
+
+  test("is pure: never mutates the input array or its entries", () => {
+    const tools = [{ name: "a", type: "custom" }, { name: "b", tool_id: "tool-existing" }];
+    const snapshot = JSON.stringify(tools);
+    stampToolIds(tools);
+    expect(JSON.stringify(tools)).toBe(snapshot);
+  });
+
+  test("a fully-stamped list round-trips unchanged (values, not just presence)", () => {
+    const tools = [{ name: "a", tool_id: "tool-1" }, { name: "b", tool_id: "tool-2" }];
+    expect(stampToolIds(tools)).toEqual(tools);
   });
 });
 
