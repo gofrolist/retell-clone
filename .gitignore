@@ -19,3 +19,5 @@ dist/
 .terraform.lock.hcl
 .coverage
 coverage.xml
+# Supabase CLI local scratch (supabase/.temp etc.) — not part of the deploy.
+supabase/
