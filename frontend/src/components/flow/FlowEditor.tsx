@@ -37,7 +37,7 @@ import {
   type FlowEdgeData,
 } from "./flowGraph";
 import { useStableGraph } from "./useStableGraph";
-import type { FlowAction } from "./flowModel";
+import { connectShapeFor, type FlowAction, type FlowNode as RetellNode } from "./flowModel";
 import NodePalette, { NODE_DRAG_MIME } from "./NodePalette";
 import FlowNode from "./nodes/FlowNode";
 import NoteNode from "./nodes/NoteNode";
@@ -48,6 +48,12 @@ import NodeSettings from "./settings/NodeSettings";
 // Flow remount every node/edge and log a warning.
 const nodeTypes: NodeTypes = { flowNode: FlowNode, note: NoteNode };
 const edgeTypes: EdgeTypes = {};
+
+/** The `type` of the flow node *nodeId* names, or `""` if it names none. */
+function nodeTypeOf(flow: RawConversationFlow, nodeId: string): string {
+  const nodes = Array.isArray(flow.nodes) ? (flow.nodes as RetellNode[]) : [];
+  return nodes.find((node) => node.id === nodeId)?.type ?? "";
+}
 
 function Canvas({
   flow,
@@ -162,14 +168,21 @@ function Canvas({
   const onConnect = useCallback(
     (connection: Connection) => {
       if (readOnly || !connection.source || !connection.target) return;
+      // The shape depends on the SOURCE node's type, not on the gesture: a
+      // transfer node's only outgoing edge is its `edge` failure fallback, and
+      // an `end` node has none at all. Writing every drag into `edges[]` drew
+      // connectors the worker never reads. `NodeShell` already hides the
+      // handle where this is null, so that branch is belt and braces.
+      const shape = connectShapeFor(nodeTypeOf(flow, connection.source));
+      if (shape === null) return;
       dispatch({
         type: "connect",
         nodeId: connection.source,
-        shape: "edges",
+        shape,
         destinationNodeId: connection.target,
       });
     },
-    [dispatch, readOnly],
+    [dispatch, flow, readOnly],
   );
 
   const onDrop = useCallback(

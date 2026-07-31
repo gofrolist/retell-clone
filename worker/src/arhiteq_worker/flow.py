@@ -152,6 +152,54 @@ def iter_node_edges(node: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]
             yield field_name, edge
 
 
+def _warn_unreachable(nodes_by_id: dict[str, dict[str, Any]], start_node_id: str) -> None:
+    """Log the nodes no walk from *start_node_id* can ever arrive at.
+
+    `FlowGraph.from_config` rejects an edge pointing at a node that does not
+    exist, but said nothing about a node that exists and is simply not wired
+    up — so a flow could load clean and run with most of itself dead.
+    ``backend/tests/fixtures/retell_flows/clara_outbound.json`` is exactly
+    that: its start node's only edge is an ``always_edge`` with no
+    ``destination_node_id``, and all six ``function`` nodes (``Create Trial``,
+    ``Mark Dnc``, ``Flag Crisis``, ``End Call``, …) point only back at the
+    start, so the call parks on the welcome node with no tools for its whole
+    duration. Silently.
+
+    A warning, not a `FlowError`: refusing would turn a call that half-works
+    into a call that does not connect at all, and the authoring mistake is
+    the operator's to fix, not the runtime's to punish mid-call. Global nodes
+    count as reachable — they are reachable from every node by definition
+    (`prompt_edges` synthesizes the edge), wired up or not.
+    """
+    reachable: set[str] = set()
+    frontier = [start_node_id]
+    frontier.extend(
+        node_id
+        for node_id, node in nodes_by_id.items()
+        if (node.get("global_node_setting") or {}).get("condition")
+    )
+    while frontier:
+        node_id = frontier.pop()
+        if node_id in reachable:
+            continue
+        reachable.add(node_id)
+        for _shape, edge in iter_node_edges(nodes_by_id[node_id]):
+            destination = edge.get("destination_node_id")
+            if isinstance(destination, str) and destination in nodes_by_id:
+                frontier.append(destination)
+
+    unreachable = sorted(set(nodes_by_id) - reachable)
+    if unreachable:
+        logger.warning(
+            "conversation flow: %d of %d nodes are unreachable from start node %r "
+            "and can never run: %s",
+            len(unreachable),
+            len(nodes_by_id),
+            start_node_id,
+            ", ".join(unreachable),
+        )
+
+
 class FlowGraph:
     """An indexed, validated conversation-flow graph.
 
@@ -202,6 +250,8 @@ class FlowGraph:
 
         if flow.start_node_id not in nodes_by_id:
             raise FlowError(f"start node {flow.start_node_id!r} not found in flow")
+
+        _warn_unreachable(nodes_by_id, flow.start_node_id)
 
         return cls(nodes_by_id, flow.start_node_id, flow.global_prompt)
 
@@ -722,8 +772,47 @@ def _own_success_edges(node: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def _select_success_edge(
+def _partition_success_edges(
+    success_edges: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split *success_edges* into ``(equation-conditioned, everything else)``.
+
+    An ``equation`` edge is decided by the variables, not by the model and not
+    by position, so it can never take part in the "exactly one edge is
+    unambiguous" count `_select_success_edge` applies to the rest.
+    """
+    equations: list[dict[str, Any]] = []
+    others: list[dict[str, Any]] = []
+    for edge in success_edges:
+        condition = edge.get("transition_condition")
+        if isinstance(condition, dict) and condition.get("type") == "equation":
+            equations.append(edge)
+        else:
+            others.append(edge)
+    return equations, others
+
+
+def _select_unconditional_edge(
     success_edges: list[dict[str, Any]], failure_edge: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """`_select_success_edge`'s rule over edges that carry no equation to check.
+
+    Split out so `node_auto_advances` can ask the same question at INSTALL
+    time, where the variables an equation reads are not final yet: it is the
+    worst case (every equation false) and therefore the conservative answer to
+    "will this node route itself no matter how its equations evaluate?".
+    """
+    if len(success_edges) == 1:
+        return success_edges[0]
+    if not success_edges:
+        return failure_edge
+    return None
+
+
+def _select_success_edge(
+    success_edges: list[dict[str, Any]],
+    failure_edge: dict[str, Any] | None,
+    variables: Mapping[str, Any],
 ) -> dict[str, Any] | None:
     """Which edge (if any) a *successful* function/extract result should follow.
 
@@ -753,12 +842,23 @@ def _select_success_edge(
       only an ``else_edge`` back to the flow's start node) — there is no
       success-specific continuation authored at all, so the guaranteed
       fallback is the only place to go.
+
+    ...with ``equation`` edges taken out of that count and EVALUATED against
+    *variables* first, in declaration order. An equation is a deterministic
+    condition, so "it is the only success edge" is not a reason to follow it:
+    a lone ``{{status}} == approved`` edge plus an ``else_edge`` used to
+    auto-advance down the approved branch on any non-error result, which both
+    ignored the equation and made the else branch unreachable on success.
+    Every equation false leaves the remaining (prompt / unconditioned) edges
+    to the rule above, so ``else_edge`` gets the denied case — and a node
+    mixing an equation edge with a prompt edge still hands the model the
+    choice when the equation does not fire.
     """
-    if len(success_edges) == 1:
-        return success_edges[0]
-    if not success_edges:
-        return failure_edge
-    return None
+    equation_edges, other_edges = _partition_success_edges(success_edges)
+    for edge in equation_edges:
+        if evaluate_equation_condition(edge.get("transition_condition"), variables):
+            return edge
+    return _select_unconditional_edge(other_edges, failure_edge)
 
 
 def _is_error_result(result: str) -> bool:
@@ -799,10 +899,18 @@ def node_auto_advances(node: dict[str, Any]) -> bool:
     or none plus a usable ``else_edge``. False for every other node type (they
     have no action tool), and false for the ambiguous case
     `_select_success_edge` deliberately leaves to the model.
+
+    Asked at INSTALL time, before the tool has run, so an ``equation`` edge's
+    truth is not knowable here — and answering "it will route itself" on the
+    strength of an equation that later turns out false would deny the node the
+    ``transition_to`` tool it needs to move on. So equation edges are dropped
+    and only the guaranteed routing is counted (`_select_unconditional_edge`):
+    conservative in exactly the direction that keeps a live call unstuck.
     """
     if node.get("type") not in _ACTION_NODE_TYPES:
         return False
-    return _select_success_edge(_own_success_edges(node), fallback_edge(node)) is not None
+    _equations, others = _partition_success_edges(_own_success_edges(node))
+    return _select_unconditional_edge(others, fallback_edge(node)) is not None
 
 
 def node_tool_kinds(
@@ -1000,7 +1108,7 @@ def make_function_node_tool(
             # Retained (`_spawn_detached`), never a bare `create_task`: an
             # un-held task can be collected before the request is even sent.
             _spawn_detached(run())
-            edge = _select_success_edge(success_edges, failure_edge)
+            edge = _select_success_edge(success_edges, failure_edge, variables)
             if edge is not None:
                 await on_transition(edge)
             return json.dumps({"result": "request sent"})
@@ -1009,7 +1117,10 @@ def make_function_node_tool(
         edge = (
             failure_edge
             if _is_error_result(result)
-            else _select_success_edge(success_edges, failure_edge)
+            # `variables` read here, not closed over at build time: a response
+            # variable the tool just merged is exactly what an equation edge
+            # on this node is there to branch on.
+            else _select_success_edge(success_edges, failure_edge, variables)
         )
         if edge is not None:
             await on_transition(edge)
@@ -1088,7 +1199,13 @@ def make_extract_node_tool(
         state.collected_dynamic_variables.update(extracted)
         result = json.dumps({"result": "variables extracted", "extracted": extracted})
         state.add_tool_result(name, result, tool_call_id)
-        edge = _select_success_edge(success_edges, failure_edge) if extracted else failure_edge
+        # After the `variables.update(extracted)` above, so an equation edge
+        # branches on the values this very call extracted.
+        edge = (
+            _select_success_edge(success_edges, failure_edge, variables)
+            if extracted
+            else failure_edge
+        )
         if edge is not None:
             await on_transition(edge)
         return result

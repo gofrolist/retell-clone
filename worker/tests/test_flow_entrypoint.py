@@ -497,9 +497,10 @@ def test_cancel_background_tasks_cancels_a_spawned_flow_transition() -> None:
 
 
 class _FakeItem:
-    def __init__(self, role: str, text: str) -> None:
+    def __init__(self, role: str, text: str, item_id: str | None = None) -> None:
         self.role = role
         self.text_content = text
+        self.id = item_id
 
 
 class _FakeItemEvent:
@@ -540,10 +541,10 @@ def test_conversation_item_added_drives_on_user_turn_once_per_committed_user_tur
     per committed *user* turn, and not at all for agent turns.
     """
 
-    calls: list[None] = []
+    calls: list[str | None] = []
 
-    async def on_user_turn() -> None:
-        calls.append(None)
+    async def on_user_turn(message_id: str | None = None) -> None:
+        calls.append(message_id)
 
     async def scenario() -> None:
         session = _EmitterSession()
@@ -557,15 +558,19 @@ def test_conversation_item_added_drives_on_user_turn_once_per_committed_user_tur
             on_user_turn=on_user_turn,
         )
 
-        session.fire("conversation_item_added", _FakeItemEvent(_FakeItem("assistant", "Hi there")))
-        session.fire("conversation_item_added", _FakeItemEvent(_FakeItem("user", "Hello")))
-        session.fire("conversation_item_added", _FakeItemEvent(_FakeItem("user", "Again")))
+        session.fire(
+            "conversation_item_added", _FakeItemEvent(_FakeItem("assistant", "Hi there", "m0"))
+        )
+        session.fire("conversation_item_added", _FakeItemEvent(_FakeItem("user", "Hello", "m1")))
+        session.fire("conversation_item_added", _FakeItemEvent(_FakeItem("user", "Again", "m2")))
         await _settle()
 
         assert state.transcript_text()  # both roles were recorded either way
 
     _run(scenario())
-    assert len(calls) == 2
+    # The item's id rides along: `_FlowWiring.on_user_item` needs it to tell a
+    # turn the pre-reply seam already walked from one it never saw.
+    assert calls == ["m1", "m2"]
 
 
 # ---------------------------------------------------------------------------
@@ -651,3 +656,86 @@ def test_two_backlogged_user_turns_take_only_one_always_edge() -> None:
     runtime, session = _run(scenario())
     assert session.said == ["Hi.", "Second."]
     assert runtime.current_node_id == "n2"
+
+
+# ---------------------------------------------------------------------------
+# Two seams, one walk per turn: `on_user_turn_completed` (pre-reply) and
+# `conversation_item_added` (the realtime fallback).
+# ---------------------------------------------------------------------------
+
+
+def _always_edge_flow() -> dict:
+    """A start node that unconditionally moves on at the next user turn."""
+    return {
+        "global_prompt": "Be brief.",
+        "start_node_id": "n1",
+        "start_speaker": "agent",
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "Hi, this is Clara."},
+                "always_edge": {"id": "always-1", "destination_node_id": "n2"},
+            },
+            {
+                "id": "n2",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "Great, thanks."},
+            },
+        ],
+    }
+
+
+def test_a_turn_the_pre_reply_seam_already_walked_is_not_walked_again() -> None:
+    """Both seams see the same user ChatMessage on a pipeline (non-realtime)
+    call. Walking twice would take n1's always_edge to n2 and then n2's edges
+    straight away, so n2 is entered and left inside one turn."""
+
+    async def scenario():
+        wiring = _wiring(_always_edge_flow())
+        session, agent = _FakeSession(), _FakeAgent()
+        wiring.attach(session, agent)
+        await wiring.start()
+        await wiring.on_user_turn("msg-1")  # the pre-reply seam
+        await wiring.on_user_item("msg-1")  # the same turn, arriving late
+        return wiring
+
+    wiring = _run(scenario())
+    assert wiring._runtime.current_node_id == "n2"
+
+
+def test_a_realtime_turn_the_pre_reply_seam_never_saw_is_still_walked() -> None:
+    """Gemini Live does its own server-side turn detection, so livekit returns
+    before calling `on_user_turn_completed` at all. The committed-item event is
+    the only seam those calls get."""
+
+    async def scenario():
+        wiring = _wiring(_always_edge_flow())
+        session, agent = _FakeSession(), _FakeAgent()
+        wiring.attach(session, agent)
+        await wiring.start()
+        await wiring.on_user_item("msg-1")  # no pre-reply seam fired
+        return wiring
+
+    wiring = _run(scenario())
+    assert wiring._runtime.current_node_id == "n2"
+
+
+def test_a_later_turn_is_walked_even_after_a_de_duplicated_one() -> None:
+    """The de-duplication is keyed on the message id, so it cannot swallow the
+    next turn the way a "the other seam already ran" flag would."""
+
+    async def scenario():
+        wiring = _wiring(_always_edge_flow())
+        session, agent = _FakeSession(), _FakeAgent()
+        wiring.attach(session, agent)
+        await wiring.start()
+        await wiring.on_user_turn("msg-1")
+        await wiring.on_user_item("msg-1")  # dropped
+        await wiring.on_user_item("msg-2")  # a genuinely new turn
+        return session
+
+    session = _run(scenario())
+    # n2 has no edges of its own, so the second turn is a no-op that still
+    # proves it was not dropped: nothing further was said or installed.
+    assert session.said == ["Hi, this is Clara.", "Great, thanks."]

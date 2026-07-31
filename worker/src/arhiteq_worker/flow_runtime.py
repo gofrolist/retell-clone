@@ -110,6 +110,30 @@ def _is_prompt_instruction(node: dict[str, Any]) -> bool:
     return isinstance(instruction, dict) and instruction.get("type") == "prompt"
 
 
+def _speaks_on_exit(node: dict[str, Any]) -> bool:
+    """Should an ``end`` / ``transfer_call`` node voice its own instruction?
+
+    ``speak_during_execution`` is ABSENT, not false, on a Retell export whose
+    author never touched that toggle: every one of the four end/transfer nodes
+    in ``backend/tests/fixtures/retell_flows/identity_verify_transfer.json``
+    carries a filled-in ``instruction`` ("Politely end the call",
+    "Transferring your call now.") and no flag at all. Reading absent as false
+    hung up mid-conversation without a closing word and cold-transferred
+    without warning the caller — so absent means "voice the line you were
+    given", and only an explicit false silences it (as on
+    ``prior_auth_hotline.json``'s transfer node, which pairs the explicit
+    false with no instruction anyway).
+
+    Deliberately NOT applied to ``function`` nodes: there the same field means
+    "say a filler while the tool runs" (`flow.make_function_node_tool`), and
+    absent genuinely means no filler — there is no authored line to lose.
+    """
+    flag = node.get("speak_during_execution")
+    if flag is None:
+        return node.get("instruction") is not None
+    return bool(flag)
+
+
 def _transfer_failed(result: Any) -> bool:
     """Did a `transfer_call` return value report failure?
 
@@ -612,9 +636,18 @@ class FlowRuntime:
             return
         if needs_turn:
             # The line has to be phrased and nothing else will trigger a
-            # model turn before the auto-follow below — ask for one now,
-            # from the instructions `_install` just set.
-            await self._request_model_turn(None)
+            # model turn before the auto-follow below — ask for one now.
+            #
+            # Passed EXPLICITLY, never as `None` ("reply from whatever is
+            # installed"): under a ``start_speaker: "user"`` deferral this
+            # turn is parked, and by the time `_flush_pending_speech` releases
+            # it the cascade below has already installed the DESTINATION
+            # node's instructions — so `None` phrases that node's line and
+            # this node's is never said at all. `_enter_end` passes its own
+            # instructions for the same reason.
+            await self._request_model_turn(
+                node_instructions(self._model_view(node), self._graph, self._variables)
+            )
         edge = select_equation_edge(node, self._variables, exclude_edge=skip)
         if edge is None:
             edge = skip
@@ -660,7 +693,7 @@ class FlowRuntime:
 
     async def _enter_end(self, node: dict[str, Any]) -> None:
         if (
-            node.get("speak_during_execution")
+            _speaks_on_exit(node)
             and not await self._speak_static(node)
             and _is_prompt_instruction(node)
         ):
@@ -681,7 +714,7 @@ class FlowRuntime:
         await self._end_call(HANGUP_REASON)
 
     async def _enter_transfer_call(self, node: dict[str, Any]) -> None:
-        if node.get("speak_during_execution"):
+        if _speaks_on_exit(node):
             spoken = await self._speak_static(node)
             if not spoken and _is_prompt_instruction(node):
                 # A ``prompt`` instruction has to be phrased, and a

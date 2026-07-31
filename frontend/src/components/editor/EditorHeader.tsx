@@ -92,9 +92,17 @@ export default function EditorHeader({
     }
   };
 
-  const exportJson = () => {
-    downloadAgentJson(agent, llm);
+  const exportJson = async () => {
     setMoreOpen(false);
+    setMenuError(null);
+    try {
+      // Async since the export inlines the conversation flow, which has to be
+      // fetched — a failure has to surface rather than silently download an
+      // agent whose graph is missing.
+      await downloadAgentJson(agent, llm);
+    } catch (e) {
+      setMenuError(e instanceof Error ? e.message : "Failed to export agent");
+    }
   };
 
   const duplicate = async () => {

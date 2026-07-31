@@ -38,6 +38,13 @@ repos:
         pass_filenames: false
         files: '^worker/.*\.py$'
 
+      - id: bun-test-frontend
+        name: bun test (frontend)
+        entry: bash -c 'cd frontend && bun test'
+        language: system
+        pass_filenames: false
+        files: '^frontend/src/.*\.(ts|tsx)$'
+
       - id: eslint
         name: eslint
         entry: bash -c 'args=(); for f in "$@"; do args+=("${f#frontend/}"); done; cd frontend && bunx eslint --fix --report-unused-disable-directives --max-warnings 0 "${args[@]}"' --

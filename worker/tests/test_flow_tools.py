@@ -860,3 +860,64 @@ def test_flow_kb_lookup_tool_with_no_knowledge_bases_still_builds() -> None:
         state=state,
     )
     assert tool is not None
+
+
+# ---------------------------------------------------------------------------
+# An equation-conditioned success edge is evaluated against the LIVE variables
+# the call just merged, not followed because it happens to be the only one.
+# ---------------------------------------------------------------------------
+
+
+def _equation_function_node() -> dict:
+    return _function_node(
+        edges=[
+            {
+                "id": "approved",
+                "transition_condition": {
+                    "type": "equation",
+                    "operator": "&&",
+                    "equations": [{"left": "{{member_id}}", "operator": "==", "right": "M-1"}],
+                },
+                "destination_node_id": "n_success",
+            }
+        ]
+    )
+
+
+def _run_equation_node(response_body: dict) -> list[dict]:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=response_body)
+
+    calls: list[dict] = []
+
+    async def on_transition(edge: dict) -> None:
+        calls.append(edge)
+
+    tool = make_function_node_tool(
+        _equation_function_node(),
+        _FLOW_TOOLS,
+        http=_client(handler),
+        function_secret="s",
+        variables={},
+        call_info=None,
+        state=CallState(call_id="call_1"),
+        on_transition=on_transition,
+    )
+    fnc = getattr(tool, "_fnc", None) or getattr(tool, "fnc", tool)
+    _run(fnc({"call_first_name": "Jo"}, _FakeContext()))
+    return calls
+
+
+def test_function_node_equation_edge_fires_on_the_variable_the_call_just_set() -> None:
+    """The tool's own response variable is what the equation reads: it is
+    merged into `variables` before the edge is chosen, in the same handler."""
+    calls = _run_equation_node({"memberId": "M-1"})
+    assert [edge["id"] for edge in calls] == ["approved"]
+
+
+def test_function_node_equation_edge_that_is_false_takes_the_else_edge() -> None:
+    """HTTP 200 with a body reporting a different member is not an error
+    result, so this used to auto-advance down the "approved" edge and make the
+    else branch unreachable on success."""
+    calls = _run_equation_node({"memberId": "M-404"})
+    assert [edge["id"] for edge in calls] == ["failure"]

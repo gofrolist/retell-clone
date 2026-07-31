@@ -93,6 +93,24 @@ export const NODE_TYPES: readonly string[] = [
 ];
 
 /**
+ * The edge shape a wire dragged FROM a node of *nodeType* should be written
+ * into, or `null` for a node the worker never follows an outgoing edge from.
+ *
+ * Not every node reads `edges[]`. `_enter_end` hangs the call up without
+ * looking at any edge, and `_enter_transfer_call` consults only its single
+ * `edge` (the failure fallback) — so a wire dragged off either used to be
+ * written as an `edges[]` entry and drawn as a solid, labelled connector the
+ * runtime would never follow. `NodeShell` hides the source handle entirely
+ * where this returns `null`, so the impossible connection cannot be started
+ * in the first place.
+ */
+export function connectShapeFor(nodeType: string): EdgeShape | null {
+  if (nodeType === "end") return null;
+  if (nodeType === "transfer_call") return "edge";
+  return "edges";
+}
+
+/**
  * Every `equation` comparison operator the worker actually implements
  * (`worker/src/arhiteq_worker/flow.py`'s `_EQUALITY_OPERATORS` |
  * `_NUMERIC_OPERATORS` | `_CONTAINMENT_OPERATORS`, plus the unary `exists`).
@@ -621,6 +639,40 @@ function findNode(flow: RawConversationFlow, nodeId: string): FlowNode {
   return node;
 }
 
+/**
+ * The React Flow id `toReactFlow` mints for a note that carries no `id` of its
+ * own. Real Retell notes have one; an import whose notes do not still has to
+ * be addressable, and positionally is the only way.
+ *
+ * `::` matches the separator `flowGraph.ts` already uses for edge ids and does
+ * not appear in Retell's own ids, so this cannot be confused for a node id —
+ * and `noteIndexFor` bounds-checks it against the notes array anyway.
+ */
+export function syntheticNoteId(index: number): string {
+  return `note::${index}`;
+}
+
+/**
+ * Where *noteId* lives in `flow.notes`, or -1.
+ *
+ * The single place that resolves BOTH forms — a note's own `id` and the
+ * synthetic positional one — so `flowGraph.ts`'s "is this a note or a node?"
+ * routing and this module's `patchNote`/`deleteNote` can never disagree about
+ * which ids are notes. They used to: `isNoteId` matched only real ids, so
+ * dragging an id-less note routed to `moveNode`, and `findNode` threw from
+ * inside a state updater and took the editor down.
+ */
+export function noteIndexFor(flow: RawConversationFlow, noteId: string): number {
+  const notes = Array.isArray(flow.notes) ? (flow.notes as Record<string, unknown>[]) : [];
+  const byId = notes.findIndex((note) => note.id === noteId);
+  if (byId !== -1) return byId;
+  // Only a note that has no id of its own answers to a synthetic one — a real
+  // node whose id happened to look like `note::0` must not be captured here.
+  const prefixed = noteId.startsWith("note::") ? Number(noteId.slice("note::".length)) : NaN;
+  if (!Number.isInteger(prefixed) || prefixed < 0 || prefixed >= notes.length) return -1;
+  return typeof notes[prefixed].id === "string" ? -1 : prefixed;
+}
+
 /** `{id, type, name, display_position, ...typeDefaults}` for a new node of *nodeType*. */
 function defaultsFor(nodeType: string): Record<string, unknown> {
   switch (nodeType) {
@@ -769,13 +821,16 @@ export function flowReducer(flow: RawConversationFlow, action: FlowAction): RawC
     }
 
     case "patchNote": {
-      const note = notesOf(next).find((n) => n.id === action.noteId);
-      if (note) Object.assign(note, action.patch);
+      // Resolved by index, not by `find(n => n.id === ...)`: an id-less note
+      // is addressed by the synthetic positional id (`noteIndexFor`).
+      const index = noteIndexFor(next, action.noteId);
+      if (index !== -1) Object.assign(notesOf(next)[index], action.patch);
       return next;
     }
 
     case "deleteNote": {
-      next.notes = notesOf(next).filter((n) => n.id !== action.noteId);
+      const index = noteIndexFor(next, action.noteId);
+      if (index !== -1) next.notes = notesOf(next).filter((_, i) => i !== index);
       return next;
     }
 

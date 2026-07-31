@@ -69,6 +69,19 @@ export default function AgentEditorPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
+  // `key={id}` is the whole state reset, and it has to be here rather than a
+  // pile of resets inside the editor. Next.js reuses this component across
+  // /agents/A -> /agents/B (which is exactly what Duplicate does, via
+  // router.push), so without a remount every piece of A's state survives into
+  // B: the three drafts, `agent`/`llm`/`flow`, `isChat`, `versions`. The
+  // autosave effect then re-arms with B's `flush` while the draft refs still
+  // hold A's edits, so a slow or failed unmount flush lands A's values on B —
+  // and a stale `isChat` sends a voice agent's save to /update-chat-agent.
+  // Remounting also means A's unmount flush runs, with A's id, before B mounts.
+  return <AgentEditor key={id} id={id} />;
+}
+
+function AgentEditor({ id }: { id: string }) {
   const [agent, setAgent] = useState<RawAgent | null>(null);
   const [llm, setLlm] = useState<RawLlm | null>(null);
   const [flow, setFlow] = useState<RawConversationFlow | null>(null);

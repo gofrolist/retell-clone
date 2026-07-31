@@ -372,3 +372,66 @@ describe("reuseUnchanged", () => {
     expect(result.map((r) => r.id)).toEqual(["a", "new"]);
   });
 });
+
+describe("notes with no id of their own", () => {
+  // Every real fixture's notes carry an `id`, so this shape only arrives from
+  // an import — which is exactly why it went untested and crashed the editor:
+  // `toReactFlow` minted a positional id `isNoteId` could not recognize, the
+  // drag routed to `moveNode`, and `findNode` threw from inside a state
+  // updater where nothing catches it.
+  const flow = {
+    conversation_flow_id: "cf_1",
+    version: 0,
+    start_node_id: "n1",
+    nodes: [{ id: "n1", type: "conversation" }],
+    notes: [{ content: "no id here", display_position: { x: 5, y: 6 } }],
+  } as unknown as RawConversationFlow;
+
+  test("toReactFlow gives it the synthetic id the note actions answer to", () => {
+    const { nodes } = toReactFlow(flow);
+    expect(nodes.map((n) => n.id)).toEqual(["n1", "note::0"]);
+  });
+
+  test("dragging it routes to patchNote, not moveNode", () => {
+    const change: NodeChange = {
+      type: "position",
+      id: "note::0",
+      position: { x: 111, y: 222 },
+      dragging: false,
+    };
+    expect(nodeChangeAction(change, flow)).toEqual({
+      type: "patchNote",
+      noteId: "note::0",
+      patch: { display_position: { x: 111, y: 222 } },
+    });
+  });
+
+  test("the reducer applies that patch to the right note", () => {
+    const next = flowReducer(flow, {
+      type: "patchNote",
+      noteId: "note::0",
+      patch: { display_position: { x: 111, y: 222 } },
+    });
+    expect((next.notes as Record<string, unknown>[])[0].display_position).toEqual({
+      x: 111,
+      y: 222,
+    });
+    // The source is never touched: the reducer clones.
+    expect((flow.notes as Record<string, unknown>[])[0].display_position).toEqual({ x: 5, y: 6 });
+  });
+
+  test("deleting it removes that note", () => {
+    const next = flowReducer(flow, { type: "deleteNote", noteId: "note::0" });
+    expect(next.notes).toEqual([]);
+  });
+
+  test("a graph node whose id merely looks synthetic is still a node", () => {
+    const odd = {
+      ...flow,
+      nodes: [{ id: "note::0", type: "conversation" }],
+      notes: [],
+    } as unknown as RawConversationFlow;
+    const change: NodeChange = { type: "remove", id: "note::0" };
+    expect(nodeChangeAction(change, odd)).toEqual({ type: "deleteNode", nodeId: "note::0" });
+  });
+});

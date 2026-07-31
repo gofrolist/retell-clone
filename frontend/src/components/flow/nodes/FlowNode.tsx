@@ -1,6 +1,7 @@
 import { memo } from "react";
 import type { NodeProps } from "@xyflow/react";
 import type { FlowNodeData } from "../flowGraph";
+import { connectShapeFor } from "../flowModel";
 import { NODE_META, UNKNOWN_META } from "./nodeMeta";
 import NodeShell from "./NodeShell";
 
@@ -24,6 +25,7 @@ function FlowNode({ data, selected }: NodeProps) {
       isStart={isStart}
       isGlobal={isGlobal}
       selected={Boolean(selected)}
+      canConnect={connectShapeFor(node.type) !== null}
     />
   );
 }
