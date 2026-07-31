@@ -1,6 +1,7 @@
 "use client";
 
 import { PairRows, toPairs, fromPairs, type Pair } from "@/components/editor/PairRows";
+import { buildMcpServer } from "@/components/editor/sections/mcpModel";
 import Button from "@/components/ui/Button";
 import { Field, TextInput } from "@/components/ui/Field";
 import Modal from "@/components/ui/Modal";
@@ -51,13 +52,14 @@ export default function McpSection({
     }
     const parsedHeaders = fromPairs(headers);
     const parsedQueryParams = fromPairs(queryParams);
-    const server: McpServer = {
+    const original = editing !== null && editing >= 0 ? mcps[editing] : undefined;
+    const server = buildMcpServer(original, {
       name: name.trim(),
       url: url.trim(),
-      ...(parsedHeaders ? { headers: parsedHeaders } : {}),
-      ...(parsedQueryParams ? { query_params: parsedQueryParams } : {}),
-      ...(timeout !== undefined ? { timeout_ms: timeout } : {}),
-    };
+      headers: parsedHeaders ?? undefined,
+      queryParams: parsedQueryParams ?? undefined,
+      timeoutMs: timeout,
+    });
     const next =
       editing !== null && editing >= 0
         ? mcps.map((s, i) => (i === editing ? server : s))
@@ -75,7 +77,7 @@ export default function McpSection({
     <div>
       <p className="text-[13px] text-sub">
         Connect MCP servers to give your agent access to external tools. Servers are saved with
-        the agent&apos;s LLM; tool execution by the voice worker is rolling out.
+        the agent&apos;s configuration; tool execution by the voice worker is rolling out.
       </p>
 
       {mcps.length > 0 && (

@@ -31,6 +31,7 @@ from ..schemas import (
     normalize_timezone,
     normalize_webhook_events,
 )
+from ..schemas_extra import conversation_flow_to_dict
 from ..services import versions, webhooks
 from ._deps import apply_patch, get_owned
 from .chat_agents import CHAT_VOICE_ID
@@ -359,12 +360,14 @@ async def get_agent_version(
         row = await versions.get_row(session, agent_id, version)
     if row is None:
         raise HTTPException(404, detail=f"Agent version {version} not found")
-    pinned, llm, _ = await versions.resolve(session, agent, version)
+    pinned, llm, flow, _ = await versions.resolve_with_flow(session, agent, version)
     return {
         **versions.to_dict(row, agent_to_dict(pinned), live_version=agent.published_version),
-        # Arhiteq extra: the prompt/tools this version runs, so the editor can
-        # show an older version without a second version-aware LLM endpoint.
+        # Arhiteq extras: the prompt/tools *or* the graph this version runs, so
+        # the editor can show an older version without a second version-aware
+        # endpoint per engine type. Exactly one is non-null for any given agent.
         "response_engine_config": llm_to_dict(llm) if llm is not None else None,
+        "conversation_flow": conversation_flow_to_dict(flow) if flow is not None else None,
     }
 
 

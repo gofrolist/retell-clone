@@ -1,5 +1,6 @@
 "use client";
 
+import { seedFlow } from "@/components/flow/flowModel";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
@@ -16,7 +17,7 @@ import {
   Workflow,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 const CATEGORIES = [
   "All",
@@ -102,18 +103,59 @@ export default function CreateAgentModal({
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
 
+  // This modal is mounted permanently by the agents page (`open` merely
+  // toggles it), so every piece of state survives a Cancel and is still there
+  // on the next open. That is silent data corruption for `type`: pick
+  // "Conversational flow", cancel, reopen, pick a prompt template, Create —
+  // and you get a FLOW agent carrying the template's name and none of its
+  // prompt, with nothing on screen saying so. Reset the whole picker on each
+  // open instead of just `type`: a stale template/category/error is the same
+  // class of surprise, only less destructive.
+  //
+  // `creating` is deliberately NOT reset here, matching `CreateAlertModal` and
+  // `TestCaseModal`, which both exclude their own in-flight flags from the
+  // same pattern. `Modal`'s backdrop, Escape and X all close unconditionally —
+  // only the footer buttons respect `creating` — so a user who closes a
+  // seemingly-stuck modal mid-create and reopens it would get an enabled
+  // Create button with the first request still in flight. Submitting again
+  // makes two agents, and whichever request lands first `router.push`es away
+  // from the other. Leaving `creating` alone keeps the button disabled until
+  // the in-flight request actually settles.
+  useEffect(() => {
+    if (!open) return;
+    setType("single");
+    setCategory("All");
+    setTemplate("Build from scratch");
+    setError(null);
+  }, [open]);
+
   const handleCreate = async () => {
     const tpl = TEMPLATES.find((t) => t.name === template);
     setCreating(true);
     setError(null);
     try {
-      const llm = await api.createLlm({
-        ...(tpl?.prompt ? { general_prompt: tpl.prompt } : {}),
-        ...(tpl?.beginMessage ? { begin_message: tpl.beginMessage } : {}),
-      });
+      // Two steps either way: the engine is created first, then the agent that
+      // points at it. A flow agent's seed graph already reaches an end node, so
+      // it is callable the moment it exists.
+      const response_engine =
+        type === "flow"
+          ? {
+              type: "conversation-flow" as const,
+              conversation_flow_id: (await api.createConversationFlow(seedFlow()))
+                .conversation_flow_id,
+            }
+          : {
+              type: "retell-llm" as const,
+              llm_id: (
+                await api.createLlm({
+                  ...(tpl?.prompt ? { general_prompt: tpl.prompt } : {}),
+                  ...(tpl?.beginMessage ? { begin_message: tpl.beginMessage } : {}),
+                })
+              ).llm_id,
+            };
       const agent = await api.createAgent({
         agent_name: template === "Build from scratch" ? "New Agent" : template,
-        response_engine: { type: "retell-llm", llm_id: llm.llm_id },
+        response_engine,
         voice_id: "cartesia-sonic-english",
       });
       onClose();
@@ -161,74 +203,81 @@ export default function CreateAgentModal({
         ).map((t) => (
           <button
             key={t.key}
-            onClick={() => t.key === "single" && setType(t.key)}
-            disabled={t.key === "flow"}
-            title={t.key === "flow" ? "Conversation flow agents coming soon" : undefined}
+            onClick={() => {
+              setType(t.key);
+              // The templates below are prompts, and a flow agent has no
+              // prompt to put one in. Clearing the pick is what actually
+              // stops a discarded template from naming the agent it was
+              // discarded from (`handleCreate` names by `template`); hiding
+              // the grid, below, is what stops one being picked at all.
+              setTemplate("Build from scratch");
+            }}
             className={cn(
-              "rounded-xl border p-4 text-left transition-colors",
-              t.key === "flow"
-                ? "cursor-not-allowed border-line opacity-50"
-                : "cursor-pointer",
+              "cursor-pointer rounded-xl border p-4 text-left transition-colors",
               type === t.key
                 ? "border-ink ring-1 ring-ink"
                 : "border-line hover:border-line-strong",
             )}
           >
             <t.icon className="mb-2 size-5 text-sub" strokeWidth={1.8} />
-            <div className="text-[14px] font-semibold">
-              {t.title}
-              {t.key === "flow" && (
-                <span className="ml-2 text-[11px] font-medium text-faint">Coming soon</span>
-              )}
-            </div>
+            <div className="text-[14px] font-semibold">{t.title}</div>
             <div className="mt-0.5 text-[12.5px] text-sub">{t.desc}</div>
           </button>
         ))}
       </div>
 
-      <div className="mt-5 flex items-center gap-1.5 overflow-x-auto pb-1">
-        {CATEGORIES.map((c) => (
-          <button
-            key={c}
-            onClick={() => setCategory(c)}
-            className={cn(
-              "whitespace-nowrap rounded-full border px-3 py-1 text-[12.5px] font-medium transition-colors cursor-pointer",
-              category === c
-                ? "border-ink bg-ink text-white"
-                : "border-line bg-white text-sub hover:text-ink",
-            )}
-          >
-            {c}
-          </button>
-        ))}
-      </div>
+      {type === "flow" ? (
+        <p className="mt-5 text-[13px] text-sub">
+          Flow agents start from a two-node graph — a greeting and an end node — which you edit on
+          the canvas. The prompt templates below apply to single-prompt agents only.
+        </p>
+      ) : (
+        <>
+          <div className="mt-5 flex items-center gap-1.5 overflow-x-auto pb-1">
+            {CATEGORIES.map((c) => (
+              <button
+                key={c}
+                onClick={() => setCategory(c)}
+                className={cn(
+                  "whitespace-nowrap rounded-full border px-3 py-1 text-[12.5px] font-medium transition-colors cursor-pointer",
+                  category === c
+                    ? "border-ink bg-ink text-white"
+                    : "border-line bg-white text-sub hover:text-ink",
+                )}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
 
-      <div className="mt-3 grid grid-cols-3 gap-3">
-        {TEMPLATES.map((t) => (
-          <button
-            key={t.name}
-            onClick={() => !t.disabled && setTemplate(t.name)}
-            disabled={t.disabled}
-            title={t.disabled ? "Not available yet" : undefined}
-            className={cn(
-              "relative rounded-xl border p-3.5 text-left transition-colors",
-              t.disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer",
-              template === t.name
-                ? "border-ink ring-1 ring-ink"
-                : "border-line hover:border-line-strong",
-            )}
-          >
-            {t.suggested && (
-              <Badge tone="blue" className="absolute right-2 top-2">
-                Suggested
-              </Badge>
-            )}
-            <t.icon className="mb-2 size-4.5 text-sub" strokeWidth={1.8} />
-            <div className="text-[13px] font-semibold">{t.name}</div>
-            <div className="mt-0.5 text-xs text-sub">{t.desc}</div>
-          </button>
-        ))}
-      </div>
+          <div className="mt-3 grid grid-cols-3 gap-3">
+            {TEMPLATES.map((t) => (
+              <button
+                key={t.name}
+                onClick={() => !t.disabled && setTemplate(t.name)}
+                disabled={t.disabled}
+                title={t.disabled ? "Not available yet" : undefined}
+                className={cn(
+                  "relative rounded-xl border p-3.5 text-left transition-colors",
+                  t.disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer",
+                  template === t.name
+                    ? "border-ink ring-1 ring-ink"
+                    : "border-line hover:border-line-strong",
+                )}
+              >
+                {t.suggested && (
+                  <Badge tone="blue" className="absolute right-2 top-2">
+                    Suggested
+                  </Badge>
+                )}
+                <t.icon className="mb-2 size-4.5 text-sub" strokeWidth={1.8} />
+                <div className="text-[13px] font-semibold">{t.name}</div>
+                <div className="mt-0.5 text-xs text-sub">{t.desc}</div>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </Modal>
   );
 }

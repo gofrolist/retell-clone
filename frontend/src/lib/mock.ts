@@ -538,6 +538,62 @@ function demoVersions(a: Agent): Record<string, unknown>[] {
   }));
 }
 
+/**
+ * A small, plausible conversation-flow graph for the demo build. It does not
+ * need to mirror a real Retell capture (see backend/tests/fixtures/retell_flows
+ * for those) — just be loadable by the editor: start `conversation` → `branch`
+ * → `end`.
+ */
+function demoFlow(flowId: string): Record<string, unknown> {
+  return {
+    conversation_flow_id: flowId,
+    version: 0,
+    global_prompt: "You are a helpful assistant handling an inbound call.",
+    start_speaker: "agent",
+    start_node_id: "start",
+    nodes: [
+      {
+        id: "start",
+        type: "conversation",
+        name: "Greeting",
+        instruction: { type: "prompt", text: "Greet the caller and ask how you can help." },
+        edges: [
+          {
+            id: "edge-start-branch",
+            transition_condition: { type: "prompt", prompt: "Caller stated a request" },
+            destination_node_id: "branch",
+          },
+        ],
+      },
+      {
+        id: "branch",
+        type: "branch",
+        name: "Route request",
+        edges: [
+          {
+            id: "edge-branch-end",
+            transition_condition: { type: "prompt", prompt: "Request has been resolved" },
+            destination_node_id: "end",
+          },
+        ],
+        else_edge: {
+          id: "edge-branch-end-else",
+          transition_condition: { type: "prompt", prompt: "Else" },
+          destination_node_id: "end",
+        },
+      },
+      {
+        id: "end",
+        type: "end",
+        name: "Goodbye",
+        instruction: { type: "static_text", text: "Thanks for calling. Goodbye!" },
+      },
+    ],
+    default_dynamic_variables: null,
+    last_modification_timestamp: NOW,
+  };
+}
+
 function rawLlm(a: Agent): Record<string, unknown> {
   return {
     llm_id: demoLlmId(a),
@@ -599,10 +655,14 @@ function rawKb(k: KnowledgeBase): Record<string, unknown> {
 
 export function demoResponse<T>(path: string, init?: RequestInit): T {
   const method = init?.method ?? "GET";
-  if (method !== "GET" && path !== "/v2/list-calls") {
+  const route = path.split("?")[0];
+  // /update-conversation-flow echoes the merged body back rather than
+  // persisting it — same non-durable spirit as /v2/list-calls being a
+  // read-shaped POST, so the editor can round-trip a flow in a demo session
+  // without a real write ever landing anywhere.
+  if (method !== "GET" && path !== "/v2/list-calls" && !route.startsWith("/update-conversation-flow/")) {
     throw new Error("Demo mode: writes are disabled (unset NEXT_PUBLIC_DEMO_MODE to use the real backend)");
   }
-  const route = path.split("?")[0];
 
   if (route === "/list-agents") return mockAgents.map(rawAgent) as T;
   if (route === "/list-chat-agents") return [] as T; // no canned chat agents
@@ -630,13 +690,35 @@ export function demoResponse<T>(path: string, init?: RequestInit): T {
     if (!a) throw new Error("Agent not found");
     const entry = demoVersions(a).find((v) => v.version === Number(version));
     if (!entry) throw new Error("Agent version not found");
-    return { ...entry, response_engine_config: rawLlm(a) } as T;
+    // A flow agent's pinned version needs its own frozen graph, same as the
+    // real backend's `conversation_flow` field (Task 1) — otherwise the
+    // editor's pinned-version view reads `undefined` for every version of a
+    // demo flow agent, not just the ones that would genuinely lack one.
+    // Exactly one of the two is non-null, mirroring
+    // `backend/src/arhiteq_api/api/agents.py:get_agent_version`.
+    const isFlow = a.agent_type === "conversation-flow";
+    return {
+      ...entry,
+      response_engine_config: isFlow ? null : rawLlm(a),
+      conversation_flow: isFlow ? demoFlow(`flow_demo_${a.agent_id.slice(-8)}`) : null,
+    } as T;
   }
   if (route.startsWith("/get-retell-llm/")) {
     const id = route.split("/").pop();
     const a = mockAgents.find((x) => demoLlmId(x) === id);
     if (!a) throw new Error("LLM not found");
     return rawLlm(a) as T;
+  }
+  if (route.startsWith("/get-conversation-flow/")) {
+    const id = route.split("/").pop();
+    if (!id) throw new Error("Flow not found");
+    return demoFlow(id) as T;
+  }
+  if (route.startsWith("/update-conversation-flow/")) {
+    const id = route.split("/").pop();
+    if (!id) throw new Error("Flow not found");
+    const body = init?.body ? JSON.parse(String(init.body)) : {};
+    return { ...demoFlow(id), ...body } as T;
   }
   if (route === "/v2/list-calls") {
     // Honor the from_number/to_number filters the contact drawer relies on —

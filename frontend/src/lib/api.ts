@@ -247,6 +247,7 @@ export interface RawAgentVersion extends RawAgent {
   is_live: boolean;
   created_timestamp: number;
   published_timestamp: number | null;
+  conversation_flow?: RawConversationFlow | null;
 }
 
 export interface McpServer {
@@ -293,6 +294,35 @@ export interface RawWebCall {
   call_status: string;
   [key: string]: unknown;
 }
+
+/**
+ * A conversation flow exactly as the control plane serves it.
+ *
+ * Deliberately OPEN (`Record<string, unknown>` tail): the editor round-trips
+ * this object, and a closed type would invite rebuilding it field-by-field,
+ * which is how Retell keys we do not model yet (`flex_mode`, `is_transfer_cf`,
+ * next month's addition) get silently dropped. Nodes and edges are
+ * `Record<string, unknown>` for the same reason — `flowModel.ts` narrows what
+ * it reads without ever asserting what is there.
+ */
+export type RawConversationFlow = {
+  conversation_flow_id: string;
+  version: number;
+  global_prompt?: string | null;
+  nodes?: Record<string, unknown>[] | null;
+  start_node_id?: string | null;
+  start_speaker?: string | null;
+  model_choice?: Record<string, unknown> | null;
+  model_temperature?: number | null;
+  tools?: Record<string, unknown>[] | null;
+  default_dynamic_variables?: Record<string, string> | null;
+  components?: Record<string, unknown>[] | null;
+  notes?: Record<string, unknown>[] | null;
+  kb_config?: Record<string, unknown> | null;
+  knowledge_base_ids?: string[] | null;
+  mcps?: Record<string, unknown>[] | null;
+  begin_tag_display_position?: { x: number; y: number } | null;
+} & Record<string, unknown>;
 
 export interface RawLlm {
   llm_id: string;
@@ -816,6 +846,7 @@ export interface ListCallsParams {
 export interface AgentDetail {
   agent: RawAgent;
   llm: RawLlm | null;
+  flow: RawConversationFlow | null;
   /** The agent is a chat agent: it has no voice, versions or telephony, and
    *  edits go to /update-chat-agent instead of /update-agent. */
   is_chat: boolean;
@@ -907,11 +938,18 @@ export const api = {
       );
       isChat = true;
     }
-    const llmId = agent.response_engine?.llm_id;
-    const llm = llmId
-      ? await request<RawLlm>(`/get-retell-llm/${encodeURIComponent(llmId)}`)
+    const engine = agent.response_engine;
+    const llm = engine?.llm_id
+      ? await request<RawLlm>(`/get-retell-llm/${encodeURIComponent(engine.llm_id)}`)
       : null;
-    return { agent, llm, is_chat: isChat };
+    // Exactly one engine is ever populated: `llm_id` on a single-prompt agent,
+    // `conversation_flow_id` on a flow-backed one.
+    const flow = engine?.conversation_flow_id
+      ? await request<RawConversationFlow>(
+          `/get-conversation-flow/${encodeURIComponent(engine.conversation_flow_id)}`,
+        )
+      : null;
+    return { agent, llm, flow, is_chat: isChat };
   },
 
   updateAgent: (agentId: string, body: Partial<RawAgent>) =>
@@ -1020,6 +1058,15 @@ export const api = {
 
   createConversationFlow: (body: Record<string, unknown>) =>
     request<{ conversation_flow_id: string }>("/create-conversation-flow", post(body)),
+
+  getConversationFlow: (flowId: string) =>
+    request<RawConversationFlow>(`/get-conversation-flow/${encodeURIComponent(flowId)}`),
+
+  updateConversationFlow: (flowId: string, body: Partial<RawConversationFlow>) =>
+    request<RawConversationFlow>(
+      `/update-conversation-flow/${encodeURIComponent(flowId)}`,
+      patch(body),
+    ),
 
   deleteAgent: (agentId: string) =>
     request<void>(`/delete-agent/${encodeURIComponent(agentId)}`, del),

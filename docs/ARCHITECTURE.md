@@ -236,12 +236,36 @@ the `conversation_flow` object already resolved onto the call's config (see
 `docs/INTERNAL_API.md`), at the same pinned agent version as everything else
 about the call.
 
+**The dashboard editor round-trips the same opaque JSON.** `frontend/src/
+components/flow/` (`docs/UI_INVENTORY.md` § Agent detail (Conversation Flow
+editor)) reads and writes `ConversationFlow` through the ordinary
+`get-conversation-flow` / `update-conversation-flow` endpoints; it models only
+the fields its UI can express (the seven executable node types, edge
+transition conditions, notes, global settings) and otherwise carries every
+other field it doesn't understand through unchanged — a node's
+`finetune_transition_examples`, a flow's `flex_mode`, anything Retell sends
+that has no editor control still comes back on save exactly as it went in.
+Nothing enforces that by convention; a value-diffed reducer (`flowModel.ts`)
+is the only path allowed to touch flow state, and a "fidelity" test suite
+(`frontend/src/components/flow/__tests__/flowModel.test.ts`) loads three real,
+sanitized Retell captures (`backend/tests/fixtures/retell_flows/
+{prior_auth_hotline,clara_outbound,identity_verify_transfer}.json` — the same
+fixtures the backend and worker treat as the schema authority) and asserts
+they parse and re-serialize losslessly. A change that reconstructs flow state
+by hand instead of dispatching through the reducer defeats this guarantee
+without failing on coverage alone — the fidelity test is what actually
+enforces it, not a documented convention.
+
 **Known runtime limitations:**
 - Per-node overrides other than `start_speaker` — a node's own
   `interruption_sensitivity`, voice speed, response eagerness, or per-node
   LLM choice — survive round-trip (nodes are stored and served as opaque
   JSON) but the runtime never reads them; only the flow-level `model_choice`
-  is honoured.
+  is honoured. `start_speaker` itself is read on the START node only
+  (`flow.py:start_speaker_for` has one caller: `main.py`, applied to
+  `graph.start`), so a value on any other node also survives round-trip
+  unread — which is why the editor offers the control on the start node
+  alone.
 - `finetune_transition_examples` / `finetune_conversation_examples` likewise
   survive round-trip as part of a node's JSON but are not consulted at
   runtime.
