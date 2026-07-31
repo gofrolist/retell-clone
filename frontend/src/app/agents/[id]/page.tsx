@@ -39,6 +39,7 @@ import {
 } from "@/lib/api";
 import type { Voice } from "@/lib/types";
 import { DEFAULT_POST_CALL_ANALYSIS_MODEL } from "@/lib/models";
+import { flowEstimateInput, llmEstimateInput } from "@/lib/estimates";
 import {
   AudioLines,
   Braces,
@@ -432,6 +433,12 @@ function AgentEditor({ id }: { id: string }) {
   // Server value overlaid with unsaved edits.
   const view: RawAgent = { ...agent, ...agentDraft };
   const llmView: RawLlm | null = llm ? { ...llm, ...llmDraft } : null;
+  // Cost/latency/token estimates read the engine from whichever document
+  // actually holds it: a flow agent has no LLM, so pricing it off `llmView`
+  // showed a fixed Cartesia pipeline that ignored the flow's own model.
+  const estimateInput = flowView
+    ? flowEstimateInput(flowView)
+    : llmEstimateInput(llmView);
 
   // Same panel in both layouts, and it opens over whichever is showing.
   const versionsPanel = panelOpen ? (
@@ -703,7 +710,7 @@ function AgentEditor({ id }: { id: string }) {
                 readOnly={readOnly}
                 canvasEpoch={canvasEpoch}
                 agentDetails={
-                  <MetaRow agentId={agent.agent_id} llm={llmView} chat={isChat} stacked />
+                  <MetaRow agentId={agent.agent_id} input={estimateInput} chat={isChat} stacked />
                 }
                 globalHeader={
                   <fieldset disabled={readOnly} className="min-w-0">
@@ -741,7 +748,7 @@ function AgentEditor({ id }: { id: string }) {
               disabled={readOnly}
               className="flex min-w-[420px] flex-1 flex-col overflow-y-auto rounded-xl border border-line bg-card p-4"
             >
-              <MetaRow agentId={agent.agent_id} llm={llmView} chat={isChat} />
+              <MetaRow agentId={agent.agent_id} input={estimateInput} chat={isChat} />
               <div className="mt-3">
                 <SelectorRow
                   model={llmView?.model ?? ""}
