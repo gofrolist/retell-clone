@@ -12,15 +12,14 @@ import FunctionsSection, { type Tool } from "@/components/editor/sections/Functi
 import KnowledgeBaseSection from "@/components/editor/sections/KnowledgeBaseSection";
 import McpSection from "@/components/editor/sections/McpSection";
 import PostCallSection from "@/components/editor/sections/PostCallSection";
-import SecuritySection, {
-  DynamicVariablesRow,
-} from "@/components/editor/sections/SecuritySection";
+import SecuritySection, { DynamicVariablesRow } from "@/components/editor/sections/SecuritySection";
 import SpeechSettingsSection from "@/components/editor/sections/SpeechSettingsSection";
 import TranscriptionSection from "@/components/editor/sections/TranscriptionSection";
 import WebhookSection from "@/components/editor/sections/WebhookSection";
 import TestPanel from "@/components/editor/TestPanel";
 import SimulationTab from "@/components/simulation/SimulationTab";
 import FlowEditor from "@/components/flow/FlowEditor";
+import AgentSettings from "@/components/flow/settings/AgentSettings";
 import {
   diffFlowPatch,
   flowReducer,
@@ -58,16 +57,10 @@ import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 /** How long editing pauses before the draft is saved. */
 const AUTOSAVE_MS = 800;
 
-const num = (v: unknown, fallback: number): number =>
-  typeof v === "number" ? v : fallback;
-const str = (v: unknown, fallback: string): string =>
-  typeof v === "string" ? v : fallback;
+const num = (v: unknown, fallback: number): number => (typeof v === "number" ? v : fallback);
+const str = (v: unknown, fallback: string): string => (typeof v === "string" ? v : fallback);
 
-export default function AgentEditorPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
+export default function AgentEditorPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   // `key={id}` is the whole state reset, and it has to be here rather than a
   // pile of resets inside the editor. Next.js reuses this component across
@@ -433,185 +426,87 @@ function AgentEditor({ id }: { id: string }) {
   }
 
   if (!agent) {
-    return (
-      <div className="flex h-screen items-center justify-center text-sub">
-        Loading agent…
-      </div>
-    );
+    return <div className="flex h-screen items-center justify-center text-sub">Loading agent…</div>;
   }
 
   // Server value overlaid with unsaved edits.
   const view: RawAgent = { ...agent, ...agentDraft };
   const llmView: RawLlm | null = llm ? { ...llm, ...llmDraft } : null;
 
-  return (
-    <div className="flex h-screen flex-col bg-app">
-      <EditorHeader
-        name={view.agent_name ?? ""}
-        onName={(v) => setAgentField("agent_name", v)}
-        agent={agent}
-        llm={llm}
-        tab={tab}
-        onTab={setTab}
-        saveState={saveState}
-        publishing={publishing}
-        onPublish={(meta) => void handlePublish(undefined, meta)}
-        viewingVersion={agent.version}
-        readOnly={readOnly}
-        onBranch={() => void handleRestore(agent.version)}
-        panelOpen={panelOpen}
-        onTogglePanel={() => setPanelOpen((v) => !v)}
-        error={actionError}
-        chat={isChat}
-      />
-      {readOnly && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-line bg-amber-50 px-4 py-1.5 text-[12px] text-amber-900">
-          Viewing V{agent.version} — published versions are immutable. Use{" "}
-          <span className="font-medium">Edit as new draft</span> to change it.
-        </div>
-      )}
-      <div className="flex min-h-0 grow gap-2 overflow-x-auto p-2">
-        {tab === "simulation" ? (
-          isChat ? (
-            // Nothing to simulate without calls — just the text test, in the
-            // slot the settings column occupies on the Create tab.
-            <div
-              className={`ml-auto ${SIDE_PANEL_WIDTH} overflow-hidden rounded-xl border border-line bg-card`}
-            >
-              <TestPanel agentId={agent.agent_id} audio={false} />
-            </div>
-          ) : (
-            <SimulationTab
-              agentId={agent.agent_id}
-              agentVersion={agent.version}
-              llm={llm}
-              dirty={dirty}
-            />
-          )
-        ) : (
-          <>
-        {/* left: prompt/flow column — takes whatever the fixed panel leaves.
-            `fieldset disabled` freezes a published version without threading a
-            readOnly prop through every settings section (`FlowEditor` also
-            takes its own explicit `readOnly`, since it is a canvas, not form
-            controls — a disabled `<fieldset>` alone would not stop a drag).
-            A flow agent still gets `overflow-y-auto`'s scroll only for
-            `MetaRow`/`SelectorRow` above; the editor itself manages its own
-            interior scrolling/panning, so it gets `overflow-hidden` instead
-            of fighting the ancestor for scroll. */}
-        <fieldset
-          disabled={readOnly}
-          className={`flex min-w-[420px] flex-1 flex-col rounded-xl border border-line bg-card p-4 ${
-            flowView ? "overflow-hidden" : "overflow-y-auto"
-          }`}
-        >
-          <MetaRow agentId={agent.agent_id} llm={llmView} chat={isChat} />
-          <div className="mt-3">
-            <SelectorRow
-              model={llmView?.model ?? ""}
-              onModel={llm ? (v) => setLlmField("model", v) : undefined}
-              temperature={num(llmView?.model_temperature, 0)}
-              onTemperature={llm ? (v) => setLlmField("model_temperature", v) : undefined}
-              voiceId={isChat ? undefined : view.voice_id}
-              onVoice={isChat ? undefined : (v) => setAgentField("voice_id", v)}
-              language={view.language}
-              onLanguage={(v) => setAgentField("language", v)}
-              timezone={isChat ? undefined : (view.timezone ?? "")}
-              onTimezone={isChat ? undefined : (v) => setAgentField("timezone", v || null)}
-              voices={voices}
-            />
-          </div>
-          {/* `llm` and `flow` are never both set for one agent (exactly one
-              engine is populated server-side, see `api.ts`'s `getAgentDetail`),
-              so `onModel`/`onTemperature` above are already `undefined` in the
-              flow branch — the model/temperature controls disappear from
-              `SelectorRow` on their own; `GlobalSettings` inside `FlowEditor`
-              is the only place that edits them for a flow agent. */}
-          {flowView ? (
-            <div className="mt-3 flex min-h-0 grow flex-col">
-              {/* `canvasEpoch` forces the canvas to remount on a bulk graph
-                  replacement, and only then — see `FlowEditor`'s doc comment
-                  for the paint bug it works around and why it is an explicit
-                  counter rather than `agent.version`. */}
-              <FlowEditor
-                flow={flowView}
-                dispatch={dispatchFlow}
-                readOnly={readOnly}
-                canvasEpoch={canvasEpoch}
-              />
-            </div>
-          ) : llmView ? (
-            <>
-              <div className="mt-3 flex min-h-0 grow flex-col">
-                <PromptEditor
-                  value={llmView.general_prompt ?? ""}
-                  onChange={(v) => setLlmField("general_prompt", v)}
-                  defaultDynamicVariables={llmView.default_dynamic_variables}
-                />
-              </div>
-              <WelcomeMessage
-                startSpeaker={llmView.start_speaker}
-                onStartSpeaker={(v) => setLlmField("start_speaker", v)}
-                message={llmView.begin_message ?? ""}
-                onMessage={(v) => setLlmField("begin_message", v)}
-                pause={isChat ? undefined : num(view.begin_message_delay_ms, 0) / 1000}
-              />
-            </>
-          ) : (
-            // Neither engine populated: a `custom-llm` response engine, which
-            // this dashboard has no create path for and does not edit here.
-            <p className="mt-4 text-[13px] text-sub">
-              This agent&rsquo;s response engine is not editable from this page.
-            </p>
-          )}
-        </fieldset>
+  // Same panel in both layouts, and it opens over whichever is showing.
+  const versionsPanel = panelOpen ? (
+    <VersionsPanel
+      versions={versions}
+      loading={versions === null && versionsError === null}
+      error={versionsError}
+      selected={agent.version}
+      onSelect={(v) => void selectVersion(v)}
+      onClose={() => setPanelOpen(false)}
+      onRestore={(v) => void handleRestore(v)}
+      onDiscard={(v) => void handleDiscard(v)}
+      onPublish={(v) => void handlePublish(v === agent.version ? undefined : v)}
+      busy={versionBusy || publishing}
+    />
+  ) : null;
 
-        {/* right: settings accordions */}
-        <fieldset
-          disabled={readOnly}
-          className={`${SIDE_PANEL_WIDTH} overflow-y-auto rounded-xl border border-line bg-card`}
-        >
-          <Accordion icon={LayoutGrid} title="Functions">
-            {flowView ? (
-              <FunctionsSection
-                tools={(flowView.tools ?? []) as Tool[]}
-                onChange={(tools) =>
-                  dispatchFlow({ type: "patchFlow", patch: { tools: stampToolIds(tools) } })
-                }
-              />
-            ) : llmView ? (
-              <FunctionsSection
-                tools={llmView.general_tools ?? []}
-                onChange={(tools) => setLlmField("general_tools", tools)}
-              />
-            ) : (
-              <p className="text-[13px] text-sub">Not available for this agent&rsquo;s response engine.</p>
-            )}
-          </Accordion>
-          <Accordion icon={Library} title="Knowledge Base">
-            {flowView ? (
-              <KnowledgeBaseSection
-                attachedIds={flowView.knowledge_base_ids ?? []}
-                onChange={(ids) =>
-                  dispatchFlow({ type: "patchFlow", patch: { knowledge_base_ids: ids } })
-                }
-                kbConfig={flowView.kb_config ?? null}
-                onKbConfig={(v) => dispatchFlow({ type: "patchFlow", patch: { kb_config: v } })}
-              />
-            ) : llmView ? (
-              <KnowledgeBaseSection
-                attachedIds={llmView.knowledge_base_ids ?? []}
-                onChange={(ids) => setLlmField("knowledge_base_ids", ids)}
-              />
-            ) : (
-              <p className="text-[13px] text-sub">Not available for this agent&rsquo;s response engine.</p>
-            )}
-          </Accordion>
-          {/* Everything below is voice/telephony-only: a chat agent has no
-              audio, no call and no version to publish, and the chat-agent API
-              rejects these fields. */}
-          {!isChat && (
-            <>
+  // The settings accordions, declared once and mounted in the slot each
+  // engine's layout has for them: the right-hand column for a prompt agent,
+  // the flow editor's own Global Settings pane for a flow agent (Retell puts
+  // them there too, and a flow canvas has no width to spare for a third
+  // column). Every branch inside already tells the two engines apart.
+  //
+  // Takes the dispatch it should use rather than closing over `dispatchFlow`:
+  // three of these sections patch the flow document, and inside the editor
+  // that has to go through the editor's own recording dispatch or the edit
+  // lands with no undo snapshot behind it — the next undo would then revert
+  // it along with whatever the user actually meant to undo.
+  const settingsSections = (dispatchFlowAction: (action: FlowAction) => void) => (
+    <>
+      <Accordion icon={LayoutGrid} title="Functions">
+        {flowView ? (
+          <FunctionsSection
+            tools={(flowView.tools ?? []) as Tool[]}
+            onChange={(tools) =>
+              dispatchFlowAction({ type: "patchFlow", patch: { tools: stampToolIds(tools) } })
+            }
+          />
+        ) : llmView ? (
+          <FunctionsSection
+            tools={llmView.general_tools ?? []}
+            onChange={(tools) => setLlmField("general_tools", tools)}
+          />
+        ) : (
+          <p className="text-[13px] text-sub">
+            Not available for this agent&rsquo;s response engine.
+          </p>
+        )}
+      </Accordion>
+      <Accordion icon={Library} title="Knowledge Base">
+        {flowView ? (
+          <KnowledgeBaseSection
+            attachedIds={flowView.knowledge_base_ids ?? []}
+            onChange={(ids) =>
+              dispatchFlowAction({ type: "patchFlow", patch: { knowledge_base_ids: ids } })
+            }
+            kbConfig={flowView.kb_config ?? null}
+            onKbConfig={(v) => dispatchFlowAction({ type: "patchFlow", patch: { kb_config: v } })}
+          />
+        ) : llmView ? (
+          <KnowledgeBaseSection
+            attachedIds={llmView.knowledge_base_ids ?? []}
+            onChange={(ids) => setLlmField("knowledge_base_ids", ids)}
+          />
+        ) : (
+          <p className="text-[13px] text-sub">
+            Not available for this agent&rsquo;s response engine.
+          </p>
+        )}
+      </Accordion>
+      {/* Everything below is voice/telephony-only: a chat agent has no
+            audio, no call and no version to publish, and the chat-agent API
+            rejects these fields. */}
+      {!isChat && (
+        <>
           <Accordion icon={AudioLines} title="Speech Settings">
             <SpeechSettingsSection
               ambientSound={str(view.ambient_sound, "none")}
@@ -685,75 +580,218 @@ function AgentEditor({ id }: { id: string }) {
               }
             />
           </Accordion>
-            </>
-          )}
-          {isChat && llm && (
-            <Accordion icon={Braces} title="Default Dynamic Variables">
-              <DynamicVariablesRow
-                value={llmView?.default_dynamic_variables ?? null}
-                onChange={(v) => setLlmField("default_dynamic_variables", v)}
-              />
-            </Accordion>
-          )}
-          <Accordion icon={Webhook} title="Webhook Settings">
-            {isChat ? (
-              // The chat-agent API takes the URL only — no per-agent timeout,
-              // event filter or test send (those ride on call webhooks).
-              <Field label="Webhook URL">
-                <TextInput
-                  value={view.webhook_url ?? ""}
-                  placeholder="https://example.com/webhook"
-                  onChange={(e) => setAgentField("webhook_url", e.target.value || null)}
-                />
-              </Field>
-            ) : (
-              <WebhookSection
-                agentId={agent.agent_id}
-                url={view.webhook_url ?? ""}
-                onUrl={(v) => setAgentField("webhook_url", v || null)}
-                timeoutMs={num(view.webhook_timeout_ms, 5000)}
-                onTimeoutMs={(v) => setAgentField("webhook_timeout_ms", v)}
-                events={view.webhook_events ?? null}
-                onEvents={(v) => setAgentField("webhook_events", v)}
-              />
-            )}
-          </Accordion>
-          <Accordion icon={Plug} title="MCPs">
-            {flowView ? (
-              <McpSection
-                mcps={(flowView.mcps ?? []) as unknown as McpServer[]}
-                onChange={(v) =>
-                  dispatchFlow({
-                    type: "patchFlow",
-                    patch: { mcps: v as unknown as Record<string, unknown>[] | null },
-                  })
-                }
-              />
-            ) : llmView ? (
-              <McpSection
-                mcps={llmView.mcps ?? []}
-                onChange={(v) => setLlmField("mcps", v)}
-              />
-            ) : (
-              <p className="text-[13px] text-sub">Not available for this agent&rsquo;s response engine.</p>
-            )}
-          </Accordion>
-        </fieldset>
-
-        {panelOpen && (
-          <VersionsPanel
-            versions={versions}
-            loading={versions === null && versionsError === null}
-            error={versionsError}
-            selected={agent.version}
-            onSelect={(v) => void selectVersion(v)}
-            onClose={() => setPanelOpen(false)}
-            onRestore={(v) => void handleRestore(v)}
-            onDiscard={(v) => void handleDiscard(v)}
-            onPublish={(v) => void handlePublish(v === agent.version ? undefined : v)}
-            busy={versionBusy || publishing}
+        </>
+      )}
+      {isChat && llm && (
+        <Accordion icon={Braces} title="Default Dynamic Variables">
+          <DynamicVariablesRow
+            value={llmView?.default_dynamic_variables ?? null}
+            onChange={(v) => setLlmField("default_dynamic_variables", v)}
+          />
+        </Accordion>
+      )}
+      <Accordion icon={Webhook} title="Webhook Settings">
+        {isChat ? (
+          // The chat-agent API takes the URL only — no per-agent timeout,
+          // event filter or test send (those ride on call webhooks).
+          <Field label="Webhook URL">
+            <TextInput
+              value={view.webhook_url ?? ""}
+              placeholder="https://example.com/webhook"
+              onChange={(e) => setAgentField("webhook_url", e.target.value || null)}
+            />
+          </Field>
+        ) : (
+          <WebhookSection
+            agentId={agent.agent_id}
+            url={view.webhook_url ?? ""}
+            onUrl={(v) => setAgentField("webhook_url", v || null)}
+            timeoutMs={num(view.webhook_timeout_ms, 5000)}
+            onTimeoutMs={(v) => setAgentField("webhook_timeout_ms", v)}
+            events={view.webhook_events ?? null}
+            onEvents={(v) => setAgentField("webhook_events", v)}
           />
         )}
+      </Accordion>
+      <Accordion icon={Plug} title="MCPs">
+        {flowView ? (
+          <McpSection
+            mcps={(flowView.mcps ?? []) as unknown as McpServer[]}
+            onChange={(v) =>
+              dispatchFlowAction({
+                type: "patchFlow",
+                patch: { mcps: v as unknown as Record<string, unknown>[] | null },
+              })
+            }
+          />
+        ) : llmView ? (
+          <McpSection mcps={llmView.mcps ?? []} onChange={(v) => setLlmField("mcps", v)} />
+        ) : (
+          <p className="text-[13px] text-sub">
+            Not available for this agent&rsquo;s response engine.
+          </p>
+        )}
+      </Accordion>
+    </>
+  );
+
+  return (
+    <div className="flex h-screen flex-col bg-app">
+      <EditorHeader
+        name={view.agent_name ?? ""}
+        onName={(v) => setAgentField("agent_name", v)}
+        agent={agent}
+        llm={llm}
+        tab={tab}
+        onTab={setTab}
+        saveState={saveState}
+        publishing={publishing}
+        onPublish={(meta) => void handlePublish(undefined, meta)}
+        viewingVersion={agent.version}
+        readOnly={readOnly}
+        onBranch={() => void handleRestore(agent.version)}
+        panelOpen={panelOpen}
+        onTogglePanel={() => setPanelOpen((v) => !v)}
+        error={actionError}
+        chat={isChat}
+      />
+      {readOnly && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-line bg-amber-50 px-4 py-1.5 text-[12px] text-amber-900">
+          Viewing V{agent.version} — published versions are immutable. Use{" "}
+          <span className="font-medium">Edit as new draft</span> to change it.
+        </div>
+      )}
+      {/* `overflow-x-auto`, including for a flow agent: the editor manages its
+          own panning, but its rails are fixed-width and `shrink-0`, so on a
+          narrow window clipping here would put the settings pane (or the
+          versions panel over it) out of reach with no way to scroll to it. */}
+      <div className="flex min-h-0 grow gap-2 overflow-x-auto p-2">
+        {tab === "simulation" ? (
+          isChat ? (
+            // Nothing to simulate without calls — just the text test, in the
+            // slot the settings column occupies on the Create tab.
+            <div
+              className={`ml-auto ${SIDE_PANEL_WIDTH} overflow-hidden rounded-xl border border-line bg-card`}
+            >
+              <TestPanel agentId={agent.agent_id} audio={false} />
+            </div>
+          ) : (
+            <SimulationTab
+              agentId={agent.agent_id}
+              agentVersion={agent.version}
+              llm={llm}
+              dirty={dirty}
+            />
+          )
+        ) : flowView ? (
+          /* A flow agent is all canvas: no meta row, no selector bar, no
+             separate settings column. Everything those held lives in the
+             editor's own three panes — estimates under the node rail, voice
+             and language plus the accordions in its Global Settings tab — so
+             the graph gets the full width, which is what makes a wide flow
+             readable at all. `canvasEpoch` forces the canvas to remount on a
+             bulk graph replacement, and only then; see `FlowEditor`'s doc
+             comment for the paint bug it works around.
+             `FlowEditor` takes its own explicit `readOnly` (it is a canvas,
+             not form controls — a disabled `<fieldset>` would not stop a
+             drag); the slots it renders for us are wrapped in one below. */
+          <>
+            <div className="flex min-h-0 min-w-[560px] flex-1 overflow-hidden rounded-xl border border-line bg-card">
+              <FlowEditor
+                flow={flowView}
+                dispatch={dispatchFlow}
+                readOnly={readOnly}
+                canvasEpoch={canvasEpoch}
+                agentDetails={
+                  <MetaRow agentId={agent.agent_id} llm={llmView} chat={isChat} stacked />
+                }
+                globalHeader={
+                  <fieldset disabled={readOnly} className="min-w-0">
+                    {/* Voice and timezone are voice-agent settings; language
+                        is not, and a chat agent's language is editable
+                        (`_MUTABLE_FIELDS` in the chat-agent API), so the
+                        handlers drop out rather than the whole section. */}
+                    <AgentSettings
+                      voiceId={isChat ? undefined : (view.voice_id ?? "")}
+                      onVoice={isChat ? undefined : (v) => setAgentField("voice_id", v)}
+                      language={view.language}
+                      onLanguage={(v) => setAgentField("language", v)}
+                      timezone={isChat ? undefined : (view.timezone ?? "")}
+                      onTimezone={isChat ? undefined : (v) => setAgentField("timezone", v || null)}
+                      voices={voices}
+                      model={str((flowView.model_choice as { model?: string } | null)?.model, "")}
+                    />
+                  </fieldset>
+                }
+                globalSections={(dispatchFlowAction) => (
+                  <fieldset disabled={readOnly} className="min-w-0 border-t border-line">
+                    {settingsSections(dispatchFlowAction)}
+                  </fieldset>
+                )}
+              />
+            </div>
+            {versionsPanel}
+          </>
+        ) : (
+          <>
+            {/* left: prompt column — takes whatever the fixed panel leaves.
+            `fieldset disabled` freezes a published version without threading a
+            readOnly prop through every settings section. */}
+            <fieldset
+              disabled={readOnly}
+              className="flex min-w-[420px] flex-1 flex-col overflow-y-auto rounded-xl border border-line bg-card p-4"
+            >
+              <MetaRow agentId={agent.agent_id} llm={llmView} chat={isChat} />
+              <div className="mt-3">
+                <SelectorRow
+                  model={llmView?.model ?? ""}
+                  onModel={llm ? (v) => setLlmField("model", v) : undefined}
+                  temperature={num(llmView?.model_temperature, 0)}
+                  onTemperature={llm ? (v) => setLlmField("model_temperature", v) : undefined}
+                  voiceId={isChat ? undefined : view.voice_id}
+                  onVoice={isChat ? undefined : (v) => setAgentField("voice_id", v)}
+                  language={view.language}
+                  onLanguage={(v) => setAgentField("language", v)}
+                  timezone={isChat ? undefined : (view.timezone ?? "")}
+                  onTimezone={isChat ? undefined : (v) => setAgentField("timezone", v || null)}
+                  voices={voices}
+                />
+              </div>
+              {llmView ? (
+                <>
+                  <div className="mt-3 flex min-h-0 grow flex-col">
+                    <PromptEditor
+                      value={llmView.general_prompt ?? ""}
+                      onChange={(v) => setLlmField("general_prompt", v)}
+                      defaultDynamicVariables={llmView.default_dynamic_variables}
+                    />
+                  </div>
+                  <WelcomeMessage
+                    startSpeaker={llmView.start_speaker}
+                    onStartSpeaker={(v) => setLlmField("start_speaker", v)}
+                    message={llmView.begin_message ?? ""}
+                    onMessage={(v) => setLlmField("begin_message", v)}
+                    pause={isChat ? undefined : num(view.begin_message_delay_ms, 0) / 1000}
+                  />
+                </>
+              ) : (
+                // Neither engine populated: a `custom-llm` response engine, which
+                // this dashboard has no create path for and does not edit here.
+                <p className="mt-4 text-[13px] text-sub">
+                  This agent&rsquo;s response engine is not editable from this page.
+                </p>
+              )}
+            </fieldset>
+
+            {/* right: settings accordions */}
+            <fieldset
+              disabled={readOnly}
+              className={`${SIDE_PANEL_WIDTH} overflow-y-auto rounded-xl border border-line bg-card`}
+            >
+              {settingsSections(dispatchFlow)}
+            </fieldset>
+
+            {versionsPanel}
           </>
         )}
       </div>

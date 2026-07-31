@@ -13,7 +13,8 @@ import { withValue } from "@/lib/utils";
 import { BookOpen, ChevronDown } from "lucide-react";
 import { useState } from "react";
 
-const LANGUAGES: { value: string; label: string; flag: string }[] = [
+/** Shared with the flow editor's own language picker (`flow/settings/AgentSettings`). */
+export const LANGUAGES: { value: string; label: string; flag: string }[] = [
   { value: "en-US", label: "English (US)", flag: "🇺🇸" },
   { value: "en-GB", label: "English (UK)", flag: "🇬🇧" },
   { value: "es-ES", label: "Spanish", flag: "🇪🇸" },
