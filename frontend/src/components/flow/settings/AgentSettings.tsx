@@ -33,13 +33,17 @@ export default function AgentSettings({
   voices,
   model,
 }: {
-  voiceId: string;
-  onVoice: (voiceId: string) => void;
+  // Voice and timezone are voice-agent settings: a chat agent omits the
+  // handlers and the two controls disappear with them, exactly as in
+  // `SelectorRow`. Language is NOT voice-only — a chat agent has one too — so
+  // it is always rendered.
+  voiceId?: string;
+  onVoice?: (voiceId: string) => void;
   language: string;
   onLanguage: (language: string) => void;
   /** IANA zone for the agent's time variables; "" = no timezone set. */
-  timezone: string;
-  onTimezone: (timezone: string) => void;
+  timezone?: string;
+  onTimezone?: (timezone: string) => void;
   voices: Voice[];
   /** The flow's model, which decides which voices are selectable. */
   model: string;
@@ -56,27 +60,29 @@ export default function AgentSettings({
       <p className="text-[13px] font-medium text-ink">Agent settings</p>
 
       <div className="flex gap-2">
-        <Field label="Voice" className="min-w-0 flex-1">
-          <button
-            type="button"
-            onClick={() => setVoiceModalOpen(true)}
-            className="inline-flex h-9 w-full items-center gap-2 rounded-lg border border-line bg-white pr-2 pl-2 text-[13px] font-medium transition-colors hover:bg-app cursor-pointer"
-            aria-haspopup="dialog"
-          >
-            <VoiceAvatar name={voiceName} index={0} />
-            <span className="grow truncate text-left">{voiceName || "Select a voice"}</span>
-            <ChevronDown className="size-3.5 shrink-0 text-faint" />
-          </button>
-          {voiceModalOpen && (
-            <SelectVoiceModal
-              voices={voices}
-              currentVoiceId={voiceId}
-              onSelect={onVoice}
-              onClose={() => setVoiceModalOpen(false)}
-              liveMode={live}
-            />
-          )}
-        </Field>
+        {onVoice && (
+          <Field label="Voice" className="min-w-0 flex-1">
+            <button
+              type="button"
+              onClick={() => setVoiceModalOpen(true)}
+              className="inline-flex h-9 w-full items-center gap-2 rounded-lg border border-line bg-white pr-2 pl-2 text-[13px] font-medium transition-colors hover:bg-app cursor-pointer"
+              aria-haspopup="dialog"
+            >
+              <VoiceAvatar name={voiceName} index={0} />
+              <span className="grow truncate text-left">{voiceName || "Select a voice"}</span>
+              <ChevronDown className="size-3.5 shrink-0 text-faint" />
+            </button>
+            {voiceModalOpen && (
+              <SelectVoiceModal
+                voices={voices}
+                currentVoiceId={voiceId ?? ""}
+                onSelect={onVoice}
+                onClose={() => setVoiceModalOpen(false)}
+                liveMode={live}
+              />
+            )}
+          </Field>
+        )}
 
         <Field label="Language" className="min-w-0 flex-1">
           <Select
@@ -90,7 +96,7 @@ export default function AgentSettings({
       </div>
 
       <div className="flex items-center gap-2">
-        <CurrentTimeAwareness timezone={timezone} onTimezone={onTimezone} />
+        {onTimezone && <CurrentTimeAwareness timezone={timezone ?? ""} onTimezone={onTimezone} />}
         <button
           disabled
           title="Not available yet"

@@ -188,7 +188,13 @@ export function reuseUnchanged<T extends { id: string }>(
   for (const item of previous) byId.set(item.id, item);
   return next.map((item) => {
     const prior = byId.get(item.id);
-    return prior !== undefined && JSON.stringify(prior) === JSON.stringify(item) ? prior : item;
+    if (prior === undefined) return item;
+    // Reference equality first: a caller that already reuses its own unchanged
+    // objects (the drag overlay in `FlowEditor` does) then costs a pointer
+    // comparison per node instead of two `JSON.stringify` passes, which
+    // matters when this runs at pointer rate.
+    if (prior === item) return prior;
+    return JSON.stringify(prior) === JSON.stringify(item) ? prior : item;
   });
 }
 

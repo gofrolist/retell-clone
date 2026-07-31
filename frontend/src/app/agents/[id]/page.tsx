@@ -12,9 +12,7 @@ import FunctionsSection, { type Tool } from "@/components/editor/sections/Functi
 import KnowledgeBaseSection from "@/components/editor/sections/KnowledgeBaseSection";
 import McpSection from "@/components/editor/sections/McpSection";
 import PostCallSection from "@/components/editor/sections/PostCallSection";
-import SecuritySection, {
-  DynamicVariablesRow,
-} from "@/components/editor/sections/SecuritySection";
+import SecuritySection, { DynamicVariablesRow } from "@/components/editor/sections/SecuritySection";
 import SpeechSettingsSection from "@/components/editor/sections/SpeechSettingsSection";
 import TranscriptionSection from "@/components/editor/sections/TranscriptionSection";
 import WebhookSection from "@/components/editor/sections/WebhookSection";
@@ -59,16 +57,10 @@ import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 /** How long editing pauses before the draft is saved. */
 const AUTOSAVE_MS = 800;
 
-const num = (v: unknown, fallback: number): number =>
-  typeof v === "number" ? v : fallback;
-const str = (v: unknown, fallback: string): string =>
-  typeof v === "string" ? v : fallback;
+const num = (v: unknown, fallback: number): number => (typeof v === "number" ? v : fallback);
+const str = (v: unknown, fallback: string): string => (typeof v === "string" ? v : fallback);
 
-export default function AgentEditorPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
+export default function AgentEditorPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   // `key={id}` is the whole state reset, and it has to be here rather than a
   // pile of resets inside the editor. Next.js reuses this component across
@@ -434,22 +426,13 @@ function AgentEditor({ id }: { id: string }) {
   }
 
   if (!agent) {
-    return (
-      <div className="flex h-screen items-center justify-center text-sub">
-        Loading agent…
-      </div>
-    );
+    return <div className="flex h-screen items-center justify-center text-sub">Loading agent…</div>;
   }
 
   // Server value overlaid with unsaved edits.
   const view: RawAgent = { ...agent, ...agentDraft };
   const llmView: RawLlm | null = llm ? { ...llm, ...llmDraft } : null;
 
-  // The settings accordions, declared once and mounted in the slot each
-  // engine's layout has for them: the right-hand column for a prompt agent,
-  // the flow editor's own Global Settings pane for a flow agent (Retell puts
-  // them there too, and a flow canvas has no width to spare for a third
-  // column). Every branch inside already tells the two engines apart.
   // Same panel in both layouts, and it opens over whichever is showing.
   const versionsPanel = panelOpen ? (
     <VersionsPanel
@@ -466,175 +449,189 @@ function AgentEditor({ id }: { id: string }) {
     />
   ) : null;
 
-  const settingsSections = (
+  // The settings accordions, declared once and mounted in the slot each
+  // engine's layout has for them: the right-hand column for a prompt agent,
+  // the flow editor's own Global Settings pane for a flow agent (Retell puts
+  // them there too, and a flow canvas has no width to spare for a third
+  // column). Every branch inside already tells the two engines apart.
+  //
+  // Takes the dispatch it should use rather than closing over `dispatchFlow`:
+  // three of these sections patch the flow document, and inside the editor
+  // that has to go through the editor's own recording dispatch or the edit
+  // lands with no undo snapshot behind it — the next undo would then revert
+  // it along with whatever the user actually meant to undo.
+  const settingsSections = (dispatchFlowAction: (action: FlowAction) => void) => (
     <>
-        <Accordion icon={LayoutGrid} title="Functions">
-          {flowView ? (
-            <FunctionsSection
-              tools={(flowView.tools ?? []) as Tool[]}
-              onChange={(tools) =>
-                dispatchFlow({ type: "patchFlow", patch: { tools: stampToolIds(tools) } })
-              }
-            />
-          ) : llmView ? (
-            <FunctionsSection
-              tools={llmView.general_tools ?? []}
-              onChange={(tools) => setLlmField("general_tools", tools)}
-            />
-          ) : (
-            <p className="text-[13px] text-sub">Not available for this agent&rsquo;s response engine.</p>
-          )}
-        </Accordion>
-        <Accordion icon={Library} title="Knowledge Base">
-          {flowView ? (
-            <KnowledgeBaseSection
-              attachedIds={flowView.knowledge_base_ids ?? []}
-              onChange={(ids) =>
-                dispatchFlow({ type: "patchFlow", patch: { knowledge_base_ids: ids } })
-              }
-              kbConfig={flowView.kb_config ?? null}
-              onKbConfig={(v) => dispatchFlow({ type: "patchFlow", patch: { kb_config: v } })}
-            />
-          ) : llmView ? (
-            <KnowledgeBaseSection
-              attachedIds={llmView.knowledge_base_ids ?? []}
-              onChange={(ids) => setLlmField("knowledge_base_ids", ids)}
-            />
-          ) : (
-            <p className="text-[13px] text-sub">Not available for this agent&rsquo;s response engine.</p>
-          )}
-        </Accordion>
-        {/* Everything below is voice/telephony-only: a chat agent has no
+      <Accordion icon={LayoutGrid} title="Functions">
+        {flowView ? (
+          <FunctionsSection
+            tools={(flowView.tools ?? []) as Tool[]}
+            onChange={(tools) =>
+              dispatchFlowAction({ type: "patchFlow", patch: { tools: stampToolIds(tools) } })
+            }
+          />
+        ) : llmView ? (
+          <FunctionsSection
+            tools={llmView.general_tools ?? []}
+            onChange={(tools) => setLlmField("general_tools", tools)}
+          />
+        ) : (
+          <p className="text-[13px] text-sub">
+            Not available for this agent&rsquo;s response engine.
+          </p>
+        )}
+      </Accordion>
+      <Accordion icon={Library} title="Knowledge Base">
+        {flowView ? (
+          <KnowledgeBaseSection
+            attachedIds={flowView.knowledge_base_ids ?? []}
+            onChange={(ids) =>
+              dispatchFlowAction({ type: "patchFlow", patch: { knowledge_base_ids: ids } })
+            }
+            kbConfig={flowView.kb_config ?? null}
+            onKbConfig={(v) => dispatchFlowAction({ type: "patchFlow", patch: { kb_config: v } })}
+          />
+        ) : llmView ? (
+          <KnowledgeBaseSection
+            attachedIds={llmView.knowledge_base_ids ?? []}
+            onChange={(ids) => setLlmField("knowledge_base_ids", ids)}
+          />
+        ) : (
+          <p className="text-[13px] text-sub">
+            Not available for this agent&rsquo;s response engine.
+          </p>
+        )}
+      </Accordion>
+      {/* Everything below is voice/telephony-only: a chat agent has no
             audio, no call and no version to publish, and the chat-agent API
             rejects these fields. */}
-        {!isChat && (
-          <>
-        <Accordion icon={AudioLines} title="Speech Settings">
-          <SpeechSettingsSection
-            ambientSound={str(view.ambient_sound, "none")}
-            onAmbientSound={(v) => setAgentField("ambient_sound", v)}
-            ambientSoundVolume={num(view.ambient_sound_volume, 1)}
-            onAmbientSoundVolume={(v) => setAgentField("ambient_sound_volume", v)}
-            responsiveness={view.responsiveness}
-            onResponsiveness={(v) => setAgentField("responsiveness", v)}
-            interruptionSensitivity={view.interruption_sensitivity}
-            onInterruptionSensitivity={(v) => setAgentField("interruption_sensitivity", v)}
-            reminderTriggerMs={view.reminder_trigger_ms}
-            onReminderTriggerMs={(v) => setAgentField("reminder_trigger_ms", v)}
-            reminderMaxCount={view.reminder_max_count}
-            onReminderMaxCount={(v) => setAgentField("reminder_max_count", v)}
-            pronunciation={view.pronunciation_dictionary ?? []}
-            onPronunciation={(v) => setAgentField("pronunciation_dictionary", v)}
-          />
-        </Accordion>
-        <Accordion icon={Captions} title="Realtime Transcription Settings">
-          <TranscriptionSection
-            denoisingMode={str(view.denoising_mode, "noise-cancellation")}
-            onDenoisingMode={(v) => setAgentField("denoising_mode", v)}
-            sttMode={str(view.stt_mode, "fast")}
-            onSttMode={(v) => setAgentField("stt_mode", v)}
-            keywords={view.boosted_keywords ?? []}
-            onKeywords={(k) => setAgentField("boosted_keywords", k.length ? k : null)}
-          />
-        </Accordion>
-        <Accordion icon={Headset} title="Call Settings">
-          <CallSettingsSection
-            voicemail={view.enable_voicemail_detection}
-            onVoicemail={(v) => setAgentField("enable_voicemail_detection", v)}
-            endCallAfterSilenceMs={num(view.end_call_after_silence_ms, 600000)}
-            onEndCallAfterSilenceMs={(v) => setAgentField("end_call_after_silence_ms", v)}
-            maxCallDurationMs={num(view.max_call_duration_ms, 3600000)}
-            onMaxCallDurationMs={(v) => setAgentField("max_call_duration_ms", v)}
-            callScreening={Boolean(view.call_screening_option)}
-            onCallScreening={(v) =>
-              setAgentField("call_screening_option", v ? { action: { type: "hangup" } } : null)
-            }
-            ivrHangup={Boolean(view.ivr_option)}
-            onIvrHangup={(v) =>
-              setAgentField("ivr_option", v ? { action: { type: "hangup" } } : null)
-            }
-            allowUserDtmf={view.allow_user_dtmf ?? true}
-            onAllowUserDtmf={(v) => setAgentField("allow_user_dtmf", v)}
-            userDtmfOptions={view.user_dtmf_options ?? null}
-            onUserDtmfOptions={(v) => setAgentField("user_dtmf_options", v)}
-          />
-        </Accordion>
-        <Accordion icon={LineChart} title="Post-Call Data Extraction">
-          <PostCallSection
-            model={str(view.post_call_analysis_model, DEFAULT_POST_CALL_ANALYSIS_MODEL)}
-            onModel={(v) => setAgentField("post_call_analysis_model", v)}
-          />
-        </Accordion>
-        <Accordion icon={ShieldCheck} title="Security & Fallback Settings">
-          <SecuritySection
-            optOut={Boolean(view.opt_out_sensitive_data_storage)}
-            onOptOut={(v) => setAgentField("opt_out_sensitive_data_storage", v)}
-            piiConfig={view.pii_config ?? null}
-            onPiiConfig={(v) => setAgentField("pii_config", v)}
-            fallbackVoiceIds={view.fallback_voice_ids ?? null}
-            onFallbackVoiceIds={(v) => setAgentField("fallback_voice_ids", v)}
-            optInSignedUrl={Boolean(view.opt_in_signed_url)}
-            onOptInSignedUrl={(v) => setAgentField("opt_in_signed_url", v)}
-            voices={voices}
-            dynamicVariables={llmView?.default_dynamic_variables}
-            onDynamicVariables={
-              llm ? (v) => setLlmField("default_dynamic_variables", v) : undefined
-            }
-          />
-        </Accordion>
-          </>
-        )}
-        {isChat && llm && (
-          <Accordion icon={Braces} title="Default Dynamic Variables">
-            <DynamicVariablesRow
-              value={llmView?.default_dynamic_variables ?? null}
-              onChange={(v) => setLlmField("default_dynamic_variables", v)}
+      {!isChat && (
+        <>
+          <Accordion icon={AudioLines} title="Speech Settings">
+            <SpeechSettingsSection
+              ambientSound={str(view.ambient_sound, "none")}
+              onAmbientSound={(v) => setAgentField("ambient_sound", v)}
+              ambientSoundVolume={num(view.ambient_sound_volume, 1)}
+              onAmbientSoundVolume={(v) => setAgentField("ambient_sound_volume", v)}
+              responsiveness={view.responsiveness}
+              onResponsiveness={(v) => setAgentField("responsiveness", v)}
+              interruptionSensitivity={view.interruption_sensitivity}
+              onInterruptionSensitivity={(v) => setAgentField("interruption_sensitivity", v)}
+              reminderTriggerMs={view.reminder_trigger_ms}
+              onReminderTriggerMs={(v) => setAgentField("reminder_trigger_ms", v)}
+              reminderMaxCount={view.reminder_max_count}
+              onReminderMaxCount={(v) => setAgentField("reminder_max_count", v)}
+              pronunciation={view.pronunciation_dictionary ?? []}
+              onPronunciation={(v) => setAgentField("pronunciation_dictionary", v)}
             />
           </Accordion>
-        )}
-        <Accordion icon={Webhook} title="Webhook Settings">
-          {isChat ? (
-            // The chat-agent API takes the URL only — no per-agent timeout,
-            // event filter or test send (those ride on call webhooks).
-            <Field label="Webhook URL">
-              <TextInput
-                value={view.webhook_url ?? ""}
-                placeholder="https://example.com/webhook"
-                onChange={(e) => setAgentField("webhook_url", e.target.value || null)}
-              />
-            </Field>
-          ) : (
-            <WebhookSection
-              agentId={agent.agent_id}
-              url={view.webhook_url ?? ""}
-              onUrl={(v) => setAgentField("webhook_url", v || null)}
-              timeoutMs={num(view.webhook_timeout_ms, 5000)}
-              onTimeoutMs={(v) => setAgentField("webhook_timeout_ms", v)}
-              events={view.webhook_events ?? null}
-              onEvents={(v) => setAgentField("webhook_events", v)}
+          <Accordion icon={Captions} title="Realtime Transcription Settings">
+            <TranscriptionSection
+              denoisingMode={str(view.denoising_mode, "noise-cancellation")}
+              onDenoisingMode={(v) => setAgentField("denoising_mode", v)}
+              sttMode={str(view.stt_mode, "fast")}
+              onSttMode={(v) => setAgentField("stt_mode", v)}
+              keywords={view.boosted_keywords ?? []}
+              onKeywords={(k) => setAgentField("boosted_keywords", k.length ? k : null)}
             />
-          )}
-        </Accordion>
-        <Accordion icon={Plug} title="MCPs">
-          {flowView ? (
-            <McpSection
-              mcps={(flowView.mcps ?? []) as unknown as McpServer[]}
-              onChange={(v) =>
-                dispatchFlow({
-                  type: "patchFlow",
-                  patch: { mcps: v as unknown as Record<string, unknown>[] | null },
-                })
+          </Accordion>
+          <Accordion icon={Headset} title="Call Settings">
+            <CallSettingsSection
+              voicemail={view.enable_voicemail_detection}
+              onVoicemail={(v) => setAgentField("enable_voicemail_detection", v)}
+              endCallAfterSilenceMs={num(view.end_call_after_silence_ms, 600000)}
+              onEndCallAfterSilenceMs={(v) => setAgentField("end_call_after_silence_ms", v)}
+              maxCallDurationMs={num(view.max_call_duration_ms, 3600000)}
+              onMaxCallDurationMs={(v) => setAgentField("max_call_duration_ms", v)}
+              callScreening={Boolean(view.call_screening_option)}
+              onCallScreening={(v) =>
+                setAgentField("call_screening_option", v ? { action: { type: "hangup" } } : null)
+              }
+              ivrHangup={Boolean(view.ivr_option)}
+              onIvrHangup={(v) =>
+                setAgentField("ivr_option", v ? { action: { type: "hangup" } } : null)
+              }
+              allowUserDtmf={view.allow_user_dtmf ?? true}
+              onAllowUserDtmf={(v) => setAgentField("allow_user_dtmf", v)}
+              userDtmfOptions={view.user_dtmf_options ?? null}
+              onUserDtmfOptions={(v) => setAgentField("user_dtmf_options", v)}
+            />
+          </Accordion>
+          <Accordion icon={LineChart} title="Post-Call Data Extraction">
+            <PostCallSection
+              model={str(view.post_call_analysis_model, DEFAULT_POST_CALL_ANALYSIS_MODEL)}
+              onModel={(v) => setAgentField("post_call_analysis_model", v)}
+            />
+          </Accordion>
+          <Accordion icon={ShieldCheck} title="Security & Fallback Settings">
+            <SecuritySection
+              optOut={Boolean(view.opt_out_sensitive_data_storage)}
+              onOptOut={(v) => setAgentField("opt_out_sensitive_data_storage", v)}
+              piiConfig={view.pii_config ?? null}
+              onPiiConfig={(v) => setAgentField("pii_config", v)}
+              fallbackVoiceIds={view.fallback_voice_ids ?? null}
+              onFallbackVoiceIds={(v) => setAgentField("fallback_voice_ids", v)}
+              optInSignedUrl={Boolean(view.opt_in_signed_url)}
+              onOptInSignedUrl={(v) => setAgentField("opt_in_signed_url", v)}
+              voices={voices}
+              dynamicVariables={llmView?.default_dynamic_variables}
+              onDynamicVariables={
+                llm ? (v) => setLlmField("default_dynamic_variables", v) : undefined
               }
             />
-          ) : llmView ? (
-            <McpSection
-              mcps={llmView.mcps ?? []}
-              onChange={(v) => setLlmField("mcps", v)}
-            />
-          ) : (
-            <p className="text-[13px] text-sub">Not available for this agent&rsquo;s response engine.</p>
-          )}
+          </Accordion>
+        </>
+      )}
+      {isChat && llm && (
+        <Accordion icon={Braces} title="Default Dynamic Variables">
+          <DynamicVariablesRow
+            value={llmView?.default_dynamic_variables ?? null}
+            onChange={(v) => setLlmField("default_dynamic_variables", v)}
+          />
         </Accordion>
+      )}
+      <Accordion icon={Webhook} title="Webhook Settings">
+        {isChat ? (
+          // The chat-agent API takes the URL only — no per-agent timeout,
+          // event filter or test send (those ride on call webhooks).
+          <Field label="Webhook URL">
+            <TextInput
+              value={view.webhook_url ?? ""}
+              placeholder="https://example.com/webhook"
+              onChange={(e) => setAgentField("webhook_url", e.target.value || null)}
+            />
+          </Field>
+        ) : (
+          <WebhookSection
+            agentId={agent.agent_id}
+            url={view.webhook_url ?? ""}
+            onUrl={(v) => setAgentField("webhook_url", v || null)}
+            timeoutMs={num(view.webhook_timeout_ms, 5000)}
+            onTimeoutMs={(v) => setAgentField("webhook_timeout_ms", v)}
+            events={view.webhook_events ?? null}
+            onEvents={(v) => setAgentField("webhook_events", v)}
+          />
+        )}
+      </Accordion>
+      <Accordion icon={Plug} title="MCPs">
+        {flowView ? (
+          <McpSection
+            mcps={(flowView.mcps ?? []) as unknown as McpServer[]}
+            onChange={(v) =>
+              dispatchFlowAction({
+                type: "patchFlow",
+                patch: { mcps: v as unknown as Record<string, unknown>[] | null },
+              })
+            }
+          />
+        ) : llmView ? (
+          <McpSection mcps={llmView.mcps ?? []} onChange={(v) => setLlmField("mcps", v)} />
+        ) : (
+          <p className="text-[13px] text-sub">
+            Not available for this agent&rsquo;s response engine.
+          </p>
+        )}
+      </Accordion>
     </>
   );
 
@@ -664,9 +661,11 @@ function AgentEditor({ id }: { id: string }) {
           <span className="font-medium">Edit as new draft</span> to change it.
         </div>
       )}
-      <div
-        className={`flex min-h-0 grow gap-2 p-2 ${flowView && tab !== "simulation" ? "overflow-hidden" : "overflow-x-auto"}`}
-      >
+      {/* `overflow-x-auto`, including for a flow agent: the editor manages its
+          own panning, but its rails are fixed-width and `shrink-0`, so on a
+          narrow window clipping here would put the settings pane (or the
+          versions panel over it) out of reach with no way to scroll to it. */}
+      <div className="flex min-h-0 grow gap-2 overflow-x-auto p-2">
         {tab === "simulation" ? (
           isChat ? (
             // Nothing to simulate without calls — just the text test, in the
@@ -707,93 +706,92 @@ function AgentEditor({ id }: { id: string }) {
                   <MetaRow agentId={agent.agent_id} llm={llmView} chat={isChat} stacked />
                 }
                 globalHeader={
-                  isChat ? null : (
-                    <fieldset disabled={readOnly} className="min-w-0">
-                      <AgentSettings
-                        voiceId={view.voice_id ?? ""}
-                        onVoice={(v) => setAgentField("voice_id", v)}
-                        language={view.language}
-                        onLanguage={(v) => setAgentField("language", v)}
-                        timezone={view.timezone ?? ""}
-                        onTimezone={(v) => setAgentField("timezone", v || null)}
-                        voices={voices}
-                        model={str(
-                          (flowView.model_choice as { model?: string } | null)?.model,
-                          "",
-                        )}
-                      />
-                    </fieldset>
-                  )
-                }
-                globalSections={
-                  <fieldset disabled={readOnly} className="min-w-0 border-t border-line">
-                    {settingsSections}
+                  <fieldset disabled={readOnly} className="min-w-0">
+                    {/* Voice and timezone are voice-agent settings; language
+                        is not, and a chat agent's language is editable
+                        (`_MUTABLE_FIELDS` in the chat-agent API), so the
+                        handlers drop out rather than the whole section. */}
+                    <AgentSettings
+                      voiceId={isChat ? undefined : (view.voice_id ?? "")}
+                      onVoice={isChat ? undefined : (v) => setAgentField("voice_id", v)}
+                      language={view.language}
+                      onLanguage={(v) => setAgentField("language", v)}
+                      timezone={isChat ? undefined : (view.timezone ?? "")}
+                      onTimezone={isChat ? undefined : (v) => setAgentField("timezone", v || null)}
+                      voices={voices}
+                      model={str((flowView.model_choice as { model?: string } | null)?.model, "")}
+                    />
                   </fieldset>
                 }
+                globalSections={(dispatchFlowAction) => (
+                  <fieldset disabled={readOnly} className="min-w-0 border-t border-line">
+                    {settingsSections(dispatchFlowAction)}
+                  </fieldset>
+                )}
               />
             </div>
             {versionsPanel}
           </>
         ) : (
           <>
-        {/* left: prompt column — takes whatever the fixed panel leaves.
+            {/* left: prompt column — takes whatever the fixed panel leaves.
             `fieldset disabled` freezes a published version without threading a
             readOnly prop through every settings section. */}
-        <fieldset
-          disabled={readOnly}
-          className="flex min-w-[420px] flex-1 flex-col overflow-y-auto rounded-xl border border-line bg-card p-4"
-        >
-          <MetaRow agentId={agent.agent_id} llm={llmView} chat={isChat} />
-          <div className="mt-3">
-            <SelectorRow
-              model={llmView?.model ?? ""}
-              onModel={llm ? (v) => setLlmField("model", v) : undefined}
-              temperature={num(llmView?.model_temperature, 0)}
-              onTemperature={llm ? (v) => setLlmField("model_temperature", v) : undefined}
-              voiceId={isChat ? undefined : view.voice_id}
-              onVoice={isChat ? undefined : (v) => setAgentField("voice_id", v)}
-              language={view.language}
-              onLanguage={(v) => setAgentField("language", v)}
-              timezone={isChat ? undefined : (view.timezone ?? "")}
-              onTimezone={isChat ? undefined : (v) => setAgentField("timezone", v || null)}
-              voices={voices}
-            />
-          </div>
-          {llmView ? (
-            <>
-              <div className="mt-3 flex min-h-0 grow flex-col">
-                <PromptEditor
-                  value={llmView.general_prompt ?? ""}
-                  onChange={(v) => setLlmField("general_prompt", v)}
-                  defaultDynamicVariables={llmView.default_dynamic_variables}
+            <fieldset
+              disabled={readOnly}
+              className="flex min-w-[420px] flex-1 flex-col overflow-y-auto rounded-xl border border-line bg-card p-4"
+            >
+              <MetaRow agentId={agent.agent_id} llm={llmView} chat={isChat} />
+              <div className="mt-3">
+                <SelectorRow
+                  model={llmView?.model ?? ""}
+                  onModel={llm ? (v) => setLlmField("model", v) : undefined}
+                  temperature={num(llmView?.model_temperature, 0)}
+                  onTemperature={llm ? (v) => setLlmField("model_temperature", v) : undefined}
+                  voiceId={isChat ? undefined : view.voice_id}
+                  onVoice={isChat ? undefined : (v) => setAgentField("voice_id", v)}
+                  language={view.language}
+                  onLanguage={(v) => setAgentField("language", v)}
+                  timezone={isChat ? undefined : (view.timezone ?? "")}
+                  onTimezone={isChat ? undefined : (v) => setAgentField("timezone", v || null)}
+                  voices={voices}
                 />
               </div>
-              <WelcomeMessage
-                startSpeaker={llmView.start_speaker}
-                onStartSpeaker={(v) => setLlmField("start_speaker", v)}
-                message={llmView.begin_message ?? ""}
-                onMessage={(v) => setLlmField("begin_message", v)}
-                pause={isChat ? undefined : num(view.begin_message_delay_ms, 0) / 1000}
-              />
-            </>
-          ) : (
-            // Neither engine populated: a `custom-llm` response engine, which
-            // this dashboard has no create path for and does not edit here.
-            <p className="mt-4 text-[13px] text-sub">
-              This agent&rsquo;s response engine is not editable from this page.
-            </p>
-          )}
-        </fieldset>
+              {llmView ? (
+                <>
+                  <div className="mt-3 flex min-h-0 grow flex-col">
+                    <PromptEditor
+                      value={llmView.general_prompt ?? ""}
+                      onChange={(v) => setLlmField("general_prompt", v)}
+                      defaultDynamicVariables={llmView.default_dynamic_variables}
+                    />
+                  </div>
+                  <WelcomeMessage
+                    startSpeaker={llmView.start_speaker}
+                    onStartSpeaker={(v) => setLlmField("start_speaker", v)}
+                    message={llmView.begin_message ?? ""}
+                    onMessage={(v) => setLlmField("begin_message", v)}
+                    pause={isChat ? undefined : num(view.begin_message_delay_ms, 0) / 1000}
+                  />
+                </>
+              ) : (
+                // Neither engine populated: a `custom-llm` response engine, which
+                // this dashboard has no create path for and does not edit here.
+                <p className="mt-4 text-[13px] text-sub">
+                  This agent&rsquo;s response engine is not editable from this page.
+                </p>
+              )}
+            </fieldset>
 
-        {/* right: settings accordions */}
-        <fieldset
-          disabled={readOnly}
-          className={`${SIDE_PANEL_WIDTH} overflow-y-auto rounded-xl border border-line bg-card`}
-        >
-          {settingsSections}
-        </fieldset>
+            {/* right: settings accordions */}
+            <fieldset
+              disabled={readOnly}
+              className={`${SIDE_PANEL_WIDTH} overflow-y-auto rounded-xl border border-line bg-card`}
+            >
+              {settingsSections(dispatchFlow)}
+            </fieldset>
 
-        {versionsPanel}
+            {versionsPanel}
           </>
         )}
       </div>

@@ -9,7 +9,6 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
   type DragEvent,
   type Dispatch,
@@ -164,11 +163,9 @@ function Canvas({
     const graph = toReactFlow(flow);
     return {
       nodes: graph.nodes.map((node) => {
-        const dragged = dragPositions[node.id];
         const measured = sizes[node.id];
         return {
           ...node,
-          position: dragged ?? node.position,
           ...(measured ? { measured } : null),
           selected: node.id === selectedNodeId,
         };
@@ -188,8 +185,25 @@ function Canvas({
         };
       }),
     };
-  }, [flow, selectedNodeId, selectedEdgeId, dragPositions, sizes]);
-  const { nodes, edges } = useStableGraph(derived);
+  }, [flow, selectedNodeId, selectedEdgeId, sizes]);
+
+  // The in-flight drag is applied in a second pass, deliberately kept out of
+  // the memo above: `toReactFlow` walks the whole document and
+  // `useStableGraph` compares what comes out node by node, and a drag runs
+  // that at pointer rate. This pass reuses every node object it does not move,
+  // so a drag frame costs one new object and a row of reference comparisons
+  // rather than a re-derivation of the graph.
+  const graph = useMemo(() => {
+    if (Object.keys(dragPositions).length === 0) return derived;
+    return {
+      nodes: derived.nodes.map((node) => {
+        const position = dragPositions[node.id];
+        return position ? { ...node, position } : node;
+      }),
+      edges: derived.edges,
+    };
+  }, [derived, dragPositions]);
+  const { nodes, edges } = useStableGraph(graph);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -448,6 +462,23 @@ function coalesceKey(action: FlowAction): string {
 
 /** How long a run of same-target edits keeps folding into one undo step. */
 const COALESCE_MS = 600;
+
+/**
+ * Undo/redo state. The coalescing bookkeeping (`lastKey`/`lastAt`) rides along
+ * with the stacks rather than sitting in a ref, so `record` is a plain
+ * function of state that can be handed to the settings sections the page
+ * renders — a ref-reading callback cannot be, since nothing can prove it is
+ * not called during their render.
+ */
+type History = {
+  past: RawConversationFlow[];
+  future: RawConversationFlow[];
+  /** `coalesceKey` of the last recorded action, and when it was recorded. */
+  lastKey: string;
+  lastAt: number;
+};
+
+const EMPTY_HISTORY: History = { past: [], future: [], lastKey: "", lastAt: 0 };
 /** Snapshots kept. Deep documents, so this is a memory bound, not a UX one. */
 const HISTORY_LIMIT = 50;
 
@@ -506,8 +537,17 @@ export default function FlowEditor({
   agentDetails?: ReactNode;
   /** Agent-level controls (voice, language) above the flow's own settings. */
   globalHeader?: ReactNode;
-  /** Agent-level accordions (functions, knowledge base, …) below them. */
-  globalSections?: ReactNode;
+  /**
+   * The settings accordions, below the flow's own settings.
+   *
+   * A function of `dispatch` rather than a node, because several of those
+   * sections (functions, knowledge base, MCPs) patch the FLOW — the same
+   * document undo restores wholesale. Dispatching around this editor would
+   * leave those edits unsnapshotted, so the next undo would revert them along
+   * with whatever it was aimed at. Taking the dispatch from here makes that
+   * impossible to get wrong from the outside.
+   */
+  globalSections?: (dispatch: (action: FlowAction) => void) => ReactNode;
 }) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -520,36 +560,37 @@ export default function FlowEditor({
    * the documents is cheaper than getting inversion right. Snapshots are safe
    * to hold by reference because `flowReducer` clones before it mutates.
    */
-  const [history, setHistory] = useState<{
-    past: RawConversationFlow[];
-    future: RawConversationFlow[];
-  }>({ past: [], future: [] });
-
-  // What the last recorded action was, for folding a run of keystrokes in one
-  // field into a single undo step. Only ever touched from event handlers.
-  const coalesceRef = useRef<{ key: string; at: number }>({ key: "", at: 0 });
+  const [history, setHistory] = useState<History>(EMPTY_HISTORY);
 
   /**
    * `dispatch`, plus a snapshot of the document as it was before the action.
-   * Everything the editor's own UI dispatches goes through this; undo and redo
-   * dispatch straight through `dispatch` so they don't record themselves.
+   * Everything the editor's own UI dispatches goes through this — including
+   * the sections the page hands us, which is why they take their dispatch from
+   * here. Undo and redo dispatch straight through `dispatch` so they don't
+   * record themselves.
    */
   const record = useCallback(
     (action: FlowAction) => {
       const key = coalesceKey(action);
       const now = Date.now();
-      const previous = coalesceRef.current;
-      const fold = key !== "" && key === previous.key && now - previous.at < COALESCE_MS;
-      coalesceRef.current = { key, at: now };
-      if (!fold) {
-        setHistory((h) => ({
-          past: [...h.past, flow].slice(-HISTORY_LIMIT),
+      setHistory((h) => {
+        // A run of edits to the same field folds into one step…
+        const fold = key !== "" && key === h.lastKey && now - h.lastAt < COALESCE_MS;
+        // …and so does a batch, which is a different case: one user gesture
+        // can dispatch several actions — deleting a node fires a `deleteEdge`
+        // per edge into it *and* the `deleteNode`, all against the same
+        // `flow`, since the prop cannot change within the tick. A snapshot per
+        // action would cost one real undo plus N presses that restore a
+        // document already on screen.
+        const push = !fold && h.past.at(-1) !== flow;
+        return {
+          past: push ? [...h.past, flow].slice(-HISTORY_LIMIT) : h.past,
+          // Still a new edit either way — anything redone from here is stale.
           future: [],
-        }));
-      } else {
-        // Still a new edit — anything redone from here on would be stale.
-        setHistory((h) => (h.future.length === 0 ? h : { ...h, future: [] }));
-      }
+          lastKey: key,
+          lastAt: now,
+        };
+      });
       dispatch(action);
     },
     [dispatch, flow],
@@ -562,8 +603,10 @@ export default function FlowEditor({
     setHistory({
       past: history.past.slice(0, -1),
       future: [flow, ...history.future],
+      // Whatever the user was typing into, the next edit starts a fresh step.
+      lastKey: "",
+      lastAt: 0,
     });
-    coalesceRef.current = { key: "", at: 0 };
     dispatch({ type: "setFlow", flow: previous });
   }, [dispatch, flow, history, readOnly]);
 
@@ -574,8 +617,9 @@ export default function FlowEditor({
     setHistory({
       past: [...history.past, flow],
       future: history.future.slice(1),
+      lastKey: "",
+      lastAt: 0,
     });
-    coalesceRef.current = { key: "", at: 0 };
     dispatch({ type: "setFlow", flow: next });
   }, [dispatch, flow, history, readOnly]);
 
@@ -586,13 +630,20 @@ export default function FlowEditor({
       const isUndo = key === "z" && !event.shiftKey;
       const isRedo = (key === "z" && event.shiftKey) || key === "y";
       if (!isUndo && !isRedo) return;
+      // Nothing to undo on a published version, and swallowing the key to do
+      // nothing is worse than leaving it to the browser.
+      if (readOnly) return;
+      const target = event.target as HTMLElement | null;
       // A text field has its own undo stack, and taking ⌘Z away from a user
       // mid-sentence to revert a graph edit they can't see is worse than not
-      // having the shortcut at all.
-      const target = event.target as HTMLElement | null;
+      // having the shortcut at all. The same argument covers a dialog: while
+      // one is open the graph is behind it, so a keystroke aimed at the dialog
+      // must not quietly rewrite what it is covering.
       if (
         target &&
-        (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
+        (target.isContentEditable ||
+          ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) ||
+          target.closest('[role="dialog"]') !== null)
       ) {
         return;
       }
@@ -602,7 +653,7 @@ export default function FlowEditor({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [redo, undo]);
+  }, [readOnly, redo, undo]);
 
   // React Flow's selection is single-entity across kinds: selecting an edge
   // deselects every node (`addSelectedEdges` fires `triggerNodeChanges` with
@@ -630,8 +681,7 @@ export default function FlowEditor({
   useEffect(() => {
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
-    setHistory({ past: [], future: [] });
-    coalesceRef.current = { key: "", at: 0 };
+    setHistory(EMPTY_HISTORY);
   }, [canvasEpoch]);
 
   return (
@@ -672,7 +722,7 @@ export default function FlowEditor({
             <>
               {globalHeader}
               <GlobalSettings flow={flow} dispatch={record} readOnly={readOnly} />
-              {globalSections}
+              {globalSections?.(record)}
             </>
           ) : (
             <NodeSettings
