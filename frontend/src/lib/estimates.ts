@@ -11,8 +11,9 @@
 // Every constant is a provider list price or published figure as of
 // 2026-07-14; update in place when providers reprice.
 
+import { iterNodeEdges, type FlowNode } from "@/components/flow/flowModel";
 import type { RawConversationFlow, RawLlm } from "@/lib/api";
-import { DEFAULT_FLOW_MODEL, isLiveModel, type LlmModelId } from "@/lib/models";
+import { isLiveModel, type LlmModelId, RUNTIME_DEFAULT_MODEL } from "@/lib/models";
 import { formatCost } from "@/lib/utils";
 
 export interface EstimateRow {
@@ -46,13 +47,20 @@ export interface EstimateInput {
   /** Prompt text prepended to every turn. */
   promptText: string;
   /**
-   * Per-node instruction text. A flow turn sends the global prompt plus
-   * exactly ONE node's instruction, so these bound a min/max range rather
-   * than summing. Empty for single-prompt agents.
+   * Context that varies turn to turn — one entry per flow node, each already
+   * assembled the way the worker assembles it. A turn visits exactly ONE
+   * node, so these bound a min/max range rather than summing. Empty for
+   * single-prompt agents, whose whole prompt is fixed.
    */
-  nodeInstructions: string[];
-  /** Tool definitions serialized into every request. */
+  perNodeContext: string[];
+  /** Tool definitions the agent can install. */
   tools: unknown[];
+  /**
+   * How many of `tools` reach the model at once. A single-prompt agent sends
+   * `general_tools` in full ("all"); a flow's `tools` are a library that
+   * function nodes resolve by `tool_id`, at most one per node ("one-of").
+   */
+  toolScope: "all" | "one-of";
   hasKb: boolean;
 }
 
@@ -63,16 +71,81 @@ export function llmEstimateInput(llm: RawLlm | null): EstimateInput | null {
     model: llm.model,
     promptLabel: "System Prompt",
     promptText: (llm.general_prompt ?? "") + (llm.begin_message ?? ""),
-    nodeInstructions: [],
+    perNodeContext: [],
     tools: llm.general_tools ?? [],
+    toolScope: "all",
     hasKb: (llm.knowledge_base_ids ?? []).length > 0,
   };
 }
 
-/** A flow node's spoken/prompted text, or "" for nodes that carry none. */
-function nodeInstructionText(node: Record<string, unknown>): string {
-  const instruction = node.instruction as { text?: unknown } | null | undefined;
-  return typeof instruction?.text === "string" ? instruction.text : "";
+/**
+ * What a flow node adds to the global prompt on the turn it is visited.
+ *
+ * Mirrors the worker's `node_instructions` + `prompt_edges` +
+ * `transition_tool_schema` (worker/src/arhiteq_worker/flow.py):
+ * - a `prompt` instruction contributes its text; a `static_text` one does
+ *   NOT — that text is spoken verbatim through TTS and never reaches the
+ *   model, so counting it would price words the LLM never sees;
+ * - every offered transition is rendered into the prompt AND again into the
+ *   `transition_to` tool schema's description, so its text lands twice. On a
+ *   branchy node this outweighs the instruction itself.
+ */
+function nodeContextText(
+  node: Record<string, unknown>,
+  globalNodes: Record<string, unknown>[],
+): string {
+  const parts: string[] = [];
+
+  const instruction = node.instruction as
+    | { type?: unknown; text?: unknown }
+    | null
+    | undefined;
+  if (instruction?.type === "prompt" && typeof instruction.text === "string") {
+    parts.push(instruction.text);
+  }
+
+  const lines = promptEdgeLines(node, globalNodes);
+  if (lines.length > 0) {
+    const rendered = lines.join("\n");
+    parts.push(`Available transitions:\n${rendered}`);
+    // The tool schema repeats every id (as an enum) and every condition line.
+    parts.push(rendered);
+  }
+  return parts.join("\n\n");
+}
+
+/**
+ * `"<edge id>: <condition prompt>"` for each transition the model may choose.
+ *
+ * Mirrors `prompt_edges`: `always_edge`/`skip_response_edge` are the
+ * runtime's own and never offered, non-`prompt` conditions are routed without
+ * the model, dangling edges have nowhere to go — and each global node adds a
+ * synthetic entry reachable from everywhere but itself.
+ */
+function promptEdgeLines(
+  node: Record<string, unknown>,
+  globalNodes: Record<string, unknown>[],
+): string[] {
+  const lines: string[] = [];
+  for (const { shape, edge } of iterNodeEdges(node as FlowNode)) {
+    if (shape === "always_edge" || shape === "skip_response_edge") continue;
+    const condition = edge.transition_condition;
+    if (!condition || condition.type !== "prompt") continue;
+    if (!edge.destination_node_id) continue;
+    const prompt = typeof condition.prompt === "string" ? condition.prompt : "";
+    lines.push(`- ${edge.id ?? ""}: ${prompt}`);
+  }
+  for (const globalNode of globalNodes) {
+    if (!globalNode.id || globalNode.id === node.id) continue;
+    const setting = globalNode.global_node_setting as
+      | { condition?: unknown }
+      | null
+      | undefined;
+    const condition =
+      typeof setting?.condition === "string" ? setting.condition : "";
+    lines.push(`- global_${String(globalNode.id)}: ${condition}`);
+  }
+  return lines;
 }
 
 /** Estimator input for a conversation-flow agent. */
@@ -80,17 +153,22 @@ export function flowEstimateInput(
   flow: RawConversationFlow | null,
 ): EstimateInput | null {
   if (!flow) return null;
-  // `model_choice` is Record<string, unknown> on the wire; an absent model
-  // means the flow runs on the same default `emptyFlow` seeds.
+  // `model_choice` is Record<string, unknown> on the wire. An absent model is
+  // NOT `DEFAULT_FLOW_MODEL` — that is only ever seeded into flows created in
+  // this dashboard. An imported flow without one runs on the deployment
+  // default, which is what `flow_model_id` -> `_gemini_model` resolves to.
   const chosen = (flow.model_choice as { model?: unknown } | null)?.model;
+  const nodes = flow.nodes ?? [];
+  const globalNodes = nodes.filter((n) => n.global_node_setting != null);
   return {
-    model: typeof chosen === "string" && chosen ? chosen : DEFAULT_FLOW_MODEL,
+    model: typeof chosen === "string" && chosen ? chosen : RUNTIME_DEFAULT_MODEL,
     promptLabel: "Global Prompt",
     promptText: flow.global_prompt ?? "",
-    nodeInstructions: (flow.nodes ?? [])
-      .map(nodeInstructionText)
+    perNodeContext: nodes
+      .map((node) => nodeContextText(node, globalNodes))
       .filter((text) => text.length > 0),
     tools: flow.tools ?? [],
+    toolScope: "one-of",
     hasKb: (flow.knowledge_base_ids ?? []).length > 0,
   };
 }
@@ -190,32 +268,33 @@ const total = (rows: EstimateRow[]): Estimate => ({
 /** Per-turn prompt size. Null when there is no agent config to measure. */
 export function estimateTokens(input: EstimateInput | null): Estimate | null {
   if (!input) return null;
-  const promptTokens = Math.ceil(input.promptText.length / CHARS_PER_TOKEN);
+  const promptTokens = tokensIn(input.promptText);
   const rows: EstimateRow[] = [
-    // +10% headroom: resolved {{variables}} usually expand the raw template
-    {
-      label: input.promptLabel,
-      min: promptTokens,
-      max: Math.ceil(promptTokens * 1.1),
-    },
+    { label: input.promptLabel, min: promptTokens, max: withHeadroom(promptTokens) },
   ];
-  if (input.nodeInstructions.length > 0) {
-    // One node speaks per turn, so the smallest and largest node bound the
-    // range. Summing would price a graph as if every node fired at once.
-    const nodeTokens = input.nodeInstructions.map((text) =>
-      Math.ceil(text.length / CHARS_PER_TOKEN),
-    );
+  if (input.perNodeContext.length > 0) {
+    // One node per turn, so the smallest and largest bound the range.
+    // Summing would price a graph as if every node fired at once.
+    const nodeTokens = input.perNodeContext.map(tokensIn);
     rows.push({
-      label: "Node Instruction",
+      label: "Node Context",
       min: Math.min(...nodeTokens),
-      max: Math.ceil(Math.max(...nodeTokens) * 1.1),
+      max: withHeadroom(Math.max(...nodeTokens)),
     });
   }
   if (input.tools.length > 0) {
-    const toolTokens = Math.ceil(
-      JSON.stringify(input.tools).length / CHARS_PER_TOKEN,
-    );
-    rows.push({ label: "Tool Definitions", min: toolTokens, max: toolTokens });
+    if (input.toolScope === "all") {
+      const toolTokens = tokensIn(JSON.stringify(input.tools));
+      rows.push({ label: "Tool Definitions", min: toolTokens, max: toolTokens });
+    } else {
+      // A library, not a payload: a function node installs the one entry its
+      // `tool_id` names, and a node with no tool installs none. Serializing
+      // the whole library would invent thousands of tokens no turn sends.
+      const largest = Math.max(
+        ...input.tools.map((tool) => tokensIn(JSON.stringify(tool))),
+      );
+      rows.push({ label: "Tool Definition", min: 0, max: largest });
+    }
   }
   rows.push({
     label: "Conversation History",
@@ -227,6 +306,14 @@ export function estimateTokens(input: EstimateInput | null): Estimate | null {
   }
   return total(rows);
 }
+
+const tokensIn = (text: string): number =>
+  Math.ceil(text.length / CHARS_PER_TOKEN);
+
+// +10% headroom: resolved {{variables}} usually expand the raw template.
+// Integer math, not `n * 1.1` — 100 * 1.1 is 110.00000000000001 in binary
+// floating point, which a ceil turns into a stray extra token.
+const withHeadroom = (tokens: number): number => Math.ceil((tokens * 11) / 10);
 
 /** USD per call minute. Cost rows are single values (min === max). */
 export function estimateCost(

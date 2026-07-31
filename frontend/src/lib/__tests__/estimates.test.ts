@@ -9,7 +9,7 @@ import {
   flowEstimateInput,
   llmEstimateInput,
 } from "@/lib/estimates";
-import { DEFAULT_FLOW_MODEL } from "@/lib/models";
+import { RUNTIME_DEFAULT_MODEL } from "@/lib/models";
 
 /**
  * Agent-details estimates for both agent shapes.
@@ -93,9 +93,11 @@ describe("flow agents price off the flow's own model", () => {
     );
   });
 
-  test("an unset model_choice falls back to the flow default", () => {
+  test("an unset model_choice falls back to what the worker runs", () => {
+    // NOT DEFAULT_FLOW_MODEL: that is a UI seed for flows created here, so
+    // naming it would label an imported flow with a model it never runs.
     expect(flowEstimateInput(flow({ model_choice: null }))?.model).toBe(
-      DEFAULT_FLOW_MODEL,
+      RUNTIME_DEFAULT_MODEL,
     );
   });
 
@@ -113,39 +115,125 @@ describe("flow agents price off the flow's own model", () => {
 
     expect(labels(rows)).toEqual([
       "Global Prompt",
-      "Node Instruction",
+      "Node Context",
       "Conversation History",
     ]);
-    const node = rows.find((r) => r.label === "Node Instruction")!;
+    const node = rows.find((r) => r.label === "Node Context")!;
     expect(node.min).toBe(10); // 40 chars / 4
-    // 400 chars / 4 = 100, +10% headroom. 111 rather than 110 because
-    // 100 * 1.1 is 110.00000000000001 in binary floating point and the
-    // headroom is a ceil — one token either way is inside the noise.
-    expect(node.max).toBe(111);
+    expect(node.max).toBe(110); // 400 chars / 4, +10% headroom
   });
 
-  test("nodes without instruction text are skipped, not counted as empty", () => {
+  test("static_text nodes contribute nothing — TTS speaks them, not the model", () => {
+    // The default new-flow graph is entirely static_text ("Hi! How can I help
+    // you today?" / "Goodbye."), so counting it billed words the LLM never
+    // sees, on every brand-new agent.
     const input = flowEstimateInput(
       flow({
         nodes: [
-          { id: "a", type: "end" },
-          { id: "b", instruction: { type: "prompt", text: "abcd" } },
+          { id: "a", instruction: { type: "static_text", text: "x".repeat(4000) } },
         ],
       }),
     );
-    expect(input?.nodeInstructions).toEqual(["abcd"]);
-    const node = estimateTokens(input)!.rows.find(
-      (r) => r.label === "Node Instruction",
-    )!;
-    expect(node.min).toBe(1);
-  });
-
-  test("a flow with no instruction text anywhere omits the node row", () => {
-    const input = flowEstimateInput(flow({ nodes: [{ id: "a", type: "end" }] }));
+    expect(input?.perNodeContext).toEqual([]);
     expect(labels(estimateTokens(input)!.rows)).toEqual([
       "Global Prompt",
       "Conversation History",
     ]);
+  });
+
+  test("offered transitions are counted — twice, as prompt and tool schema", () => {
+    const withEdge = flowEstimateInput(
+      flow({
+        nodes: [
+          {
+            id: "a",
+            instruction: { type: "prompt", text: "Ask." },
+            edges: [
+              {
+                id: "e1",
+                destination_node_id: "b",
+                transition_condition: { type: "prompt", prompt: "P".repeat(200) },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const bare = flowEstimateInput(
+      flow({ nodes: [{ id: "a", instruction: { type: "prompt", text: "Ask." } }] }),
+    );
+    // The condition text lands in the prompt AND the transition_to schema.
+    expect(estimateTokens(withEdge)!.max).toBeGreaterThan(
+      estimateTokens(bare)!.max + 100,
+    );
+  });
+
+  test("transitions the model never chooses are not counted", () => {
+    // always_edge is the runtime's own, an equation condition is evaluated in
+    // code, and a dangling edge has nowhere to send the call.
+    const input = flowEstimateInput(
+      flow({
+        nodes: [
+          {
+            id: "a",
+            instruction: { type: "prompt", text: "Ask." },
+            always_edge: {
+              id: "always",
+              destination_node_id: "b",
+              transition_condition: { type: "prompt", prompt: "Z".repeat(400) },
+            },
+            edges: [
+              {
+                id: "eq",
+                destination_node_id: "b",
+                transition_condition: { type: "equation", equations: [] },
+              },
+              {
+                id: "dangling",
+                transition_condition: { type: "prompt", prompt: "Y".repeat(400) },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(input?.perNodeContext).toEqual(["Ask."]);
+  });
+
+  test("a global node is offered from everywhere but itself", () => {
+    const input = flowEstimateInput(
+      flow({
+        nodes: [
+          { id: "a", instruction: { type: "prompt", text: "Ask." } },
+          {
+            id: "g",
+            instruction: { type: "prompt", text: "Help." },
+            global_node_setting: { condition: "caller asks for a human" },
+          },
+        ],
+      }),
+    );
+    expect(input?.perNodeContext[0]).toContain("caller asks for a human");
+    expect(input?.perNodeContext[1]).not.toContain("caller asks for a human");
+  });
+
+  test("flow tools are a library: at most one node installs one", () => {
+    const input = flowEstimateInput(
+      flow({
+        tools: [
+          { tool_id: "t1", name: "a", description: "d".repeat(400) },
+          { tool_id: "t2", name: "b", description: "d".repeat(4000) },
+        ],
+      }),
+    );
+    const row = estimateTokens(input)!.rows.find(
+      (r) => r.label === "Tool Definition",
+    )!;
+    // A node with no tool installs none; the largest single entry is the cap.
+    // Serializing the whole library would invent ~1,100 phantom tokens.
+    expect(row.min).toBe(0);
+    expect(row.max).toBeLessThan(1100);
+    expect(row.max).toBeGreaterThan(1000);
   });
 
   test("an attached knowledge base adds its rows", () => {

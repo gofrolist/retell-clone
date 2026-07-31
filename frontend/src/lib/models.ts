@@ -68,3 +68,10 @@ export const DEFAULT_POST_CALL_ANALYSIS_MODEL = "gemini-3.1-flash-lite";
 // (`emptyFlow` in `components/flow/flowModel.ts`). The suggested conversational
 // tier — flows drive live calls, so the lite tier is the wrong default here.
 export const DEFAULT_FLOW_MODEL = "gemini-3.5-flash";
+
+// What actually runs when a config names no model at all — an imported or
+// legacy flow with no `model_choice`, where `DEFAULT_FLOW_MODEL` (a UI seed
+// applied only to flows created here) never got written. Mirrors the worker's
+// `DEFAULT_GEMINI_MODEL` (`ARHITEQ_GEMINI_MODEL`, worker/src/arhiteq_worker/
+// main.py), which `_gemini_model` falls back to for an empty or non-Gemini id.
+export const RUNTIME_DEFAULT_MODEL = "gemini-2.5-flash";
