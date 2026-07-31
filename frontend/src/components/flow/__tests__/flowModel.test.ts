@@ -11,10 +11,12 @@ import {
   knownVariables,
   newNodeId,
   newToolId,
+  parseChoices,
   seedFlow,
   stampToolIds,
   summarizeCondition,
   transferNumberStatus,
+  withInstruction,
   type FlowEdge,
   type FlowNode,
 } from "../flowModel";
@@ -698,5 +700,56 @@ describe("transferNumberStatus", () => {
     expect(transferNumberStatus("415-555-1234")).toBe("invalid");
     expect(transferNumberStatus("+0123456789")).toBe("invalid"); // leading 0 after +
     expect(transferNumberStatus("call the clinic")).toBe("invalid");
+  });
+});
+
+describe("withInstruction", () => {
+  test("an existing type is preserved, never overwritten by the default", () => {
+    // A `prompt` line is phrased by the model, a `static_text` one is spoken
+    // verbatim. Flipping it changes what the caller hears.
+    expect(withInstruction({ type: "static_text", text: "old" }, { text: "new" }, "prompt")).toEqual({
+      type: "static_text",
+      text: "new",
+    });
+  });
+
+  test("a node with NO instruction gets the caller's default type", () => {
+    // The regression: `{...undefined, text}` yields `{text}` with no type, and
+    // the worker's `static_text()`/`node_instructions()` both return nothing
+    // unless the type matches — so the authored line is silently never spoken.
+    expect(withInstruction(undefined, { text: "closing line" }, "static_text")).toEqual({
+      type: "static_text",
+      text: "closing line",
+    });
+    expect(withInstruction({}, { text: "say hi" }, "prompt")).toEqual({
+      type: "prompt",
+      text: "say hi",
+    });
+  });
+
+  test("unmodelled keys on the instruction survive the patch", () => {
+    expect(
+      withInstruction({ type: "prompt", text: "a", retell_future_key: 7 }, { text: "b" }, "prompt"),
+    ).toEqual({ type: "prompt", text: "b", retell_future_key: 7 });
+  });
+
+  test("an explicit type in the patch wins", () => {
+    expect(withInstruction({ type: "prompt", text: "a" }, { type: "static_text" }, "prompt")).toEqual(
+      { type: "static_text", text: "a" },
+    );
+  });
+});
+
+describe("parseChoices", () => {
+  test("splits, trims and drops empties", () => {
+    expect(parseChoices(" yes ,no,, maybe ")).toEqual(["yes", "no", "maybe"]);
+  });
+
+  test("is lossy, which is why it cannot round-trip a controlled input", () => {
+    // Pinning the reason `ExtractSettings` holds the raw text in local state:
+    // feeding the parsed value back into the box erases the separator on the
+    // keystroke that types it, making a second choice unenterable.
+    expect(parseChoices("yes,").join(", ")).not.toBe("yes,");
+    expect(parseChoices("yes, ").join(", ")).not.toBe("yes, ");
   });
 });

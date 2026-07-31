@@ -1,7 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import type { NodeChange } from "@xyflow/react";
-import { iterNodeEdges, type FlowNode } from "../flowModel";
-import { edgeAddress, nodeChangeAction, toReactFlow, type FlowEdgeData, type FlowNodeData } from "../flowGraph";
+import { flowReducer, iterNodeEdges, type FlowNode } from "../flowModel";
+import {
+  edgeAddress,
+  edgeRemovalActions,
+  nodeChangeAction,
+  reuseUnchanged,
+  toReactFlow,
+  type FlowEdgeData,
+  type FlowNodeData,
+} from "../flowGraph";
 import type { RawConversationFlow } from "@/lib/api";
 import { load, NAMES } from "./fixtures";
 
@@ -251,5 +259,116 @@ describe("nodeChangeAction", () => {
   test("a selection change produces null", () => {
     const change: NodeChange = { type: "select", id: graphNodeId, selected: true };
     expect(nodeChangeAction(change, flow)).toBeNull();
+  });
+});
+
+describe("edgeRemovalActions", () => {
+  test("a batch is applied high index first, so no address is invalidated", () => {
+    const actions = edgeRemovalActions([
+      "n1::edges::0",
+      "n1::edges::2",
+      "n1::edges::1",
+    ]);
+    expect(actions.map((a) => (a as { index: number }).index)).toEqual([2, 1, 0]);
+  });
+
+  test("deleting a node keeps every OTHER transition of a node that reached it twice", () => {
+    // The regression this whole function exists for. React Flow's
+    // `deleteElements` fires every edge of a removed node in ONE
+    // `onEdgesChange` batch; `edges[]` addresses are positional and
+    // `deleteEdge` splices. Applying such a batch in arrival order removes
+    // index 0, shifts the rest left, then removes what is NOW index 2 — a
+    // still-wanted transition — while the edge actually addressed survives.
+    const flow = {
+      conversation_flow_id: "f",
+      version: 0,
+      start_node_id: "n1",
+      nodes: [
+        {
+          id: "n1",
+          type: "branch",
+          edges: [
+            { id: "e0", destination_node_id: "doomed" },
+            { id: "e1", destination_node_id: "keep_c" },
+            { id: "e2", destination_node_id: "doomed" },
+            { id: "e3", destination_node_id: "keep_d" },
+          ],
+        },
+        { id: "doomed", type: "end" },
+        { id: "keep_c", type: "end" },
+        { id: "keep_d", type: "end" },
+      ],
+    } as unknown as RawConversationFlow;
+
+    // Exactly what React Flow hands `onEdgesChange` when `doomed` is deleted:
+    // both edges pointing at it, addressed by their position at render time.
+    const batch = ["n1::edges::0", "n1::edges::2"];
+    const after = edgeRemovalActions(batch).reduce(flowReducer, flow);
+
+    const survivors = ((after.nodes as FlowNode[])[0].edges as { id: string }[]).map((e) => e.id);
+    expect(survivors).toEqual(["e1", "e3"]);
+  });
+
+  test("single-edge shapes are deleted by key, so batch order cannot corrupt them", () => {
+    const actions = edgeRemovalActions(["n1::else_edge::-1", "n1::edges::0"]);
+    expect(actions).toEqual([
+      { type: "deleteEdge", nodeId: "n1", shape: "edges", index: 0 },
+      { type: "deleteEdge", nodeId: "n1", shape: "else_edge", index: -1 },
+    ]);
+  });
+});
+
+describe("reuseUnchanged", () => {
+  test("an unchanged entry comes back as the very same object", () => {
+    // Identity is the whole point: React Flow drops a node's measured size
+    // the moment it is handed a different object, and a node with no measured
+    // size renders `visibility: hidden`.
+    const previous = [{ id: "a", data: { n: 1 } }];
+    const next = [{ id: "a", data: { n: 1 } }];
+    expect(reuseUnchanged(previous, next)[0]).toBe(previous[0]);
+  });
+
+  test("a changed entry is NOT reused", () => {
+    const previous = [{ id: "a", data: { n: 1 } }];
+    const next = [{ id: "a", data: { n: 2 } }];
+    const result = reuseUnchanged(previous, next);
+    expect(result[0]).toBe(next[0]);
+    expect(result[0].data.n).toBe(2);
+  });
+
+  test("editing one node leaves every other node's object untouched", () => {
+    // The realistic case: `flowReducer` structuredClones the document, so one
+    // keystroke replaces the objects of ALL nodes, not just the edited one.
+    const flow = {
+      conversation_flow_id: "f",
+      version: 0,
+      start_node_id: "n1",
+      nodes: [
+        { id: "n1", type: "conversation", instruction: { type: "prompt", text: "hi" } },
+        { id: "n2", type: "conversation", instruction: { type: "prompt", text: "there" } },
+        { id: "n3", type: "end" },
+      ],
+    } as unknown as RawConversationFlow;
+
+    const before = toReactFlow(flow).nodes;
+    const edited = flowReducer(flow, {
+      type: "patchNode",
+      nodeId: "n1",
+      patch: { instruction: { type: "prompt", text: "hi!" } },
+    });
+    const after = reuseUnchanged(before, toReactFlow(edited).nodes);
+
+    expect(after[0]).not.toBe(before[0]); // n1 really changed
+    expect(after[1]).toBe(before[1]);
+    expect(after[2]).toBe(before[2]);
+  });
+
+  test("added and removed ids are handled without reuse", () => {
+    const previous = [{ id: "a" }, { id: "gone" }];
+    const next = [{ id: "a" }, { id: "new" }];
+    const result = reuseUnchanged(previous, next);
+    expect(result[0]).toBe(previous[0]);
+    expect(result[1]).toBe(next[1]);
+    expect(result.map((r) => r.id)).toEqual(["a", "new"]);
   });
 });

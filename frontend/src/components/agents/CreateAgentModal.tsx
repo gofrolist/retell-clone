@@ -203,7 +203,15 @@ export default function CreateAgentModal({
         ).map((t) => (
           <button
             key={t.key}
-            onClick={() => setType(t.key)}
+            onClick={() => {
+              setType(t.key);
+              // The templates below are prompts, and a flow agent has no
+              // prompt to put one in. Clearing the pick is what actually
+              // stops a discarded template from naming the agent it was
+              // discarded from (`handleCreate` names by `template`); hiding
+              // the grid, below, is what stops one being picked at all.
+              setTemplate("Build from scratch");
+            }}
             className={cn(
               "cursor-pointer rounded-xl border p-4 text-left transition-colors",
               type === t.key
@@ -218,49 +226,58 @@ export default function CreateAgentModal({
         ))}
       </div>
 
-      <div className="mt-5 flex items-center gap-1.5 overflow-x-auto pb-1">
-        {CATEGORIES.map((c) => (
-          <button
-            key={c}
-            onClick={() => setCategory(c)}
-            className={cn(
-              "whitespace-nowrap rounded-full border px-3 py-1 text-[12.5px] font-medium transition-colors cursor-pointer",
-              category === c
-                ? "border-ink bg-ink text-white"
-                : "border-line bg-white text-sub hover:text-ink",
-            )}
-          >
-            {c}
-          </button>
-        ))}
-      </div>
+      {type === "flow" ? (
+        <p className="mt-5 text-[13px] text-sub">
+          Flow agents start from a two-node graph — a greeting and an end node — which you edit on
+          the canvas. The prompt templates below apply to single-prompt agents only.
+        </p>
+      ) : (
+        <>
+          <div className="mt-5 flex items-center gap-1.5 overflow-x-auto pb-1">
+            {CATEGORIES.map((c) => (
+              <button
+                key={c}
+                onClick={() => setCategory(c)}
+                className={cn(
+                  "whitespace-nowrap rounded-full border px-3 py-1 text-[12.5px] font-medium transition-colors cursor-pointer",
+                  category === c
+                    ? "border-ink bg-ink text-white"
+                    : "border-line bg-white text-sub hover:text-ink",
+                )}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
 
-      <div className="mt-3 grid grid-cols-3 gap-3">
-        {TEMPLATES.map((t) => (
-          <button
-            key={t.name}
-            onClick={() => !t.disabled && setTemplate(t.name)}
-            disabled={t.disabled}
-            title={t.disabled ? "Not available yet" : undefined}
-            className={cn(
-              "relative rounded-xl border p-3.5 text-left transition-colors",
-              t.disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer",
-              template === t.name
-                ? "border-ink ring-1 ring-ink"
-                : "border-line hover:border-line-strong",
-            )}
-          >
-            {t.suggested && (
-              <Badge tone="blue" className="absolute right-2 top-2">
-                Suggested
-              </Badge>
-            )}
-            <t.icon className="mb-2 size-4.5 text-sub" strokeWidth={1.8} />
-            <div className="text-[13px] font-semibold">{t.name}</div>
-            <div className="mt-0.5 text-xs text-sub">{t.desc}</div>
-          </button>
-        ))}
-      </div>
+          <div className="mt-3 grid grid-cols-3 gap-3">
+            {TEMPLATES.map((t) => (
+              <button
+                key={t.name}
+                onClick={() => !t.disabled && setTemplate(t.name)}
+                disabled={t.disabled}
+                title={t.disabled ? "Not available yet" : undefined}
+                className={cn(
+                  "relative rounded-xl border p-3.5 text-left transition-colors",
+                  t.disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer",
+                  template === t.name
+                    ? "border-ink ring-1 ring-ink"
+                    : "border-line hover:border-line-strong",
+                )}
+              >
+                {t.suggested && (
+                  <Badge tone="blue" className="absolute right-2 top-2">
+                    Suggested
+                  </Badge>
+                )}
+                <t.icon className="mb-2 size-4.5 text-sub" strokeWidth={1.8} />
+                <div className="text-[13px] font-semibold">{t.name}</div>
+                <div className="mt-0.5 text-xs text-sub">{t.desc}</div>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </Modal>
   );
 }

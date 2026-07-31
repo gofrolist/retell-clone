@@ -356,6 +356,55 @@ export function transferNumberStatus(value: string): TransferNumberStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Node instruction patches. One helper, shared by every editor that writes an
+// `instruction`, because the `type` key is what makes the text audible at all.
+// ---------------------------------------------------------------------------
+
+/**
+ * A node's `instruction` with *patch* applied, and its `type` guaranteed.
+ *
+ * Preserving an existing `type` is the point — a `prompt` line is phrased by
+ * the model, a `static_text` one is spoken verbatim, and flipping it changes
+ * what the caller hears. But a node that carries no `instruction` object at
+ * all (any node authored outside this editor: `defaultsFor` seeds one, an
+ * import need not) has no type to preserve, and a bare `{text: "…"}` is
+ * silently INAUDIBLE: the worker's `static_text()` returns nothing unless
+ * `type === "static_text"` and `node_instructions()` nothing unless
+ * `type === "prompt"` (`worker/src/arhiteq_worker/flow.py`). The caller
+ * supplies the type that its own UI is already displaying for the absent
+ * case, so what is stored matches what the editor claims is stored.
+ */
+export function withInstruction(
+  existing: unknown,
+  patch: { text?: string; type?: string },
+  defaultType: "prompt" | "static_text",
+): Record<string, unknown> {
+  const base =
+    existing && typeof existing === "object" ? (existing as Record<string, unknown>) : {};
+  const merged: Record<string, unknown> = { ...base, ...patch };
+  if (typeof merged.type !== "string" || !merged.type) merged.type = defaultType;
+  return merged;
+}
+
+/**
+ * The comma-separated "Choices" field of an `extract_dynamic_variables` enum
+ * parsed into `variable.choices`.
+ *
+ * Note what this destroys: the separator and the spaces around it. That makes
+ * it unusable as the round trip for a controlled input — feeding
+ * `choices.join(", ")` back into the box erases the comma the instant it is
+ * typed, so a second choice can never be entered. The field keeps the raw
+ * text the user is typing in local state and parses through here on the way
+ * to the document only.
+ */
+export function parseChoices(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((choice) => choice.trim())
+    .filter(Boolean);
+}
+
+// ---------------------------------------------------------------------------
 // Id minting. Retell's own ids look like `node-<ms>` / `edge-<ms>-<rand>`;
 // staying close to that convention keeps imported and authored graphs
 // visually consistent (and avoids a second id "look" the user has to learn).

@@ -29,7 +29,14 @@ import {
 } from "@xyflow/react";
 import type { RawConversationFlow } from "@/lib/api";
 import { PillTabs } from "@/components/ui/Tabs";
-import { edgeAddress, nodeChangeAction, toReactFlow, type FlowEdgeData } from "./flowGraph";
+import {
+  edgeAddress,
+  edgeRemovalActions,
+  nodeChangeAction,
+  toReactFlow,
+  type FlowEdgeData,
+} from "./flowGraph";
+import { useStableGraph } from "./useStableGraph";
 import type { FlowAction } from "./flowModel";
 import NodePalette, { NODE_DRAG_MIME } from "./NodePalette";
 import FlowNode from "./nodes/FlowNode";
@@ -48,31 +55,54 @@ function Canvas({
   readOnly,
   selectedNodeId,
   setSelectedNodeId,
+  selectedEdgeId,
+  setSelectedEdgeId,
 }: {
   flow: RawConversationFlow;
   dispatch: (action: FlowAction) => void;
   readOnly: boolean;
   selectedNodeId: string | null;
   setSelectedNodeId: Dispatch<SetStateAction<string | null>>;
+  selectedEdgeId: string | null;
+  setSelectedEdgeId: Dispatch<SetStateAction<string | null>>;
 }) {
   const { screenToFlowPosition } = useReactFlow();
 
   // The flow object is the single source of truth: `nodes`/`edges` are always
   // DERIVED from it, never a second source of truth held in local state.
   // Every mutation leaves through `dispatch`.
-  const { nodes, edges } = useMemo(() => {
-    const graph = toReactFlow(flow);
-    return {
-      nodes: graph.nodes.map((node) => ({
-        ...node,
-        selected: node.id === selectedNodeId,
-      })),
-      edges: graph.edges.map((edge) => ({
-        ...edge,
-        label: (edge.data as FlowEdgeData | undefined)?.label,
-      })),
-    };
-  }, [flow, selectedNodeId]);
+  //
+  // Deriving them mints new objects, and React Flow reads object identity to
+  // decide whether it may keep a node's measured size — hence
+  // `useStableGraph`, without which the whole graph goes `visibility: hidden`
+  // for a frame on every edit.
+  const derived = useMemo(
+    () => {
+      const graph = toReactFlow(flow);
+      return {
+        nodes: graph.nodes.map((node) => ({
+          ...node,
+          selected: node.id === selectedNodeId,
+        })),
+        edges: graph.edges.map((edge) => {
+          const selected = edge.id === selectedEdgeId;
+          return {
+            ...edge,
+            selected,
+            label: (edge.data as FlowEdgeData | undefined)?.label,
+            // React Flow marks a selected edge with a CSS class, but every
+            // edge here carries an inline `stroke` that outranks it. Widen
+            // the stroke instead of recolouring it: the five shapes already
+            // use colour to mean five different things, and width is the one
+            // channel still free (and legible without colour vision).
+            style: selected ? { ...edge.style, strokeWidth: 3 } : edge.style,
+          };
+        }),
+      };
+    },
+    [flow, selectedNodeId, selectedEdgeId],
+  );
+  const { nodes, edges } = useStableGraph(derived);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -103,14 +133,30 @@ function Canvas({
 
   const onEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
-      if (readOnly) return;
+      // Selection is editor-local, never flow content, so it is tracked even
+      // on a read-only (older-version) canvas — and it has to be tracked at
+      // all for an edge to be selectable: with `hasDefaultEdges: false` the
+      // store never mutates the `edges` we pass, so `selected` reaching a
+      // rendered edge, the Delete key finding one, and the selection ring
+      // appearing are all downstream of this handler.
       for (const change of changes) {
-        if (change.type !== "remove") continue;
-        const { nodeId, shape, index } = edgeAddress(change.id);
-        dispatch({ type: "deleteEdge", nodeId, shape, index });
+        if (change.type !== "select") continue;
+        if (change.selected) {
+          setSelectedEdgeId(change.id);
+        } else {
+          setSelectedEdgeId((current) => (current === change.id ? null : current));
+        }
       }
+
+      if (readOnly) return;
+      const removed = changes.flatMap((change) => (change.type === "remove" ? [change.id] : []));
+      if (removed.length === 0) return;
+      // Batched, and positional: the order these are applied in decides which
+      // edges survive. See `edgeRemovalActions`.
+      for (const action of edgeRemovalActions(removed)) dispatch(action);
+      setSelectedEdgeId((current) => (current !== null && removed.includes(current) ? null : current));
     },
-    [dispatch, readOnly],
+    [dispatch, readOnly, setSelectedEdgeId],
   );
 
   const onConnect = useCallback(
@@ -219,14 +265,25 @@ export default function FlowEditor({
   canvasEpoch: number;
 }) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [rightTab, setRightTab] = useState<"node" | "global">("node");
+
+  // React Flow's selection is single-entity across kinds: selecting an edge
+  // deselects every node (`addSelectedEdges` fires `triggerNodeChanges` with
+  // a deselect for the whole node lookup), so `selectedNodeId` is null for as
+  // long as an edge is selected. Falling back to the edge's SOURCE node keeps
+  // the pane useful, because that node's `EdgeList` row is exactly where the
+  // selected edge's condition and destination are edited — otherwise clicking
+  // an edge would trade the settings pane for its "select a node" empty state.
+  const settingsNodeId =
+    selectedNodeId ?? (selectedEdgeId !== null ? edgeAddress(selectedEdgeId).nodeId : null);
 
   // Picking a node while the Global tab is showing should surface its
   // settings, not silently do nothing — the same reason a click always
   // updates `selectedNodeId` regardless of which tab is active.
   useEffect(() => {
-    if (selectedNodeId) setRightTab("node");
-  }, [selectedNodeId]);
+    if (settingsNodeId) setRightTab("node");
+  }, [settingsNodeId]);
 
   // A selection made in one version's graph shouldn't linger, half-relevant,
   // after a bulk replacement swaps the whole graph out from under it. Keyed
@@ -235,6 +292,7 @@ export default function FlowEditor({
   // it must never fire on an ordinary edit.
   useEffect(() => {
     setSelectedNodeId(null);
+    setSelectedEdgeId(null);
   }, [canvasEpoch]);
 
   return (
@@ -248,6 +306,8 @@ export default function FlowEditor({
           readOnly={readOnly}
           selectedNodeId={selectedNodeId}
           setSelectedNodeId={setSelectedNodeId}
+          selectedEdgeId={selectedEdgeId}
+          setSelectedEdgeId={setSelectedEdgeId}
         />
         <div className="flex h-full w-[320px] shrink-0 flex-col overflow-y-auto border-l border-line bg-card">
           <div className="sticky top-0 z-10 shrink-0 border-b border-line bg-card p-2">
@@ -266,7 +326,7 @@ export default function FlowEditor({
             <NodeSettings
               flow={flow}
               dispatch={dispatch}
-              selectedNodeId={selectedNodeId}
+              selectedNodeId={settingsNodeId}
               readOnly={readOnly}
             />
           )}

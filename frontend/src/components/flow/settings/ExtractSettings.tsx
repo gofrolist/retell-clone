@@ -1,8 +1,10 @@
 "use client";
 
+import { useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { Field, TextInput, Textarea } from "@/components/ui/Field";
 import Select from "@/components/ui/Select";
+import { parseChoices } from "../flowModel";
 import type { NodeSettingsProps } from "./NodeSettings";
 
 /**
@@ -28,6 +30,23 @@ const TYPE_OPTIONS = [
 
 export default function ExtractSettings({ node, dispatch }: NodeSettingsProps) {
   const variables = Array.isArray(node.variables) ? (node.variables as ExtractVariable[]) : [];
+
+  // What the user is currently typing into a "Choices" box, by row index,
+  // for as long as that box has focus. The stored value cannot serve as the
+  // input's value: `parseChoices` drops the separator and the spaces around
+  // it, so rendering `choices.join(", ")` back into a controlled input erases
+  // the comma on the keystroke that types it — and a second choice becomes
+  // unenterable. The document still only ever receives parsed choices; this
+  // holds nothing but in-progress text, and is dropped on blur so the row
+  // goes back to displaying the canonical join.
+  const [choicesDraft, setChoicesDraft] = useState<Record<number, string>>({});
+  const clearChoicesDraft = (index: number) =>
+    setChoicesDraft((prev) => {
+      if (!(index in prev)) return prev;
+      const next = { ...prev };
+      delete next[index];
+      return next;
+    });
 
   const setVariables = (next: ExtractVariable[]) =>
     dispatch({ type: "patchNode", nodeId: node.id, patch: { variables: next } });
@@ -90,15 +109,12 @@ export default function ExtractSettings({ node, dispatch }: NodeSettingsProps) {
             {type === "enum" && (
               <Field label="Choices" hint="Comma-separated.">
                 <TextInput
-                  value={(variable.choices ?? []).join(", ")}
-                  onChange={(e) =>
-                    patchVariable(index, {
-                      choices: e.target.value
-                        .split(",")
-                        .map((c) => c.trim())
-                        .filter(Boolean),
-                    })
-                  }
+                  value={choicesDraft[index] ?? (variable.choices ?? []).join(", ")}
+                  onChange={(e) => {
+                    setChoicesDraft((prev) => ({ ...prev, [index]: e.target.value }));
+                    patchVariable(index, { choices: parseChoices(e.target.value) });
+                  }}
+                  onBlur={() => clearChoicesDraft(index)}
                   placeholder="option one, option two"
                 />
               </Field>

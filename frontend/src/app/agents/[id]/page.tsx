@@ -53,7 +53,7 @@ import {
   Webhook,
 } from "lucide-react";
 import Link from "next/link";
-import { use, useCallback, useEffect, useRef, useState } from "react";
+import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /** How long editing pauses before the draft is saved. */
 const AUTOSAVE_MS = 800;
@@ -264,7 +264,18 @@ export default function AgentEditorPage({
 
   // The flow the editor edits is the server value overlaid with unsaved
   // edits, exactly like `view` / `llmView` below.
-  const flowView: RawConversationFlow | null = flow ? { ...flow, ...flowDraft } : null;
+  //
+  // Memoized, unlike its siblings, because this one's IDENTITY is load-bearing
+  // downstream: `FlowEditor` derives React Flow's nodes from it, and React
+  // Flow drops a node's measured size the moment its object changes (see
+  // `flowGraph.reuseUnchanged`). Rebuilt on every render, this would blink the
+  // whole canvas on things that have nothing to do with the flow — a save
+  // state transition, `loadVersions()` resolving, a keystroke in any other
+  // side-panel section.
+  const flowView: RawConversationFlow | null = useMemo(
+    () => (flow ? { ...flow, ...flowDraft } : null),
+    [flow, flowDraft],
+  );
 
   /**
    * Bridges `FlowEditor`'s `dispatch(action)` onto the draft the autosave

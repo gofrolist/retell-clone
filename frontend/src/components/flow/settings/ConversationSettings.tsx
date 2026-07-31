@@ -3,6 +3,7 @@
 import { Field, Textarea } from "@/components/ui/Field";
 import Select from "@/components/ui/Select";
 import { cn } from "@/lib/utils";
+import { withInstruction } from "../flowModel";
 import type { NodeSettingsProps } from "./NodeSettings";
 
 /**
@@ -53,7 +54,11 @@ export default function ConversationSettings({ node, flow, dispatch }: NodeSetti
               <button
                 key={opt.value}
                 type="button"
-                onClick={() => patch({ instruction: { ...instruction, type: opt.value } })}
+                onClick={() =>
+                  patch({
+                    instruction: withInstruction(node.instruction, { type: opt.value }, "prompt"),
+                  })
+                }
                 className={cn(
                   "rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors cursor-pointer",
                   instructionType === opt.value
@@ -71,7 +76,15 @@ export default function ConversationSettings({ node, flow, dispatch }: NodeSetti
           <Textarea
             rows={4}
             value={instruction.text ?? ""}
-            onChange={(e) => patch({ instruction: { ...instruction, text: e.target.value } })}
+            // `prompt` when the node carries no instruction at all: it is
+            // what `instructionType` above already displays for that case,
+            // and what `defaultsFor("conversation")` seeds. Storing text with
+            // no type would leave the line silently unspoken.
+            onChange={(e) =>
+              patch({
+                instruction: withInstruction(node.instruction, { text: e.target.value }, "prompt"),
+              })
+            }
           />
         </div>
       </Field>

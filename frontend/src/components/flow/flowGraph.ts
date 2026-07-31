@@ -112,6 +112,83 @@ export function nodeChangeAction(change: NodeChange, flow: RawConversationFlow):
 }
 
 // ---------------------------------------------------------------------------
+// React Flow EdgeChange -> FlowAction. Same seam as `nodeChangeAction` above,
+// and for a sharper reason: edge removals arrive in BATCHES whose addresses
+// are positional, so the order they are applied in changes which edges die.
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps a batch of removed React Flow edge ids onto the `deleteEdge` actions
+ * that remove exactly those edges — **in an order that stays correct as the
+ * list shrinks under them.**
+ *
+ * React Flow deletes in batches: `deleteElements` collects every edge
+ * connected to a removed node and fires them all in ONE `onEdgesChange` call
+ * (`matchingEdges.map(elementToRemoveChange)` then a single
+ * `triggerEdgeChanges`). An `edges[]` address is POSITIONAL, and
+ * `flowModel`'s `deleteEdge` splices by that position, so applying a batch in
+ * arrival order corrupts it: a branch node with `edges = [→B, →C, →B, →D]`
+ * deleting node B yields `remove ::edges::0` and `remove ::edges::2`, and
+ * applying them in that order drops index 0, shifts every later edge left,
+ * then drops what is NOW index 2 — the still-wanted `→D` transition, while
+ * the second `→B` survives.
+ *
+ * Descending index order fixes it: every address in the batch still points at
+ * what it pointed at when the batch was minted, because only entries *after*
+ * it have been removed so far. The four single-edge shapes carry index `-1`
+ * and are deleted by key, so their position in the order is irrelevant.
+ */
+export function edgeRemovalActions(rfEdgeIds: readonly string[]): FlowAction[] {
+  return rfEdgeIds
+    .map(edgeAddress)
+    .sort((a, b) => b.index - a.index)
+    .map(({ nodeId, shape, index }) => ({ type: "deleteEdge", nodeId, shape, index }) as const);
+}
+
+// ---------------------------------------------------------------------------
+// Referential identity across renders.
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns `next` with every element swapped for the PREVIOUS render's element
+ * of the same id whenever the two are value-identical.
+ *
+ * This preserves object identity, which React Flow treats as load-bearing.
+ * `adoptUserNodes` keeps a node's internal record only while
+ * `userNode === internals.userNode`; on any other object it takes the rebuild
+ * branch, which re-derives `measured` from `userNode.measured` and resets
+ * `handleBounds` via `parseHandles`. Nothing here sets `measured`/`width`/
+ * `initialWidth` on a graph node, so a rebuild leaves every node with no
+ * dimensions — `nodeHasDimensions` goes false and `NodeWrapper` renders
+ * `visibility: hidden` until the ResizeObserver re-measures it a frame later.
+ *
+ * That would otherwise happen constantly, because two upstream layers destroy
+ * identity wholesale: `flowReducer` `structuredClone`s the document on every
+ * action, so one keystroke in one node's instruction replaces the objects of
+ * ALL of them, and `toReactFlow` mints fresh wrappers on every call. The
+ * result is the whole graph blinking on each edit. Comparing by value here
+ * confines the rebuild to the nodes that actually changed.
+ *
+ * Value comparison is by `JSON.stringify`, which is sound for these two
+ * arrays specifically: everything in them is JSON data (the flow document
+ * plus booleans, numbers and style strings), there are no functions or
+ * cycles, and `structuredClone` preserves key order — so a clone of an
+ * unchanged node stringifies identically to its original.
+ */
+export function reuseUnchanged<T extends { id: string }>(
+  previous: readonly T[],
+  next: readonly T[],
+): T[] {
+  if (previous.length === 0) return [...next];
+  const byId = new Map<string, T>();
+  for (const item of previous) byId.set(item.id, item);
+  return next.map((item) => {
+    const prior = byId.get(item.id);
+    return prior !== undefined && JSON.stringify(prior) === JSON.stringify(item) ? prior : item;
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Deterministic layout fallback for nodes/notes Retell never positioned.
 // ---------------------------------------------------------------------------
 

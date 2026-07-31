@@ -2,6 +2,7 @@
 
 import Toggle from "@/components/ui/Toggle";
 import { Field, Textarea } from "@/components/ui/Field";
+import { withInstruction } from "../flowModel";
 import type { NodeSettingsProps } from "./NodeSettings";
 
 export default function EndSettings({ node, dispatch }: NodeSettingsProps) {
@@ -21,10 +22,14 @@ export default function EndSettings({ node, dispatch }: NodeSettingsProps) {
             dispatch({
               type: "patchNode",
               nodeId: node.id,
-              // Preserve the instruction's own type: a `prompt` line is
-              // phrased by the model, a `static_text` one is spoken verbatim,
-              // and silently flipping it changes what the caller hears.
-              patch: { instruction: { ...instruction, text: e.target.value } },
+              // `static_text` is the default for a node that has no
+              // instruction at all, matching what `defaultsFor("end")` seeds
+              // and what this field's own copy promises ("Closing line",
+              // spoken as written). An existing type is preserved, not
+              // overwritten — see `withInstruction`.
+              patch: {
+                instruction: withInstruction(node.instruction, { text: e.target.value }, "static_text"),
+              },
             })
           }
         />
