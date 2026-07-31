@@ -111,12 +111,21 @@ export default function CreateAgentModal({
   // prompt, with nothing on screen saying so. Reset the whole picker on each
   // open instead of just `type`: a stale template/category/error is the same
   // class of surprise, only less destructive.
+  //
+  // `creating` is deliberately NOT reset here, matching `CreateAlertModal` and
+  // `TestCaseModal`, which both exclude their own in-flight flags from the
+  // same pattern. `Modal`'s backdrop, Escape and X all close unconditionally —
+  // only the footer buttons respect `creating` — so a user who closes a
+  // seemingly-stuck modal mid-create and reopens it would get an enabled
+  // Create button with the first request still in flight. Submitting again
+  // makes two agents, and whichever request lands first `router.push`es away
+  // from the other. Leaving `creating` alone keeps the button disabled until
+  // the in-flight request actually settles.
   useEffect(() => {
     if (!open) return;
     setType("single");
     setCategory("All");
     setTemplate("Build from scratch");
-    setCreating(false);
     setError(null);
   }, [open]);
 
