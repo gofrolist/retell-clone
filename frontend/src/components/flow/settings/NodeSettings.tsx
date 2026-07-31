@@ -15,8 +15,9 @@ import FunctionSettings from "./FunctionSettings";
 import TransferSettings from "./TransferSettings";
 import EndSettings from "./EndSettings";
 import ExtractSettings from "./ExtractSettings";
+import PressDigitSettings from "./PressDigitSettings";
 
-/** Props every per-type settings editor shares — see the six `*Settings.tsx` siblings. */
+/** Props every per-type settings editor shares — see the seven `*Settings.tsx` siblings. */
 export type NodeSettingsProps = {
   node: FlowNode;
   flow: RawConversationFlow;
@@ -39,6 +40,7 @@ const EDITORS: Record<string, ComponentType<NodeSettingsProps>> = {
   transfer_call: TransferSettings,
   end: EndSettings,
   extract_dynamic_variables: ExtractSettings,
+  press_digit: PressDigitSettings,
 };
 
 /**

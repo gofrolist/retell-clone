@@ -4,7 +4,12 @@ import { cn } from "@/lib/utils";
 import { Plus, Trash2 } from "lucide-react";
 import Select from "@/components/ui/Select";
 import { TextInput } from "@/components/ui/Field";
-import { EQUATION_OPERATORS, type Equation, type TransitionCondition } from "../flowModel";
+import {
+  EQUATION_OPERATORS,
+  UNARY_EQUATION_OPERATORS,
+  type Equation,
+  type TransitionCondition,
+} from "../flowModel";
 
 const OPERATOR_OPTIONS = EQUATION_OPERATORS.map((op) => ({ value: op, label: op }));
 
@@ -62,9 +67,9 @@ function OperandRow({
  * edge whose condition is true wins. Nothing else in the UI surfaces that,
  * so it is required copy, not decoration.
  *
- * `right` is hidden for the unary `exists` operator: the worker ignores it
- * entirely for that operator (`_evaluate_single_equation`), so showing an
- * input the worker never reads would just mislead the author.
+ * `right` is hidden for the unary operators (`exists` / `not_exist`): the
+ * worker ignores it entirely for those (`_evaluate_single_equation`), so
+ * showing an input the worker never reads would just mislead the author.
  */
 export default function EquationBuilder({
   condition,
@@ -145,7 +150,7 @@ export default function EquationBuilder({
               onChange={(v) => patchEquation(index, { operator: v })}
               options={operatorOptions}
             />
-            {operator !== "exists" && (
+            {!UNARY_EQUATION_OPERATORS.includes(operator) && (
               <OperandRow
                 value={equation.right}
                 onChange={(v) => patchEquation(index, { right: v })}

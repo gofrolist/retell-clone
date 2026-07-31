@@ -7,6 +7,8 @@ import {
   EDGE_SHAPES,
   emptyCondition,
   EQUATION_OPERATORS,
+  NODE_TYPES,
+  UNARY_EQUATION_OPERATORS,
   flowReducer,
   iterNodeEdges,
   knownVariables,
@@ -191,6 +193,40 @@ describe("addableEdgeShapes", () => {
     });
     const added = (next.nodes as FlowNode[]).at(-1)!;
     expect(added.else_edge).toBeUndefined();
+    expect(addableEdgeShapes(added)).toEqual(["else_edge", "always_edge", "skip_response_edge"]);
+  });
+
+  test("the palette offers exactly the worker's executable node types", () => {
+    // `SUPPORTED_NODE_TYPES` in worker/src/arhiteq_worker/flow.py. A type
+    // offered here that the worker cannot execute produces a flow it rejects
+    // at call start — before the greeting — so this list must not run ahead.
+    expect([...NODE_TYPES].sort()).toEqual(
+      [
+        "branch",
+        "conversation",
+        "end",
+        "extract_dynamic_variables",
+        "function",
+        "press_digit",
+        "subagent",
+        "transfer_call",
+      ].sort(),
+    );
+  });
+
+  test("a fresh press_digit node seeds a prompt instruction, not static text", () => {
+    // The node carries no literal digits: the model reads the IVR menu and
+    // calls the tool with what it heard, so the instruction has to be a
+    // `prompt` (`make_press_digit_node_tool` in flow.py).
+    const flow = load("clara_outbound.json");
+    const next = flowReducer(flow, {
+      type: "addNode",
+      nodeType: "press_digit",
+      position: { x: 0, y: 0 },
+    });
+    const added = (next.nodes as FlowNode[]).at(-1)!;
+    expect(added.type).toBe("press_digit");
+    expect(added.instruction).toEqual({ type: "prompt", text: "" });
     expect(addableEdgeShapes(added)).toEqual(["else_edge", "always_edge", "skip_response_edge"]);
   });
 
@@ -531,12 +567,35 @@ describe("diffFlowPatch", () => {
 
 describe("conditions", () => {
   test("the operator list matches the worker's", () => {
-    // worker/src/arhiteq_worker/flow.py: _NUMERIC_OPERATORS, _EQUALITY_OPERATORS,
-    // _CONTAINMENT_OPERATORS, plus the unary `exists`. Offering an operator the
-    // worker does not implement produces an edge that silently never fires.
+    // Verbatim the `Equation.operator` enum from Retell's
+    // create-conversation-flow schema, which is also what the worker
+    // implements (flow.py: _NUMERIC_COMPARISONS, _EQUALITY_OPERATORS,
+    // _CONTAINMENT_OPERATORS, _UNARY_OPERATORS). Offering an operator the
+    // worker does not implement produces an edge that silently never fires;
+    // spelling one the way the prose docs display it ("CONTAINS") produces a
+    // flow that is not byte-compatible with a Retell export.
     expect([...EQUATION_OPERATORS]).toEqual([
-      "==", "!=", ">", "<", "CONTAINS", "NOT CONTAINS", "exists",
+      "==", "!=", ">", ">=", "<", "<=", "contains", "not_contains", "exists", "not_exist",
     ]);
+  });
+
+  test("the unary operators are the ones that ignore `right`", () => {
+    expect([...UNARY_EQUATION_OPERATORS]).toEqual(["exists", "not_exist"]);
+    for (const operator of UNARY_EQUATION_OPERATORS) {
+      expect(EQUATION_OPERATORS).toContain(operator);
+    }
+  });
+
+  test("a unary equation is summarized without a trailing empty operand", () => {
+    const edge = {
+      id: "e1",
+      transition_condition: {
+        type: "equation",
+        operator: "&&",
+        equations: [{ left: "{{email}}", operator: "not_exist" }],
+      },
+    } as unknown as Parameters<typeof summarizeCondition>[0];
+    expect(summarizeCondition(edge)).toBe("{{email}} not_exist");
   });
 
   test("switching condition type produces the shape the worker parses", () => {

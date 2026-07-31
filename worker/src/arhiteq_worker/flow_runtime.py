@@ -80,7 +80,7 @@ DEAD_END_REASON = "error_unknown"
 # model turn, so a node of theirs with no usable edge keeps talking, which is
 # a legitimate terminal-ish state rather than a dead end.
 _ROUTING_NODE_TYPES: frozenset[str] = frozenset(
-    {"branch", "function", "extract_dynamic_variables", "transfer_call"}
+    {"branch", "function", "extract_dynamic_variables", "transfer_call", "press_digit"}
 )
 
 SetInstructions = Callable[[str], Awaitable[None]]
@@ -233,14 +233,19 @@ class FlowRuntime:
         self._handlers: dict[str, Callable[[dict[str, Any]], Awaitable[None]]] = {
             # ``subagent``'s field set is a strict subset of
             # ``conversation``'s, so the same handler is a faithful
-            # degradation, not a stub. ``function`` and
-            # ``extract_dynamic_variables`` also speak-or-listen and then
-            # transition; their node-specific tool arrives through
-            # `build_node_tools`, and the tool wrapper drives `advance`.
+            # degradation, not a stub. ``function``,
+            # ``extract_dynamic_variables`` and ``press_digit`` also
+            # speak-or-listen and then transition; their node-specific tool
+            # arrives through `build_node_tools`, and the tool wrapper drives
+            # `advance`. ``press_digit`` in particular carries a ``prompt``
+            # instruction naming what to press and no literal digits, so it
+            # needs the same model turn a conversation node gets — the model
+            # reads the IVR menu and calls the tool with what it heard.
             "conversation": self._enter_conversation,
             "subagent": self._enter_conversation,
             "function": self._enter_conversation,
             "extract_dynamic_variables": self._enter_conversation,
+            "press_digit": self._enter_conversation,
             "branch": self._enter_branch,
             "end": self._enter_end,
             "transfer_call": self._enter_transfer_call,

@@ -213,7 +213,7 @@ Real Retell captures contain these (a `transfer_call` node's failure edge, a
 the path is ordinary rather than exotic. A node that can hold a conversation
 (`conversation` / `subagent`) simply stays where it is — the model keeps
 talking, which is a legitimate end state. A node that can only route
-(`branch`, `function`, `extract_dynamic_variables`, `transfer_call`) speaks
+(`branch`, `function`, `extract_dynamic_variables`, `press_digit`, `transfer_call`) speaks
 nothing and cannot advance, so staying put would be silence for the rest of
 the call: the worker logs the node id at error and hangs up instead.
 

@@ -18,6 +18,7 @@ import pytest
 from arhiteq_worker.config import CallConfig, ConversationFlowConfig
 from arhiteq_worker.flow import FlowGraph
 from arhiteq_worker.flow_runtime import (
+    _ROUTING_NODE_TYPES,
     DEAD_END_REASON,
     MAX_AUTOMATIC_TRANSITIONS,
     FlowRuntime,
@@ -2264,3 +2265,87 @@ def test_a_raising_set_instructions_does_not_propagate_out_of_entry(caplog) -> N
     # Tools still installed and the line still spoken: no half-entered node.
     assert fakes.tools and fakes.said == ["Hello there."]
     assert any(record.levelno >= logging.ERROR for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# press_digit
+# ---------------------------------------------------------------------------
+
+
+def _press_digit_flow(**node_extra: Any) -> dict[str, Any]:
+    node: dict[str, Any] = {
+        "id": "dial",
+        "type": "press_digit",
+        "instruction": {"type": "prompt", "text": "Press 2 for the pharmacy line."},
+        "edges": [
+            {
+                "id": "reached",
+                "transition_condition": _prompt_condition("Menu reached"),
+                "destination_node_id": "done",
+            }
+        ],
+    }
+    node.update(node_extra)
+    return {
+        "start_node_id": "dial",
+        "start_speaker": "agent",
+        "nodes": [
+            node,
+            {
+                "id": "done",
+                "type": "conversation",
+                "instruction": {"type": "static_text", "text": "You're through."},
+            },
+        ],
+    }
+
+
+def test_press_digit_node_is_entered_like_a_speaking_node() -> None:
+    """It carries a ``prompt`` instruction naming what to press, so the model
+    needs the node's instructions and its DTMF tool installed — the node is
+    NOT a silent router that transitions on entry."""
+    fakes = Fakes()
+    runtime = _runtime(_press_digit_flow(), fakes)
+    _run(runtime.start())
+
+    assert runtime.current_node_id == "dial"
+    assert fakes.build_calls[-1][0] == "dial"
+    assert "Press 2 for the pharmacy line." in fakes.instructions[-1]
+    assert runtime.ended is False
+
+
+def test_press_digit_node_opening_the_call_gets_a_model_turn() -> None:
+    # Same rule as any other prompt-instruction node opening the call: without
+    # a requested turn the call opens in silence.
+    fakes = Fakes()
+    runtime = _runtime(_press_digit_flow(), fakes)
+    _run(runtime.start())
+    assert fakes.generate_reply_calls == [None]
+
+
+def test_press_digit_node_counts_as_a_routing_node() -> None:
+    """It cannot hold a conversation — it presses digits and moves on — so it
+    belongs with `function` / `extract_dynamic_variables` for `_dead_end`'s
+    "stay put or end the call?" question, not with `conversation`.
+
+    Like those two siblings this is a classification, not a reachable path
+    today: `_dead_end` is only entered via `_follow_fallback`, which only
+    `branch` and `transfer_call` nodes reach. Asserting the membership is what
+    keeps the classification from silently flipping.
+    """
+    assert "press_digit" in _ROUTING_NODE_TYPES
+    assert "conversation" not in _ROUTING_NODE_TYPES
+
+
+def test_press_digit_node_with_a_dangling_edge_stays_put() -> None:
+    """Its tool is what routes it, so an unusable edge leaves the call on the
+    node rather than ending it — the same shape a `function` node has."""
+    fakes = Fakes()
+    flow = _press_digit_flow(edges=[], else_edge={"id": "dangling"})
+    runtime = _runtime(flow, fakes)
+    _run(runtime.start())
+    _run(runtime.on_user_turn())
+
+    assert fakes.ended == []
+    assert runtime.ended is False
+    assert runtime.current_node_id == "dial"

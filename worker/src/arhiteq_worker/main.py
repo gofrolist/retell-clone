@@ -43,6 +43,7 @@ from arhiteq_worker.flow import (
     TOOL_EXTRACT,
     TOOL_FUNCTION,
     TOOL_KB_LOOKUP,
+    TOOL_PRESS_DIGIT,
     TOOL_TRANSITION,
     FlowError,
     FlowGraph,
@@ -51,6 +52,7 @@ from arhiteq_worker.flow import (
     make_extract_node_tool,
     make_flow_kb_lookup_tool,
     make_function_node_tool,
+    make_press_digit_node_tool,
     make_transition_tool,
     match_edge_id,
     node_instructions,
@@ -728,6 +730,33 @@ class _FlowWiring:
 
     # -- injected callables --------------------------------------------------
 
+    def _build_builtin_tool(self, entry: dict[str, Any]) -> Any | None:
+        """Build one built-in tool from its ENTRY, for a node that references it.
+
+        Delegates to the same `build_tools` dispatch a single-prompt agent
+        uses, one entry at a time, so a flow's built-in behaves identically to
+        the agent-level one — including its `CallControl` side effects (DTMF,
+        hang-up, transfer) and its `state` bookkeeping. `flow.py` then wraps
+        the result with the node's routing (`make_routed_builtin_tool`);
+        composing this way is what keeps eight built-ins from needing a
+        flow-aware second implementation.
+        """
+        built = build_tools(
+            [entry],
+            http=self._http,
+            function_secret=self._cfg.function_secret,
+            variables=self._variables,
+            control=self._control,
+            state=self._state,
+            call_info=self._cfg.tool_call_object(),
+            knowledge=self._knowledge,
+            call_id=self._cfg.call_id,
+            knowledge_base_ids=self._flow.knowledge_base_ids,
+        )
+        # `build_tools` skips an unsupported/misconfigured entry with a warning
+        # rather than raising, so an empty list is the expected "no tool" case.
+        return built[0] if built else None
+
     def build_node_tools(self, node: dict[str, Any], edges: list[dict[str, Any]]) -> list[Any]:
         """Assemble *node*'s livekit tools. Which ones is `node_tool_kinds`' call."""
         tools: list[Any] = []
@@ -750,8 +779,18 @@ class _FlowWiring:
                     call_info=self._cfg.tool_call_object(),
                     state=self._state,
                     on_transition=self._transition,
+                    build_builtin=self._build_builtin_tool,
                 )
                 if tool is not None:  # unresolved tool_id: skipped with a warning
+                    tools.append(tool)
+            elif kind == TOOL_PRESS_DIGIT:
+                tool = make_press_digit_node_tool(
+                    node,
+                    build_builtin=self._build_builtin_tool,
+                    variables=self._variables,
+                    on_transition=self._transition,
+                )
+                if tool is not None:
                     tools.append(tool)
             elif kind == TOOL_EXTRACT:
                 tools.append(

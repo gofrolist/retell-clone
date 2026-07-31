@@ -77,6 +77,7 @@ class CreateConversationFlowRequest(CompatModel):
     is_transfer_llm: bool | None = None
     flex_mode: bool | None = None
     is_published: bool | None = None
+    begin_after_user_silence_ms: int | None = None
 
 
 class CreateChatRequest(CompatModel):
@@ -195,6 +196,7 @@ def conversation_flow_to_dict(cf: ConversationFlow) -> dict[str, Any]:
         "is_transfer_llm": cf.is_transfer_llm,
         "flex_mode": cf.flex_mode,
         "is_published": cf.is_published,
+        "begin_after_user_silence_ms": cf.begin_after_user_silence_ms,
         "last_modification_timestamp": cf.last_modification_timestamp,
     }
 

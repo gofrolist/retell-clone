@@ -69,6 +69,7 @@ _COLUMN_BACKFILLS: tuple[tuple[str, str, str], ...] = (
     ("conversation_flows", "is_transfer_llm", "BOOLEAN"),
     ("conversation_flows", "flex_mode", "BOOLEAN"),
     ("conversation_flows", "is_published", "BOOLEAN"),
+    ("conversation_flows", "begin_after_user_silence_ms", "INTEGER"),
     ("calls", "collected_dynamic_variables", "JSON"),
     ("contacts", "timezone", "VARCHAR(64)"),
     ("contacts", "custom_fields", "JSON"),

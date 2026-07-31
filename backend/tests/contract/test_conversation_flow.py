@@ -35,6 +35,69 @@ async def test_create_conversation_flow(client):
     assert body["global_prompt"] == "You are a helpful agent."
 
 
+#: Every optional field of Retell's CreateConversationFlowRequest, with a
+#: value distinguishable from the column default. The fixture round-trip in
+#: `test_conversation_flow_fidelity.py` only proves the fields our three
+#: captures happen to set — `begin_after_user_silence_ms` was in the schema,
+#: in none of the captures, and silently dropped by the API for exactly that
+#: reason (`CompatModel` sets extra="allow", so the POST still returned 201).
+#: This table is the schema-derived complement to that test.
+DOCUMENTED_OPTIONAL_FIELDS: dict = {
+    "global_prompt": "You are a helpful agent.",
+    "flex_mode": True,
+    "tools": [{"type": "end_call", "name": "end_call", "tool_id": "tool_1"}],
+    "components": [{"name": "shared", "nodes": []}],
+    "start_node_id": "start",
+    "default_dynamic_variables": {"plan": "gold"},
+    "begin_tag_display_position": {"x": 12.5, "y": -4},
+    "notes": [
+        {
+            "id": "note_1",
+            "content": "hi",
+            "display_position": {"x": 1, "y": 2},
+            "size": {"width": 100, "height": 50},
+        }
+    ],
+    "mcps": [{"name": "mcp", "url": "https://example.com/mcp"}],
+    "is_transfer_llm": True,
+    "model_temperature": 0.4,
+    "tool_call_strict_mode": True,
+    "knowledge_base_ids": ["kb_1"],
+    "kb_config": {"top_k": 3, "filter_score": 0.6},
+    "begin_after_user_silence_ms": 4000,
+}
+
+
+async def test_every_documented_field_survives_a_round_trip(client):
+    created = await _create_flow(client, **DOCUMENTED_OPTIONAL_FIELDS)
+    got = await client.get(
+        f"/get-conversation-flow/{created['conversation_flow_id']}", headers=AUTH_HEADERS
+    )
+    assert got.status_code == 200
+    body = got.json()
+
+    dropped = sorted(k for k in DOCUMENTED_OPTIONAL_FIELDS if k not in body)
+    assert not dropped, f"fields dropped by the API: {dropped}"
+    altered = {k: (v, body[k]) for k, v in DOCUMENTED_OPTIONAL_FIELDS.items() if body[k] != v}
+    assert not altered, f"fields altered by the API: {altered}"
+
+
+async def test_every_documented_field_is_patchable(client):
+    """A field the serializer returns but PATCH ignores is just as lossy."""
+    flow = await _create_flow(client)
+    resp = await client.patch(
+        f"/update-conversation-flow/{flow['conversation_flow_id']}",
+        headers=AUTH_HEADERS,
+        json=DOCUMENTED_OPTIONAL_FIELDS,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    ignored = {
+        k: (v, body.get(k)) for k, v in DOCUMENTED_OPTIONAL_FIELDS.items() if body.get(k) != v
+    }
+    assert not ignored, f"fields ignored by PATCH: {ignored}"
+
+
 async def test_get_conversation_flow(client):
     flow = await _create_flow(client)
     got = await client.get(
