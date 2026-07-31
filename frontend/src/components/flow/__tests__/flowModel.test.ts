@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   addableEdgeShapes,
+  connectShapeFor,
   danglingEdgeNote,
   diffFlowPatch,
   EDGE_SHAPES,
@@ -751,5 +752,51 @@ describe("parseChoices", () => {
     // keystroke that types it, making a second choice unenterable.
     expect(parseChoices("yes,").join(", ")).not.toBe("yes,");
     expect(parseChoices("yes, ").join(", ")).not.toBe("yes, ");
+  });
+});
+
+describe("connectShapeFor", () => {
+  // The worker reads a node's `edges[]` only for the types that route through
+  // it. `_enter_end` hangs up without consulting any edge, and
+  // `_enter_transfer_call` looks only at its single `edge` fallback — so
+  // writing every dragged wire into `edges[]` produced solid, labelled
+  // connectors the runtime would never follow.
+  test("an end node offers no outgoing edge at all", () => {
+    expect(connectShapeFor("end")).toBeNull();
+  });
+
+  test("a transfer node's outgoing edge is its single `edge` fallback", () => {
+    expect(connectShapeFor("transfer_call")).toBe("edge");
+  });
+
+  test("every other node type routes through edges[]", () => {
+    for (const type of ["conversation", "branch", "function", "extract_dynamic_variables", "subagent"]) {
+      expect(connectShapeFor(type)).toBe("edges");
+    }
+  });
+
+  test("an unknown node type falls back to edges[] rather than going silent", () => {
+    expect(connectShapeFor("something_retell_ships_next")).toBe("edges");
+  });
+
+  test("connecting from a transfer node writes the fallback edge, not an edges[] entry", () => {
+    const flow = {
+      conversation_flow_id: "cf_1",
+      version: 0,
+      start_node_id: "t1",
+      nodes: [
+        { id: "t1", type: "transfer_call" },
+        { id: "n2", type: "conversation" },
+      ],
+    } as unknown as RawConversationFlow;
+    const next = flowReducer(flow, {
+      type: "connect",
+      nodeId: "t1",
+      shape: connectShapeFor("transfer_call")!,
+      destinationNodeId: "n2",
+    });
+    const node = (next.nodes as FlowNode[])[0];
+    expect(node.edges).toBeUndefined();
+    expect((node.edge as FlowEdge).destination_node_id).toBe("n2");
   });
 });

@@ -8,8 +8,14 @@ import Modal from "@/components/ui/Modal";
 import { emptyCondition, type TransitionCondition } from "../flowModel";
 import EquationBuilder from "./EquationBuilder";
 
-/** Does *condition* carry authored content a type switch would throw away? */
-function hasContent(condition: TransitionCondition): boolean {
+/**
+ * Does *condition* carry authored content a type switch would throw away?
+ *
+ * Exported for its own test: it is the guard in front of an irreversible,
+ * fidelity-breaking overwrite, and the module's "no rendering tests" rule
+ * leaves no other seam to check it through.
+ */
+export function hasContent(condition: TransitionCondition): boolean {
   if (condition.type === "equation") {
     const equations = Array.isArray(condition.equations) ? condition.equations : [];
     return equations.some((equation) => {
@@ -20,9 +26,18 @@ function hasContent(condition: TransitionCondition): boolean {
       return leftText.trim() !== "" || rightText.trim() !== "";
     });
   }
-  // Anything that is not (yet) "equation" is treated as the "prompt" side —
-  // matching the fallback `type` derivation below — so its content lives in
-  // `prompt`.
+  if (condition.type !== undefined && condition.type !== "prompt") {
+    // A Retell condition type this editor does not model. The toggle below
+    // renders it as "prompt" (there is nowhere else to put it), but its
+    // content is NOT in `condition.prompt` — so judging it by that field
+    // reported "empty", skipped the confirmation, and let one click replace
+    // the whole object with `emptyCondition(...)`. No undo, and the one place
+    // in the editor that could break the module's fidelity rule. Anything
+    // beyond a bare `type` counts as content worth confirming over.
+    return Object.entries(condition).some(([key, value]) => key !== "type" && value != null);
+  }
+  // "prompt", or a condition with no type at all — the "prompt" side of the
+  // toggle either way, matching the fallback `type` derivation below.
   return typeof condition.prompt === "string" && condition.prompt.trim() !== "";
 }
 

@@ -905,11 +905,17 @@ export const api = {
       .map((a) => uiAgentFromRaw(a, phones));
   },
 
-  /** Voice + chat agents, for the agents list page (the only page showing both). */
+  /**
+   * Voice + chat agents, for the agents list page (the only page showing both).
+   *
+   * The chat-agent half degrades to empty on failure, like the phone-number
+   * lookup in `listAgents` above: an unguarded rejection inside `Promise.all`
+   * blanks the whole page even when `/list-agents` answered perfectly well.
+   */
   listAllAgents: async (): Promise<Agent[]> => {
     const [agents, chatAgents] = await Promise.all([
       api.listAgents(),
-      request<RawChatAgent[]>("/list-chat-agents"),
+      request<RawChatAgent[]>("/list-chat-agents").catch(() => [] as RawChatAgent[]),
     ]);
     return [...agents, ...chatAgents.map(uiAgentFromRawChat)];
   },

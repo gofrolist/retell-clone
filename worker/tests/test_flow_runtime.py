@@ -290,6 +290,43 @@ def test_an_end_node_with_a_prompt_instruction_requests_a_model_turn_before_hang
     assert fakes.ended == ["agent_hangup"]
 
 
+def test_an_end_node_with_no_speak_flag_at_all_still_says_its_line() -> None:
+    """Absent ``speak_during_execution`` is not false -- it is "never toggled".
+
+    Every end/transfer node in the real
+    ``backend/tests/fixtures/retell_flows/identity_verify_transfer.json``
+    export is this shape: a filled-in instruction and no flag. Reading absent
+    as false hung up mid-conversation without a closing word.
+    """
+    flow = {
+        "start_node_id": "n1",
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "end",
+                "instruction": {"type": "prompt", "text": "Politely end the call"},
+            }
+        ],
+    }
+    fakes = Fakes()
+    _run(_runtime(flow, fakes).start())
+
+    assert len(fakes.generate_reply_calls) == 1
+    assert "Politely end the call" in (fakes.generate_reply_calls[0] or "")
+    assert fakes.ended == ["agent_hangup"]
+
+
+def test_an_end_node_with_no_speak_flag_and_no_instruction_stays_silent() -> None:
+    """ "Speak the line you were given" needs a line; nothing to voice is still silence."""
+    flow = {"start_node_id": "n1", "nodes": [{"id": "n1", "type": "end"}]}
+    fakes = Fakes()
+    _run(_runtime(flow, fakes).start())
+
+    assert fakes.said == []
+    assert fakes.generate_reply_calls == []
+    assert fakes.ended == ["agent_hangup"]
+
+
 # ---------------------------------------------------------------------------
 # transfer_call
 # ---------------------------------------------------------------------------
@@ -329,6 +366,28 @@ def test_a_transfer_call_node_transfers_to_a_predefined_number() -> None:
     # Success: the failure edge is not followed.
     assert runtime.current_node_id == "t1"
     assert fakes.said == []
+
+
+def test_a_transfer_node_with_no_speak_flag_warns_the_caller_before_dialing() -> None:
+    """The `identity_verify_transfer.json` shape: an instruction, no flag.
+
+    Reading absent as false cold-transferred the caller with no warning; the
+    line has to be voiced (and, being a ``prompt``, phrased by a model turn)
+    before the leg is handed off.
+    """
+    fakes = Fakes()
+    runtime = _runtime(
+        _transfer_flow(
+            {"type": "predefined", "number": "+15555550101"},
+            instruction={"type": "prompt", "text": "Transferring your call now."},
+        ),
+        fakes,
+    )
+    _run(runtime.start())
+
+    assert len(fakes.generate_reply_calls) == 1
+    assert "Transferring your call now." in (fakes.generate_reply_calls[0] or "")
+    assert fakes.transfers == ["+15555550101"]
 
 
 def test_a_failed_transfer_follows_the_nodes_single_edge() -> None:
@@ -799,9 +858,12 @@ def test_a_skip_response_edge_with_a_prompt_instruction_requests_a_model_turn_be
     _run(runtime.start())
 
     assert runtime.current_node_id == "n2"
-    # No say() for the prompt line -- it was requested as a model turn instead.
+    # No say() for the prompt line -- it was requested as a model turn instead,
+    # carrying n1's OWN instructions rather than "reply from whatever is
+    # installed" (by the time the turn runs, n2's are).
     assert fakes.said == ["Anything else?"]
-    assert fakes.generate_reply_calls == [None]
+    assert len(fakes.generate_reply_calls) == 1
+    assert "Say there is no case on file." in (fakes.generate_reply_calls[0] or "")
 
 
 def test_a_chain_of_skip_response_edges_stops_at_the_automatic_transition_budget(
@@ -1501,7 +1563,14 @@ def test_start_speaker_user_defers_a_prompt_instructions_model_turn_too() -> Non
     _run(runtime.on_user_turn())
     # Released in order: the deferred model turn (n1), then the deferred
     # static line (n2) parked right behind it during the same skip cascade.
-    assert fakes.generate_reply_calls == [None]
+    #
+    # And the parked turn carries n1's instructions EXPLICITLY. This is the
+    # whole reason the deferred case needs its own test: `None` means "reply
+    # from whatever is installed", and by the time the deferral is released
+    # the cascade has installed n2's instructions -- so n1's line ("Say there
+    # is no case on file.") would never be phrased at all.
+    assert len(fakes.generate_reply_calls) == 1
+    assert "Say there is no case on file." in (fakes.generate_reply_calls[0] or "")
     assert fakes.said == ["Anything else?"]
 
 

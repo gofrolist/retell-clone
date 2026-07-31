@@ -9,6 +9,11 @@ import { Handle, Position } from "@xyflow/react";
  * top, a title bar (icon, name, optional START/global pills), a two-line
  * subtitle, and a source handle on the bottom. Fixed width so edges land at
  * predictable points regardless of node type.
+ *
+ * `canConnect` hides that source handle. An `end` node has no outgoing edge
+ * the worker will ever follow (`_enter_end` hangs up), so offering somewhere
+ * to drag from only invites drawing a connector that does nothing — see
+ * `connectShapeFor`.
  */
 export default function NodeShell({
   icon: Icon,
@@ -18,6 +23,7 @@ export default function NodeShell({
   isStart,
   isGlobal,
   selected,
+  canConnect = true,
 }: {
   icon: LucideIcon;
   accent: string;
@@ -26,6 +32,7 @@ export default function NodeShell({
   isStart: boolean;
   isGlobal: boolean;
   selected: boolean;
+  canConnect?: boolean;
 }) {
   return (
     <div
@@ -50,7 +57,7 @@ export default function NodeShell({
           <p className="line-clamp-2 text-[12px] text-sub">{subtitle}</p>
         </div>
       )}
-      <Handle type="source" position={Position.Bottom} className="!bg-faint" />
+      {canConnect && <Handle type="source" position={Position.Bottom} className="!bg-faint" />}
     </div>
   );
 }

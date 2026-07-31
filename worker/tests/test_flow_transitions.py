@@ -10,10 +10,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from arhiteq_worker import flow
 from arhiteq_worker.config import ConversationFlowConfig
 from arhiteq_worker.flow import (
     FlowGraph,
     fallback_edge,
+    node_auto_advances,
     node_instructions,
     prompt_edges,
     select_equation_edge,
@@ -413,3 +415,104 @@ def test_node_instructions_over_every_conversation_node_of_the_real_fixture(
         result = node_instructions(graph.node(node["id"]), graph, variables)
         assert isinstance(result, str)
         assert "{{" not in result
+
+
+# ---------------------------------------------------------------------------
+# A success edge carrying an equation is EVALUATED, not followed on sight.
+# ---------------------------------------------------------------------------
+
+
+def _equation_success_node() -> dict[str, Any]:
+    """A ``function`` node whose only ``edges[]`` entry is equation-conditioned.
+
+    The shape the routing bug lived in: one conditional success edge plus an
+    ``else_edge``. "Exactly one usable success edge" used to make the equation
+    irrelevant -- any non-error result went down it -- so the else branch was
+    unreachable on success and the condition was never read.
+    """
+    return {
+        "id": "fn",
+        "type": "function",
+        "tool_id": "t1",
+        "edges": [
+            {
+                "id": "approved",
+                "transition_condition": _equation_condition(_eq("{{status}}", "==", "approved")),
+                "destination_node_id": "n_ok",
+            }
+        ],
+        "else_edge": {
+            "id": "denied",
+            "transition_condition": _prompt_condition("Anything else"),
+            "destination_node_id": "n_no",
+        },
+    }
+
+
+def test_a_true_equation_success_edge_is_followed() -> None:
+    node = _equation_success_node()
+    edge = flow._select_success_edge(
+        flow._own_success_edges(node), fallback_edge(node), {"status": "approved"}
+    )
+    assert edge is not None and edge["id"] == "approved"
+
+
+def test_a_false_equation_success_edge_falls_through_to_the_else_edge() -> None:
+    node = _equation_success_node()
+    edge = flow._select_success_edge(
+        flow._own_success_edges(node), fallback_edge(node), {"status": "denied"}
+    )
+    assert edge is not None and edge["id"] == "denied"
+
+
+def test_a_node_mixing_an_equation_and_a_prompt_edge_leaves_the_prompt_edge_alone() -> None:
+    """A false equation must not promote the prompt edge into an auto-advance.
+
+    Only the equation is decided here; the prompt edge is still a question for
+    the model, and it is the only non-equation success edge -- which is exactly
+    the "unambiguous, follow it" case, so it IS followed. The assertion that
+    matters is that the equation edge is not.
+    """
+    node = _equation_success_node()
+    node["edges"].append(
+        {
+            "id": "ask",
+            "transition_condition": _prompt_condition("The caller wants details"),
+            "destination_node_id": "n_ok",
+        }
+    )
+    edge = flow._select_success_edge(
+        flow._own_success_edges(node), fallback_edge(node), {"status": "denied"}
+    )
+    assert edge is not None and edge["id"] == "ask"
+
+
+def test_a_node_routed_by_an_equation_still_gets_a_transition_tool() -> None:
+    """`node_auto_advances` is asked before the tool runs, so it cannot know.
+
+    Answering "it routes itself" on the strength of an equation that turns out
+    false would deny the node the ``transition_to`` tool it needs to move on --
+    so equation edges do not count towards auto-advancing.
+    """
+    node = _equation_success_node()
+    node["edges"].append(
+        {
+            "id": "ask_a",
+            "transition_condition": _prompt_condition("Caller wants details"),
+            "destination_node_id": "n_ok",
+        }
+    )
+    node["edges"].append(
+        {
+            "id": "ask_b",
+            "transition_condition": _prompt_condition("Caller wants to leave"),
+            "destination_node_id": "n_no",
+        }
+    )
+    assert node_auto_advances(node) is False
+
+
+def test_a_node_with_only_an_equation_edge_and_an_else_edge_still_auto_advances() -> None:
+    """Both outcomes route (equation true -> its edge, false -> else_edge), so
+    there is nothing for a transition tool to add."""
+    assert node_auto_advances(_equation_success_node()) is True

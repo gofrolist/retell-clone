@@ -384,10 +384,41 @@ class ArhiteqAgent(Agent):
         tools: list[Any],
         begin_message: str | None,
         start_speaker: str,
+        on_user_turn: Callable[[str | None], Awaitable[None]] | None = None,
     ) -> None:
         super().__init__(instructions=instructions, tools=tools)
         self._begin_message = begin_message
         self._start_speaker = start_speaker
+        self._on_user_turn = on_user_turn
+
+    async def on_user_turn_completed(self, turn_ctx: Any, new_message: Any) -> None:
+        """Flow-backed calls: walk the graph BEFORE the reply to this turn is built.
+
+        This hook is the only seam livekit awaits between committing the
+        caller's turn and creating the speech handle that answers it
+        (``AgentActivity._user_turn_completed_task``). The graph walk has to
+        land here, not on ``conversation_item_added``: that event fires from
+        inside the reply task, by which point the reply has already been built
+        from the OLD node's instructions and tool set, so an ``always_edge`` /
+        equation transition took effect a full turn late and raced the reply
+        it was supposed to precede.
+
+        `_wire_session_events` still walks on ``conversation_item_added`` as
+        well, because livekit skips this hook entirely for a realtime model
+        with server-side turn detection (Gemini Live) — see the id-based
+        de-duplication in `_FlowWiring`, which is what stops the two seams
+        from walking the same turn twice on the pipeline path.
+
+        Never raises: livekit treats an exception from this hook as "skip the
+        reply to this turn", which would cost the caller an answer over a bug
+        in the graph walk.
+        """
+        if self._on_user_turn is None:
+            return
+        try:
+            await self._on_user_turn(getattr(new_message, "id", None))
+        except Exception:
+            logger.exception("flow: on_user_turn_completed walk failed")
 
     async def on_enter(self) -> None:
         if self._start_speaker != "agent":
@@ -554,6 +585,10 @@ class _FlowWiring:
         self._runtime: FlowRuntime | None = None
         self._classifier_llm: Any = None
         self._lock = asyncio.Lock()
+        # Last user ChatMessage id `on_user_turn` walked, so `on_user_item`
+        # can tell "livekit already gave us the pre-reply seam for this turn"
+        # from "this is a realtime call that never gets one".
+        self._walked_message_id: str | None = None
 
     # -- what the agent starts with ------------------------------------------
 
@@ -606,23 +641,49 @@ class _FlowWiring:
         async with self._lock:
             await self._runtime.start()
 
-    async def on_user_turn(self) -> None:
+    async def on_user_turn(self, message_id: str | None = None) -> None:
         """A user turn was committed: re-evaluate the node it was committed on.
+
+        Called from `ArhiteqAgent.on_user_turn_completed`, the seam livekit
+        awaits *before* building the reply — so the destination node's
+        instructions and tools are what that reply is generated from. See
+        that hook for why the ordering matters.
 
         The cursor is captured HERE, before the lock — the same guard, and for
         the same reason, as `_transition` captures it before spawning an
-        advance. `_wire_session_events` spawns one of these per committed user
-        item, so a caller who produces two turns while the agent is mid-`say`
-        (holding the lock) queues two: unguarded, the first takes N's
+        advance. A caller who produces two turns while the agent is mid-`say`
+        (holding the lock) queues two walks: unguarded, the first takes N's
         ``always_edge`` to M and the second takes M's straight away, and M is
         entered and left without ever speaking or listening. Both capture N
         here, so the second is recognised as stale and dropped.
         """
+        self._walked_message_id = message_id
         if self._runtime is None:
             return
         from_node_id = self._runtime.current_node_id
         async with self._lock:
             await self._runtime.on_user_turn(from_node_id=from_node_id)
+
+    async def on_user_item(self, message_id: str | None = None) -> None:
+        """`conversation_item_added`'s fallback walk, for turns `on_user_turn` never sees.
+
+        ``AgentActivity._user_turn_completed_task`` returns early — before
+        calling `ArhiteqAgent.on_user_turn_completed` at all — when the LLM is
+        a realtime model doing its own server-side turn detection, which is
+        Gemini Live. Those calls get no pre-reply seam, so the committed-item
+        event stays wired up as the fallback: one turn late, but present
+        rather than absent.
+
+        De-duplicated by message id, not by a "did the other seam run" flag:
+        the id livekit hands this event is the very ChatMessage
+        `on_user_turn_completed` was given, so matching it is exact and
+        order-independent. A turn whose reply is skipped (paused scheduling)
+        never reaches this event at all, and a stale id simply fails to match
+        the next one rather than silently swallowing a later walk.
+        """
+        if message_id is not None and message_id == self._walked_message_id:
+            return
+        await self.on_user_turn(message_id)
 
     async def _advance(self, edge: dict[str, Any], *, from_node_id: str | None = None) -> None:
         if self._runtime is None:
@@ -907,7 +968,7 @@ def _wire_session_events(
     runtime: CallRuntime,
     amd_speech: list[str],
     amd_window_open: dict[str, bool],
-    on_user_turn: Callable[[], Awaitable[None]] | None = None,
+    on_user_turn: Callable[[str | None], Awaitable[None]] | None = None,
 ) -> None:
     last_llm_ttft: dict[str, float] = {}
 
@@ -955,10 +1016,15 @@ def _wire_session_events(
         elif role == "user":
             state.add_message("user", text)
             if on_user_turn is not None:
-                # Flow-backed calls only: the caller's turn is committed, so
-                # the current node re-evaluates its equation / always edges.
-                # None on the single-prompt path — there is no graph to walk.
-                _spawn(on_user_turn())
+                # Flow-backed calls only, and only as the FALLBACK seam: this
+                # event fires from inside the reply task, so the walk it drives
+                # lands a turn late. `ArhiteqAgent.on_user_turn_completed` is
+                # the pre-reply seam and normally walks first; the id passed
+                # here is what lets `_FlowWiring.on_user_item` recognise that
+                # and skip. It only does the walk itself on a realtime call
+                # with server-side turn detection, which livekit never gives
+                # that hook. None on the single-prompt path — no graph to walk.
+                _spawn(on_user_turn(getattr(item, "id", None)))
 
     @session.on("user_input_transcribed")
     def _on_transcribed(ev: Any) -> None:
@@ -1219,7 +1285,7 @@ async def entrypoint(ctx: JobContext) -> None:
         runtime,
         amd_speech,
         amd_window_open,
-        on_user_turn=flow_wiring.on_user_turn if flow_wiring is not None else None,
+        on_user_turn=flow_wiring.on_user_item if flow_wiring is not None else None,
     )
 
     agent = ArhiteqAgent(
@@ -1230,6 +1296,9 @@ async def entrypoint(ctx: JobContext) -> None:
         # it, and honours a "user" start_speaker by deferring it), so the agent
         # itself must not also open — "user" is what keeps on_enter quiet.
         start_speaker="user" if flow_wiring is not None else cfg.llm.start_speaker,
+        # The pre-reply walk seam; `_wire_session_events` above holds the
+        # realtime fallback. Both go through `_FlowWiring`, which de-duplicates.
+        on_user_turn=flow_wiring.on_user_turn if flow_wiring is not None else None,
     )
     if flow_wiring is not None:
         flow_wiring.attach(session, agent)

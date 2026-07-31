@@ -123,7 +123,7 @@ export default function AgentsTable({
 
   const exportAgent = (agent: Agent) =>
     withDetail(agent, "export", async ({ agent: raw, llm }) => {
-      downloadAgentJson(raw, llm);
+      await downloadAgentJson(raw, llm);
     });
 
   const convertToChat = (agent: Agent) =>

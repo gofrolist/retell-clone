@@ -1,5 +1,7 @@
 """Flow graph parsing, indexing and validation (no livekit stack)."""
 
+import logging
+
 import pytest
 
 from arhiteq_worker.config import ConversationFlowConfig
@@ -194,3 +196,72 @@ def test_every_real_fixture_loads(request) -> None:
     for name in ("prior_auth_hotline.json", "clara_outbound.json", "identity_verify_transfer.json"):
         graph = _graph(load_retell_flow_fixture(name))
         assert graph.start is not None
+
+
+# ---------------------------------------------------------------------------
+# Reachability: a node nothing points at is a silent dead feature.
+# ---------------------------------------------------------------------------
+
+
+def test_a_node_nothing_points_at_is_reported(caplog) -> None:
+    with caplog.at_level(logging.WARNING):
+        _graph(
+            {
+                "start_node_id": "a",
+                "nodes": [
+                    {"id": "a", "type": "conversation"},
+                    {"id": "orphan", "type": "end"},
+                ],
+            }
+        )
+    assert "unreachable" in caplog.text
+    assert "orphan" in caplog.text
+
+
+def test_a_wired_up_graph_reports_nothing(caplog) -> None:
+    with caplog.at_level(logging.WARNING):
+        _graph(
+            {
+                "start_node_id": "a",
+                "nodes": [
+                    {
+                        "id": "a",
+                        "type": "conversation",
+                        "always_edge": {"id": "e1", "destination_node_id": "b"},
+                    },
+                    {"id": "b", "type": "end"},
+                ],
+            }
+        )
+    assert "unreachable" not in caplog.text
+
+
+def test_a_global_node_counts_as_reachable_without_an_authored_edge(caplog) -> None:
+    """`prompt_edges` synthesizes an edge into a global node from every node,
+    so it is reachable by construction even with nothing pointing at it."""
+    with caplog.at_level(logging.WARNING):
+        _graph(
+            {
+                "start_node_id": "a",
+                "nodes": [
+                    {"id": "a", "type": "conversation"},
+                    {
+                        "id": "escalate",
+                        "type": "end",
+                        "global_node_setting": {"condition": "caller asks for a human"},
+                    },
+                ],
+            }
+        )
+    assert "unreachable" not in caplog.text
+
+
+def test_the_clara_fixture_is_reported_as_mostly_unreachable(caplog) -> None:
+    """The real export that motivated the check: its start node's only edge is
+    an ``always_edge`` with no destination, so all six function nodes are dead
+    and the call parks on the welcome node with no tools."""
+    from conftest import load_retell_flow_fixture
+
+    with caplog.at_level(logging.WARNING):
+        _graph(load_retell_flow_fixture("clara_outbound.json"))
+    assert "10 of 11 nodes are unreachable" in caplog.text

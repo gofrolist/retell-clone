@@ -265,6 +265,32 @@ const LLM_IMPORT_FIELDS = [
   "mcps",
 ] as const;
 
+/**
+ * Mirrors `_MUTABLE_FIELDS` in the backend's `api/conversation_flows.py` —
+ * everything `create-conversation-flow` accepts, minus `is_published`, which
+ * describes the source flow's release history and not the imported copy's.
+ */
+const CONVERSATION_FLOW_IMPORT_FIELDS = [
+  "global_prompt",
+  "nodes",
+  "start_node_id",
+  "start_speaker",
+  "model_choice",
+  "model_temperature",
+  "tools",
+  "default_dynamic_variables",
+  "components",
+  "notes",
+  "kb_config",
+  "knowledge_base_ids",
+  "mcps",
+  "begin_tag_display_position",
+  "tool_call_strict_mode",
+  "is_transfer_cf",
+  "is_transfer_llm",
+  "flex_mode",
+] as const;
+
 function pick(
   src: Record<string, unknown>,
   fields: readonly string[],
@@ -360,14 +386,37 @@ export default function AgentsPage() {
         root.llm_data ??
         root.retell_llm ??
         root.llm; // Arhiteq's own Export writes { agent, llm }
+      // Arhiteq's own Export inlines the graph of a flow-backed agent under
+      // `conversation_flow`; Retell's export names one Retell-side key.
+      const embeddedFlow = root.conversation_flow ?? root.conversationFlowData;
       let responseEngine = rawAgent.response_engine as
-        | { type?: string; llm_id?: string }
+        | { type?: string; llm_id?: string; conversation_flow_id?: string }
         | undefined;
       if (typeof embeddedLlm === "object" && embeddedLlm !== null) {
         const llm = await api.createLlm(
           pick(embeddedLlm as Record<string, unknown>, LLM_IMPORT_FIELDS),
         );
         responseEngine = { type: "retell-llm", llm_id: llm.llm_id };
+      } else if (typeof embeddedFlow === "object" && embeddedFlow !== null) {
+        // Recreate the graph in THIS workspace and point at the copy. The id
+        // in the file names a row that exists only in the workspace the export
+        // came from: reusing it 404s on create-agent's flow check there, and
+        // aliases the source agent's live graph here.
+        const flow = await api.createConversationFlow(
+          pick(embeddedFlow as Record<string, unknown>, CONVERSATION_FLOW_IMPORT_FIELDS),
+        );
+        responseEngine = {
+          type: "conversation-flow",
+          conversation_flow_id: flow.conversation_flow_id,
+        };
+      } else if (responseEngine?.type === "conversation-flow") {
+        // A flow-backed agent whose graph is not in the file (an export taken
+        // before the graph was inlined). Say so, rather than let create-agent
+        // answer with a bare "Conversation flow not found".
+        throw new Error(
+          "This export names a conversation flow but does not contain it. " +
+            "Re-export the agent to include its flow, then import again.",
+        );
       } else if (!responseEngine?.type) {
         const llm = await api.createLlm({});
         responseEngine = { type: "retell-llm", llm_id: llm.llm_id };

@@ -24,7 +24,9 @@ import type { Edge as RFEdge, Node as RFNode, NodeChange } from "@xyflow/react";
 import { MarkerType } from "@xyflow/react";
 import {
   iterNodeEdges,
+  noteIndexFor,
   summarizeCondition,
+  syntheticNoteId,
   type EdgeShape,
   type FlowAction,
   type FlowEdge,
@@ -83,8 +85,10 @@ export function edgeAddress(rfEdgeId: string): { nodeId: string; shape: EdgeShap
 // ---------------------------------------------------------------------------
 
 function isNoteId(flow: RawConversationFlow, id: string): boolean {
-  const notes = Array.isArray(flow.notes) ? (flow.notes as Record<string, unknown>[]) : [];
-  return notes.some((note) => note.id === id);
+  // Delegated to `flowModel`'s resolver so this routing and the note actions
+  // it routes to agree on exactly which ids are notes — including the
+  // synthetic positional id `toReactFlow` mints for a note with no `id`.
+  return noteIndexFor(flow, id) !== -1;
 }
 
 /**
@@ -322,7 +326,7 @@ export function toReactFlow(flow: RawConversationFlow): { nodes: RFNode[]; edges
   const rawNotes = Array.isArray(flow.notes) ? (flow.notes as Record<string, unknown>[]) : [];
   const noteNodes: RFNode[] = rawNotes.map((note, index) => {
     const { width, height } = noteSize(note);
-    const id = typeof note.id === "string" ? note.id : `note-${index}`;
+    const id = typeof note.id === "string" ? note.id : syntheticNoteId(index);
     return {
       id,
       type: "note",
