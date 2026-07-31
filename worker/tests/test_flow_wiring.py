@@ -16,6 +16,7 @@ from arhiteq_worker.flow import (
     TOOL_EXTRACT,
     TOOL_FUNCTION,
     TOOL_KB_LOOKUP,
+    TOOL_PRESS_DIGIT,
     TOOL_TRANSITION,
     FlowGraph,
     classifier_prompt,
@@ -140,6 +141,49 @@ def test_extract_node_with_several_edges_gets_a_transition_tool() -> None:
         TOOL_TRANSITION,
         TOOL_EXTRACT,
     ]
+
+
+def test_press_digit_node_installs_its_own_tool() -> None:
+    """A `press_digit` node's tool is what actually keys the DTMF.
+
+    One usable success edge, so like a single-edge function node it routes
+    itself and gets no transition tool beside it.
+    """
+    node = {
+        "id": "n1",
+        "type": "press_digit",
+        "instruction": {"type": "prompt", "text": "Press 2 for the pharmacy line."},
+        "edges": [_prompt_edge("e1", "Menu reached")],
+    }
+    edges = prompt_edges(node, [])
+    assert node_tool_kinds(node, edges, knowledge_base_ids=[]) == [TOOL_PRESS_DIGIT]
+
+
+def test_press_digit_node_with_several_edges_also_gets_a_transition_tool() -> None:
+    # Same rule as the function/extract nodes: with more than one usable
+    # success edge the model has to choose, so it needs a way to say so.
+    node = {
+        "id": "n1",
+        "type": "press_digit",
+        "instruction": {"type": "prompt", "text": "Navigate the menu."},
+        "edges": [_prompt_edge("e1", "Agent reached"), _prompt_edge("e2", "Voicemail", "n3")],
+    }
+    edges = prompt_edges(node, [])
+    assert node_tool_kinds(node, edges, knowledge_base_ids=[]) == [
+        TOOL_TRANSITION,
+        TOOL_PRESS_DIGIT,
+    ]
+
+
+def test_press_digit_nodes_are_not_given_a_competing_kb_tool() -> None:
+    node = {
+        "id": "n1",
+        "type": "press_digit",
+        "instruction": {"type": "prompt", "text": "Press 1."},
+        "edges": [_prompt_edge("e1", "Done")],
+    }
+    kinds = node_tool_kinds(node, prompt_edges(node, []), knowledge_base_ids=["kb_1"])
+    assert TOOL_KB_LOOKUP not in kinds
 
 
 def test_conversation_node_gets_only_a_transition_tool(prior_auth_flow) -> None:

@@ -921,3 +921,313 @@ def test_function_node_equation_edge_that_is_false_takes_the_else_edge() -> None
     else branch unreachable on success."""
     calls = _run_equation_node({"memberId": "M-404"})
     assert [edge["id"] for edge in calls] == ["failure"]
+
+
+# ---------------------------------------------------------------------------
+# Built-in tools on a function node, and the press_digit node
+#
+# A built-in (`tools.build_tools`' dispatch — Cal.com, SMS, DTMF, end_call, …)
+# carries no `url`, so `make_function_node_tool` used to install NOTHING for a
+# function node wired to one: it warned once at entry and the action simply
+# never happened. These cover the composition that fixes it —
+# `make_routed_builtin_tool` wraps the real built-in and adds the node's edge
+# routing — plus the `press_digit` NODE, which is that same wrapper over the
+# built-in DTMF tool with the node's `delay_ms`.
+# ---------------------------------------------------------------------------
+
+
+class _FakeControl:
+    """The `CallControl` slice the built-ins under test actually touch."""
+
+    def __init__(self) -> None:
+        self.pressed: list[str] = []
+        self.ended: list[str] = []
+
+    async def press_digit(self, digits: str) -> None:
+        self.pressed.append(digits)
+
+    async def end_call(self, reason: str = "agent_hangup") -> None:
+        self.ended.append(reason)
+
+    async def transfer_call(self, number: str) -> str:
+        return json.dumps({"result": f"transferred to {number}"})
+
+    async def agent_swap(self, agent_id: str, entry) -> str:
+        return json.dumps({"result": f"swapped to {agent_id}"})
+
+
+def _builtin_builder(control, *, state, variables):
+    """The `build_builtin` seam, wired to the real `tools.build_tools`."""
+    from arhiteq_worker.tools import build_tools
+
+    def build(entry: dict):
+        built = build_tools(
+            [entry],
+            http=_client(lambda request: httpx.Response(200, json={})),
+            function_secret="s",
+            variables=variables,
+            control=control,
+            state=state,
+            call_info=None,
+        )
+        return built[0] if built else None
+
+    return build
+
+
+def _press_digit_node(**extra) -> dict:
+    node = {
+        "id": "dial",
+        "type": "press_digit",
+        "instruction": {"type": "prompt", "text": "Press 2 for the pharmacy line."},
+        "edges": [
+            {
+                "id": "reached",
+                "transition_condition": _prompt_condition("Menu reached"),
+                "destination_node_id": "n_next",
+            }
+        ],
+    }
+    node.update(extra)
+    return node
+
+
+def test_press_digit_node_tool_presses_and_advances() -> None:
+    control = _FakeControl()
+    state = CallState(call_id="call_1")
+    variables: dict = {}
+    calls: list[dict] = []
+
+    async def on_transition(edge: dict) -> None:
+        calls.append(edge)
+
+    node = _press_digit_node(delay_ms=0)
+    tool = flow_module.make_press_digit_node_tool(
+        node,
+        build_builtin=_builtin_builder(control, state=state, variables=variables),
+        variables=variables,
+        on_transition=on_transition,
+    )
+    assert tool is not None
+    fnc = getattr(tool, "_fnc", None) or getattr(tool, "fnc", tool)
+    _run(fnc({"digit": "2"}, _FakeContext()))
+
+    assert control.pressed == ["2"]
+    assert calls == [node["edges"][0]]
+
+
+def test_press_digit_node_tool_resolves_type_hints_and_keeps_the_builtin_schema() -> None:
+    """The wrapper must re-expose the INNER tool's schema, not invent one:
+    livekit resolves `RunContext` on the handler at call time, and the model
+    has to see the same `digit` argument the built-in handler reads."""
+    control = _FakeControl()
+    state = CallState(call_id="call_1")
+    tool = flow_module.make_press_digit_node_tool(
+        _press_digit_node(),
+        build_builtin=_builtin_builder(control, state=state, variables={}),
+        variables={},
+        on_transition=lambda edge: asyncio.sleep(0),
+    )
+    assert _hints(tool).get("context") is RunContext
+    assert tool.info.name == "press_digit"
+    schema = getattr(tool, "__livekit_raw_tool_info").raw_schema
+    assert "digit" in schema["parameters"]["properties"]
+
+
+def test_press_digit_node_honours_the_nodes_delay_ms() -> None:
+    """`delay_ms` is the node's field, and it must reach the built-in — an
+    IVR menu is still talking when the node is entered, so keying in
+    immediately hits the wrong option."""
+    control = _FakeControl()
+    state = CallState(call_id="call_1")
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    async def on_transition(edge: dict) -> None:
+        # Deliberately NOT `asyncio.sleep(0)`: the patch below lands on the
+        # shared `asyncio` module, so a sleeping transition would record a
+        # second entry and the assertion would be measuring the test itself.
+        return None
+
+    tool = flow_module.make_press_digit_node_tool(
+        _press_digit_node(delay_ms=2500),
+        build_builtin=_builtin_builder(control, state=state, variables={}),
+        variables={},
+        on_transition=on_transition,
+    )
+    fnc = getattr(tool, "_fnc", None) or getattr(tool, "fnc", tool)
+    import arhiteq_worker.tools as tools_module
+
+    original = tools_module.asyncio.sleep
+    tools_module.asyncio.sleep = fake_sleep
+    try:
+        _run(fnc({"digit": "2"}, _FakeContext()))
+    finally:
+        tools_module.asyncio.sleep = original
+    assert slept == [2.5]
+
+
+def test_press_digit_node_invalid_digit_takes_the_failure_edge() -> None:
+    """The built-in rejects a non-DTMF digit with an `{"error": ...}` result,
+    which is exactly the shape the node's routing calls a failure."""
+    control = _FakeControl()
+    state = CallState(call_id="call_1")
+    calls: list[dict] = []
+
+    async def on_transition(edge: dict) -> None:
+        calls.append(edge)
+
+    node = _press_digit_node(
+        delay_ms=0,
+        else_edge={
+            "id": "failed",
+            "transition_condition": _prompt_condition("Else"),
+            "destination_node_id": "n_failed",
+        },
+    )
+    tool = flow_module.make_press_digit_node_tool(
+        node,
+        build_builtin=_builtin_builder(control, state=state, variables={}),
+        variables={},
+        on_transition=on_transition,
+    )
+    fnc = getattr(tool, "_fnc", None) or getattr(tool, "fnc", tool)
+    _run(fnc({"digit": "X"}, _FakeContext()))
+
+    assert control.pressed == []
+    assert [edge["id"] for edge in calls] == ["failed"]
+
+
+_BUILTIN_FLOW_TOOLS = [
+    {
+        "tool_id": "tool-dtmf",
+        "type": "press_digit",
+        "name": "press_digit",
+        "delay_ms": 0,
+    },
+    {
+        "tool_id": "tool-hangup",
+        "type": "end_call",
+        "name": "end_call",
+    },
+    {
+        "tool_id": "tool-mystery",
+        "type": "some_future_builtin",
+        "name": "mystery",
+    },
+]
+
+
+def test_function_node_runs_a_builtin_tool_and_advances() -> None:
+    """The regression: this node used to install no tool at all, so the DTMF
+    was never keyed and the node sat there holding the previous node's tools."""
+    control = _FakeControl()
+    state = CallState(call_id="call_1")
+    variables: dict = {}
+    calls: list[dict] = []
+
+    async def on_transition(edge: dict) -> None:
+        calls.append(edge)
+
+    node = _function_node(tool_id="tool-dtmf")
+    tool = make_function_node_tool(
+        node,
+        _BUILTIN_FLOW_TOOLS,
+        http=_client(lambda request: httpx.Response(200, json={})),
+        function_secret="s",
+        variables=variables,
+        call_info=None,
+        state=state,
+        on_transition=on_transition,
+        build_builtin=_builtin_builder(control, state=state, variables=variables),
+    )
+    assert tool is not None
+    fnc = getattr(tool, "_fnc", None) or getattr(tool, "fnc", tool)
+    _run(fnc({"digit": "5"}, _FakeContext()))
+
+    assert control.pressed == ["5"]
+    assert calls == [node["edges"][0]]
+
+
+def test_function_node_builtin_speaks_the_nodes_execution_filler() -> None:
+    """`speak_during_execution` is the NODE's field, so it has to work on the
+    built-in path too — only `tools._make_http_tool` reads the tool-entry
+    equivalent, so there is no double-speak to avoid."""
+    control = _FakeControl()
+    state = CallState(call_id="call_1")
+    context = _FakeContext()
+
+    tool = make_function_node_tool(
+        _function_node(tool_id="tool-dtmf", speak_during_execution=True),
+        _BUILTIN_FLOW_TOOLS,
+        http=_client(lambda request: httpx.Response(200, json={})),
+        function_secret="s",
+        variables={},
+        call_info=None,
+        state=state,
+        on_transition=lambda edge: asyncio.sleep(0),
+        build_builtin=_builtin_builder(control, state=state, variables={}),
+    )
+    fnc = getattr(tool, "_fnc", None) or getattr(tool, "fnc", tool)
+    _run(fnc({"digit": "1"}, context))
+    assert context.session.said == ["One moment, let me check that."]
+
+
+def test_function_node_builtin_records_the_call_on_state() -> None:
+    """The wrapper delegates to the real built-in, so `state` bookkeeping is
+    the built-in's own — nothing is re-implemented for the flow path."""
+    control = _FakeControl()
+    state = CallState(call_id="call_1")
+
+    tool = make_function_node_tool(
+        _function_node(tool_id="tool-hangup"),
+        _BUILTIN_FLOW_TOOLS,
+        http=_client(lambda request: httpx.Response(200, json={})),
+        function_secret="s",
+        variables={},
+        call_info=None,
+        state=state,
+        on_transition=lambda edge: asyncio.sleep(0),
+        build_builtin=_builtin_builder(control, state=state, variables={}),
+    )
+    assert tool is not None
+    assert tool.info.name == "end_call"
+
+
+def test_function_node_unknown_tool_type_is_still_skipped(caplog) -> None:
+    """An entry that is neither a URL tool nor a known built-in must keep the
+    old skip-with-a-warning behaviour rather than crashing the node entry."""
+    control = _FakeControl()
+    state = CallState(call_id="call_1")
+    with caplog.at_level(logging.WARNING):
+        tool = make_function_node_tool(
+            _function_node(tool_id="tool-mystery"),
+            _BUILTIN_FLOW_TOOLS,
+            http=_client(lambda request: httpx.Response(200, json={})),
+            function_secret="s",
+            variables={},
+            call_info=None,
+            state=state,
+            on_transition=lambda edge: asyncio.sleep(0),
+            build_builtin=_builtin_builder(control, state=state, variables={}),
+        )
+    assert tool is None
+    assert "not a supported built-in" in caplog.text
+
+
+def test_function_node_builtin_without_the_seam_is_skipped_not_crashed() -> None:
+    """`build_builtin` is optional (every call site predating it omits it), so
+    a built-in entry with no builder must degrade, not raise."""
+    tool = make_function_node_tool(
+        _function_node(tool_id="tool-dtmf"),
+        _BUILTIN_FLOW_TOOLS,
+        http=_client(lambda request: httpx.Response(200, json={})),
+        function_secret="s",
+        variables={},
+        call_info=None,
+        state=CallState(call_id="call_1"),
+        on_transition=lambda edge: asyncio.sleep(0),
+    )
+    assert tool is None

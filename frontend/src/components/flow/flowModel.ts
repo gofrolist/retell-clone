@@ -18,11 +18,12 @@
  * `worker/src/arhiteq_worker/flow.py`'s `_SINGLE_EDGE_FIELDS` /
  * `iter_node_edges` exactly: this editor's output has to be a graph that
  * worker can load without raising `FlowError`, and `NODE_TYPES` is the same
- * seven types as its `SUPPORTED_NODE_TYPES` — an eighth type in the palette
+ * eight types as its `SUPPORTED_NODE_TYPES` — a ninth type in the palette
  * would produce a graph the worker rejects at call start.
  */
 
 import type { RawConversationFlow } from "@/lib/api";
+import { DEFAULT_FLOW_MODEL } from "@/lib/models";
 
 // ---------------------------------------------------------------------------
 // Types — every one open (`& Record<string, unknown>`) so an unknown key
@@ -77,8 +78,8 @@ const SINGLE_EDGE_SHAPES: readonly EdgeShape[] = EDGE_SHAPES.filter(
 );
 
 /**
- * The seven node types the worker knows how to execute
- * (`SUPPORTED_NODE_TYPES` in `flow.py`), in palette display order. An eighth
+ * The eight node types the worker knows how to execute
+ * (`SUPPORTED_NODE_TYPES` in `flow.py`), in palette display order. A ninth
  * type must never be offered here: the worker rejects a graph containing one
  * at call start.
  */
@@ -89,6 +90,7 @@ export const NODE_TYPES: readonly string[] = [
   "extract_dynamic_variables",
   "transfer_call",
   "subagent",
+  "press_digit",
   "end",
 ];
 
@@ -111,23 +113,44 @@ export function connectShapeFor(nodeType: string): EdgeShape | null {
 }
 
 /**
- * Every `equation` comparison operator the worker actually implements
- * (`worker/src/arhiteq_worker/flow.py`'s `_EQUALITY_OPERATORS` |
- * `_NUMERIC_OPERATORS` | `_CONTAINMENT_OPERATORS`, plus the unary `exists`).
- * An operator offered here that the worker does not recognize produces an
- * edge whose condition silently evaluates to `False` forever
- * (`_evaluate_single_equation`'s "unrecognized operator" fallthrough) — this
- * list must never drift ahead of that module's.
+ * Every `equation` comparison operator, spelled the way the wire format
+ * spells it: this is verbatim the `Equation.operator` enum from Retell's
+ * create-conversation-flow schema, so a flow authored here is byte-compatible
+ * with one exported from Retell.
+ *
+ * It is also exactly what the worker implements
+ * (`worker/src/arhiteq_worker/flow.py`'s `_NUMERIC_COMPARISONS` |
+ * `_EQUALITY_OPERATORS` | `_CONTAINMENT_OPERATORS` | `_UNARY_OPERATORS`), and
+ * must never drift ahead of it: an operator offered here that the worker does
+ * not recognize produces an edge whose condition silently evaluates to `False`
+ * forever (`_evaluate_single_equation`'s "unrecognized operator"
+ * fallthrough).
+ *
+ * This list used to read `CONTAINS` / `NOT CONTAINS` — the *display* syntax
+ * from Retell's prose docs, not the wire format — so the editor emitted
+ * operators a real Retell flow never carries. The worker still accepts that
+ * spelling for anything already authored (`_OPERATOR_SYNONYMS`), but nothing
+ * new should be written in it.
  */
 export const EQUATION_OPERATORS: readonly string[] = [
   "==",
   "!=",
   ">",
+  ">=",
   "<",
-  "CONTAINS",
-  "NOT CONTAINS",
+  "<=",
+  "contains",
+  "not_contains",
   "exists",
+  "not_exist",
 ];
+
+/**
+ * The operators that test their left operand's presence and ignore `right`
+ * entirely (`_UNARY_OPERATORS` in `flow.py`). The editor hides the `right`
+ * input for these — showing one the worker never reads misleads the author.
+ */
+export const UNARY_EQUATION_OPERATORS: readonly string[] = ["exists", "not_exist"];
 
 /**
  * A fresh `transition_condition` of *type*, in the shape the worker parses.
@@ -203,6 +226,7 @@ const ADDABLE_SHAPES_BY_NODE_TYPE: Record<string, readonly EdgeShape[]> = {
   branch: ["else_edge"],
   function: ["else_edge", "always_edge", "skip_response_edge"],
   extract_dynamic_variables: ["else_edge", "always_edge", "skip_response_edge"],
+  press_digit: ["else_edge", "always_edge", "skip_response_edge"],
   transfer_call: ["edge"],
   conversation: ["always_edge", "skip_response_edge"],
   subagent: ["always_edge", "skip_response_edge"],
@@ -220,6 +244,7 @@ const ROUTING_NODE_TYPES = new Set([
   "function",
   "extract_dynamic_variables",
   "transfer_call",
+  "press_digit",
 ]);
 
 /** The fallback shapes `flow.py:fallback_edge` consults, in its order. */
@@ -331,7 +356,11 @@ export function summarizeCondition(edge: FlowEdge): string | null {
     return equations
       .map((eq) => {
         const e = (eq ?? {}) as Record<string, unknown>;
-        if (e.operator === "exists") return `${e.left ?? ""} exists`.trim();
+        // A unary operator has no `right` to render — printing one would
+        // append a stray empty operand to the edge label on the canvas.
+        if (typeof e.operator === "string" && UNARY_EQUATION_OPERATORS.includes(e.operator)) {
+          return `${e.left ?? ""} ${e.operator}`.trim();
+        }
         return `${e.left ?? ""} ${e.operator ?? ""} ${e.right ?? ""}`.trim();
       })
       .join(joiner);
@@ -588,7 +617,11 @@ export function seedFlow(): Partial<RawConversationFlow> {
     nodes: [startNode, endNode],
     start_node_id: startId,
     start_speaker: "agent",
-    model_choice: { type: "cascading", model: "gemini-2.5-flash", high_priority: true },
+    // The suggested tier in `lib/models.ts`, not the older 2.5 default this
+    // used to seed: 2.5 is not in Retell's `LLMModel` enum at all (they list
+    // gemini-3.0-flash / 3.1-flash-lite / 3.5-flash), so a flow created here
+    // carried a model id no Retell consumer recognizes.
+    model_choice: { type: "cascading", model: DEFAULT_FLOW_MODEL, high_priority: true },
   };
 }
 
@@ -689,6 +722,11 @@ function defaultsFor(nodeType: string): Record<string, unknown> {
       return { transfer_destination: { type: "predefined", number: "" } };
     case "extract_dynamic_variables":
       return { variables: [], edges: [] };
+    case "press_digit":
+      // A `prompt` instruction, not `static_text`: the node tells the model
+      // WHICH digits to press after listening to the menu — it carries no
+      // literal digits of its own (`make_press_digit_node_tool`).
+      return { instruction: { type: "prompt", text: "" }, edges: [] };
     default:
       return {};
   }
@@ -699,6 +737,7 @@ const NODE_TYPE_LABELS: Record<string, string> = {
   branch: "Branch",
   function: "Function",
   extract_dynamic_variables: "Extract Variables",
+  press_digit: "Press Digit",
   transfer_call: "Transfer Call",
   subagent: "Subagent",
   end: "End",

@@ -3,7 +3,7 @@
  * accent, and a one-line subtitle derived from the node's own content.
  *
  * The spec calls for "one component per type over a shared `NodeShell`", but
- * seven components that differ only in icon/accent/subtitle is duplication,
+ * eight components that differ only in icon/accent/subtitle is duplication,
  * not clarity. This record plus one `FlowNode.tsx` reading it meets the same
  * intent — each type still reads distinctly on the canvas — without the
  * duplication. The per-type split that does earn its keep is the settings
@@ -18,6 +18,7 @@ import {
   Braces,
   Bot,
   CircleStop,
+  Hash,
   type LucideIcon,
 } from "lucide-react";
 import type { FlowNode } from "../flowModel";
@@ -79,6 +80,12 @@ export const NODE_META: Record<string, NodeMeta> = {
       const d = n.transfer_destination as { number?: string; prompt?: string } | undefined;
       return d?.number || d?.prompt || "No destination";
     },
+  },
+  press_digit: {
+    label: "Press digit",
+    icon: Hash,
+    accent: "bg-violet-50 text-violet-900",
+    subtitle: instructionText,
   },
   end: {
     label: "End call",

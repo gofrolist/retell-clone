@@ -109,6 +109,37 @@ def test_unsupported_node_type_is_rejected_at_load() -> None:
         )
 
 
+def test_press_digit_node_loads() -> None:
+    """`press_digit` is executable now, so a flow carrying one must not be
+    rejected at call start the way `mcp` above still is."""
+    graph = _graph(
+        {
+            "start_node_id": "a",
+            "nodes": [
+                {
+                    "id": "a",
+                    "type": "conversation",
+                    "instruction": {"type": "prompt", "text": "hi"},
+                    "edges": [
+                        {
+                            "id": "e1",
+                            "destination_node_id": "dial",
+                            "transition_condition": {"type": "prompt", "prompt": "IVR answered"},
+                        }
+                    ],
+                },
+                {
+                    "id": "dial",
+                    "type": "press_digit",
+                    "instruction": {"type": "prompt", "text": "Press 2 for pharmacy."},
+                    "delay_ms": 1500,
+                },
+            ],
+        }
+    )
+    assert graph.node("dial")["type"] == "press_digit"
+
+
 def test_edge_to_a_missing_node_is_rejected_at_load() -> None:
     with pytest.raises(FlowError, match="ghost"):
         _graph(

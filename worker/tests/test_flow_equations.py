@@ -5,6 +5,14 @@ hand-written from Retell's documented syntax. The per-equation shape
 ({"left", "operator", "right"}) is OUR READING of their OpenAPI schema, which
 pins only `equations` and `operator` — if a real flow ever contradicts it, this
 file and `evaluate_equation_condition` are the two places to change.
+
+The operator NAMES, unlike that shape, are pinned: the `Equation.operator`
+enum in create-conversation-flow is `== != > >= < <= contains not_contains
+exists not_exist`, and that wire spelling is what a real flow carries. The
+prose docs show the editor's display syntax instead (`CONTAINS`, `NOT
+CONTAINS`, `not exists`); this module used to accept ONLY that, so half the
+enum silently evaluated False. Both spellings are tested below — dropping
+either is a regression.
 """
 
 import pytest
@@ -30,14 +38,38 @@ VARS = {"user_age": "21", "user_location": "New York", "empty": ""}
         # Variables arrive as strings; a numeric comparand must still compare numerically.
         (_eq("{{user_age}}", ">", 18), True),
         (_eq("{{user_age}}", "<", 18), False),
+        # `>=` / `<=` are in the API enum but were never implemented, so they
+        # took the "unrecognized operator" branch and were False even when
+        # true. The boundary cases are the ones that distinguish them from
+        # `>` / `<`, so both are asserted at equality.
+        (_eq("{{user_age}}", ">=", 21), True),
+        (_eq("{{user_age}}", ">=", 22), False),
+        (_eq("{{user_age}}", "<=", 21), True),
+        (_eq("{{user_age}}", "<=", 20), False),
         (_eq("{{user_location}}", "==", "New York"), True),
         (_eq("{{user_location}}", "!=", "New York"), False),
-        # Reversed form from the docs: literal list CONTAINS a variable.
+        # Reversed form from the docs: literal list contains a variable. Both
+        # the wire spelling and the docs' display syntax must work.
+        (_eq("New York, Los Angeles", "contains", "{{user_location}}"), True),
+        (_eq("New York, Los Angeles", "not_contains", "{{user_location}}"), False),
+        (_eq("New York, Los Angeles", "not_contains", "Boston"), True),
         (_eq("New York, Los Angeles", "CONTAINS", "{{user_location}}"), True),
         (_eq("New York, Los Angeles", "NOT CONTAINS", "{{user_location}}"), False),
         (_eq("{{user_location}}", "exists", None), True),
-        (_eq("{{empty}}", "exists", None), False),
+        # An empty value is still a DEFINED one: "Empty strings are considered
+        # defined" (/build/dynamic-variables). This asserted False until the
+        # operator fix — a caller who left a field blank took the wrong edge.
+        (_eq("{{empty}}", "exists", None), True),
         (_eq("{{never_set}}", "exists", None), False),
+        # `not_exist` is the exact complement of `exists`, including on empty.
+        (_eq("{{never_set}}", "not_exist", None), True),
+        (_eq("{{empty}}", "not_exist", None), False),
+        (_eq("{{user_location}}", "not_exist", None), False),
+        (_eq("{{never_set}}", "not exists", None), True),
+        # Malformed: nothing to test the presence of, so False for BOTH unary
+        # operators — `not_exist` must not report True for a missing operand.
+        (_eq(None, "exists", None), False),
+        (_eq(None, "not_exist", None), False),
         # A numeric operator against a non-numeric string is False, not an error.
         (_eq("{{user_location}}", ">", 18), False),
         # A missing variable is False for every operator.
@@ -119,11 +151,65 @@ def test_present_variable_whose_value_contains_braces_is_not_missing() -> None:
 
 @pytest.mark.parametrize(
     "operator",
-    ["==", "!=", ">", "<", "CONTAINS", "NOT CONTAINS", "exists"],
+    [
+        "==",
+        "!=",
+        ">",
+        ">=",
+        "<",
+        "<=",
+        "contains",
+        "not_contains",
+        "CONTAINS",
+        "NOT CONTAINS",
+        "exists",
+    ],
 )
 def test_genuinely_missing_variable_is_false_for_every_operator(operator) -> None:
+    """`not_exist` is deliberately absent: it is the one operator a missing
+    variable makes TRUE, which `test_single_equation` covers."""
     equation = _eq("{{never_set}}", operator, "anything" if operator != "exists" else None)
     assert evaluate_equation_condition(_cond(equation), {}) is False
+
+
+#: The `Equation.operator` enum from Retell's create-conversation-flow schema,
+#: paired with operands that make each one TRUE. Every entry must evaluate
+#: True: an operator this module does not recognize returns False from the
+#: "unrecognized operator" fallthrough, so a False here means that operator is
+#: silently dead on every imported flow — the exact bug this table guards.
+DOCUMENTED_OPERATORS = [
+    ("==", "{{user_location}}", "New York"),
+    ("!=", "{{user_location}}", "Boston"),
+    (">", "{{user_age}}", 18),
+    (">=", "{{user_age}}", 21),
+    ("<", "{{user_age}}", 22),
+    ("<=", "{{user_age}}", 21),
+    ("contains", "{{user_location}}", "New"),
+    ("not_contains", "{{user_location}}", "Boston"),
+    ("exists", "{{user_location}}", None),
+    ("not_exist", "{{never_set}}", None),
+]
+
+
+@pytest.mark.parametrize(("operator", "left", "right"), DOCUMENTED_OPERATORS)
+def test_every_documented_operator_is_implemented(operator, left, right) -> None:
+    assert evaluate_equation_condition(_cond(_eq(left, operator, right)), VARS) is True
+
+
+def test_the_enum_is_covered_in_full() -> None:
+    """Guard against the table above quietly losing an operator."""
+    assert {operator for operator, _left, _right in DOCUMENTED_OPERATORS} == {
+        "==",
+        "!=",
+        ">",
+        ">=",
+        "<",
+        "<=",
+        "contains",
+        "not_contains",
+        "exists",
+        "not_exist",
+    }
 
 
 @pytest.mark.parametrize(

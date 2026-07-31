@@ -528,6 +528,11 @@ class ConversationFlow(Base):
     is_transfer_llm: Mapped[bool | None] = mapped_column(Boolean)
     flex_mode: Mapped[bool | None] = mapped_column(Boolean)
     is_published: Mapped[bool | None] = mapped_column(Boolean)
+    # How long to wait for the caller to speak first before the agent opens
+    # anyway. Stored, returned and PATCHable like every other flow field; the
+    # worker does not act on it yet (see docs/API_COVERAGE.md), but dropping
+    # it would corrupt a migrated flow, which is the contract that matters.
+    begin_after_user_silence_ms: Mapped[int | None] = mapped_column(Integer)
     last_modification_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
     created_at_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms, index=True)
 

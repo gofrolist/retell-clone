@@ -97,6 +97,7 @@ SUPPORTED_NODE_TYPES: frozenset[str] = frozenset(
         "transfer_call",
         "end",
         "extract_dynamic_variables",
+        "press_digit",
     }
 )
 
@@ -310,12 +311,64 @@ def start_speaker_for(node: dict[str, Any], default: str) -> str:
     return speaker if speaker in ("agent", "user") else default
 
 
-# Comparison operators documented at
-# https://docs.retellai.com/build/conversation-flow/transitions (equation
-# conditions). ``exists`` is handled separately below since it is unary.
-_NUMERIC_OPERATORS: frozenset[str] = frozenset({">", "<"})
+# Retell spells its comparison operators two different ways, and only one of
+# them ever travels on the wire:
+#
+#   * the ``Equation.operator`` enum in the create-conversation-flow schema —
+#     ``== != > >= < <= contains not_contains exists not_exist`` — which is
+#     what a real flow's JSON carries and what the migration script copies;
+#   * the prose docs (`/build/conversation-flow/transition-condition`), which
+#     render the *editor's display syntax*: ``CONTAINS``, ``NOT CONTAINS``,
+#     ``not exists``.
+#
+# This module used to match the display syntax only, and never implemented
+# ``>=`` / ``<=`` / ``not_exist`` at all — so five of the ten documented
+# operators fell through to the "unrecognized operator" branch below and
+# evaluated False forever, silently misrouting the call to the else/prompt
+# path instead of erroring. Both spellings are accepted now;
+# `_canonical_operator` normalizes to the API enum, which is also what the
+# dashboard editor emits (`frontend/src/components/flow/flowModel.ts`'s
+# `EQUATION_OPERATORS`).
+_NUMERIC_COMPARISONS: dict[str, Callable[[float, float], bool]] = {
+    ">": lambda left, right: left > right,
+    ">=": lambda left, right: left >= right,
+    "<": lambda left, right: left < right,
+    "<=": lambda left, right: left <= right,
+}
+_NUMERIC_OPERATORS: frozenset[str] = frozenset(_NUMERIC_COMPARISONS)
 _EQUALITY_OPERATORS: frozenset[str] = frozenset({"==", "!="})
-_CONTAINMENT_OPERATORS: frozenset[str] = frozenset({"CONTAINS", "NOT CONTAINS"})
+_CONTAINMENT_OPERATORS: frozenset[str] = frozenset({"contains", "not_contains"})
+# Unary: they test the *presence* of ``left`` and ignore ``right`` entirely.
+_UNARY_OPERATORS: frozenset[str] = frozenset({"exists", "not_exist"})
+
+# Display-syntax spellings mapped onto the API enum, keyed by the token
+# lowercased with its internal whitespace collapsed (so "NOT CONTAINS",
+# "Not Contains" and "not  contains" all land on ``not_contains``).
+_OPERATOR_SYNONYMS: dict[str, str] = {
+    "contains": "contains",
+    "not contains": "not_contains",
+    "not_contains": "not_contains",
+    "exists": "exists",
+    "not exist": "not_exist",
+    "not exists": "not_exist",
+    "not_exist": "not_exist",
+    "not_exists": "not_exist",
+}
+
+
+def _canonical_operator(operator: str) -> str:
+    """Normalize one equation operator token to its API-enum spelling.
+
+    Symbolic operators are returned as-is (bar surrounding whitespace); word
+    operators go through `_OPERATOR_SYNONYMS`. An unrecognized token is
+    returned unchanged so the caller still logs it by the name it was
+    authored with.
+    """
+    token = operator.strip()
+    if token in _NUMERIC_OPERATORS or token in _EQUALITY_OPERATORS:
+        return token
+    return _OPERATOR_SYNONYMS.get(" ".join(token.lower().split()), token)
+
 
 # A bare "{{name}}" operand, allowing surrounding whitespace, with nothing
 # else in the operand. Used by `_resolve_operand` to decide when a real
@@ -387,11 +440,24 @@ def _evaluate_single_equation(equation: Any, variables: Mapping[str, Any]) -> bo
         operator = equation.get("operator")
         if not isinstance(operator, str):
             return False
+        operator = _canonical_operator(operator)
         left = equation.get("left")
 
-        if operator == "exists":
-            left_text, missing = _resolve_operand(left, variables)
-            return not missing and left_text != ""
+        if operator in _UNARY_OPERATORS:
+            if left is None:
+                # Malformed: nothing to test the presence of. False for both
+                # spellings rather than letting `not_exist` report True for
+                # every equation that forgot its left operand.
+                return False
+            _left_text, missing = _resolve_operand(left, variables)
+            # PRESENCE alone decides — an empty value still counts as present.
+            # Retell is explicit about this in two places: "returns true if the
+            # variable is defined and has a value, even an empty string"
+            # (/build/conversation-flow/transition-condition) and "Empty
+            # strings are considered defined" (/build/dynamic-variables). We
+            # used to require a non-empty value, so `{{x}} exists` was False
+            # for a variable the caller had legitimately left blank.
+            return missing if operator == "not_exist" else not missing
 
         left_text, left_missing = _resolve_operand(left, variables)
         if left_missing:
@@ -404,7 +470,7 @@ def _evaluate_single_equation(equation: Any, variables: Mapping[str, Any]) -> bo
             left_num, right_num = _as_float(left_text), _as_float(right_text)
             if left_num is None or right_num is None:
                 return False
-            return left_num > right_num if operator == ">" else left_num < right_num
+            return _NUMERIC_COMPARISONS[operator](left_num, right_num)
 
         if operator in _EQUALITY_OPERATORS:
             left_num, right_num = _as_float(left_text), _as_float(right_text)
@@ -417,9 +483,10 @@ def _evaluate_single_equation(equation: Any, variables: Mapping[str, Any]) -> bo
 
         if operator in _CONTAINMENT_OPERATORS:
             # GUESS (like the outer {left,operator,right} shape guess in
-            # `evaluate_equation_condition`'s docstring): Retell does not
-            # specify CONTAINS semantics anywhere we can find. We implement
-            # it as a raw Python substring test. Their only documented
+            # `evaluate_equation_condition`'s docstring): Retell pins the
+            # operator NAME (`contains` / `not_contains`, see
+            # `_canonical_operator`) but not its SEMANTICS. We implement it
+            # as a raw Python substring test. Their only documented
             # example, `"New York, Los Angeles" CONTAINS {{user_location}}`,
             # reads just as naturally as list *membership* against a
             # comma-separated value — and under substring, a fragment of one
@@ -431,7 +498,7 @@ def _evaluate_single_equation(equation: Any, variables: Mapping[str, Any]) -> bo
             # shows membership semantics instead, this is the one place to
             # change.
             contains = right_text in left_text
-            return contains if operator == "CONTAINS" else not contains
+            return contains if operator == "contains" else not contains
 
         # Unrecognized operator: malformed, not exceptional.
         logger.debug("unrecognized equation operator %r", operator)
@@ -886,9 +953,32 @@ TOOL_TRANSITION = "transition_to"
 TOOL_FUNCTION = "function"
 TOOL_EXTRACT = "extract_dynamic_variables"
 TOOL_KB_LOOKUP = "kb_lookup"
+TOOL_PRESS_DIGIT = "press_digit"
 
 # Node types whose own tool routes their result (`_select_success_edge`).
-_ACTION_NODE_TYPES: frozenset[str] = frozenset({"function", "extract_dynamic_variables"})
+_ACTION_NODE_TYPES: frozenset[str] = frozenset(
+    {"function", "extract_dynamic_variables", "press_digit"}
+)
+
+# Tool ``type`` values that carry no ``url`` because the worker implements the
+# action itself (`tools.build_tools`' built-in dispatch). A ``function`` node
+# may reference any of these by ``tool_id``, exactly as it may reference a
+# ``custom`` HTTP tool — Retell's FunctionNode says only "the tool with this
+# id", it does not restrict the tool's type. We used to require a ``url`` and
+# silently install nothing for these, so a function node wired to (say) a
+# Cal.com booking tool warned once at entry and then just didn't book.
+_BUILTIN_TOOL_TYPES: frozenset[str] = frozenset(
+    {
+        "end_call",
+        "transfer_call",
+        "press_digit",
+        "extract_dynamic_variable",
+        "check_availability_cal",
+        "book_appointment_cal",
+        "send_sms",
+        "agent_swap",
+    }
+)
 
 
 def node_auto_advances(node: dict[str, Any]) -> bool:
@@ -948,6 +1038,8 @@ def node_tool_kinds(
         kinds.append(TOOL_FUNCTION)
     elif node_type == "extract_dynamic_variables":
         kinds.append(TOOL_EXTRACT)
+    elif node_type == "press_digit":
+        kinds.append(TOOL_PRESS_DIGIT)
     if knowledge_base_ids and node_type in ("conversation", "subagent"):
         kinds.append(TOOL_KB_LOOKUP)
     return kinds
@@ -1003,6 +1095,129 @@ def make_transition_tool(
     return function_tool(handler, raw_schema=tool_schema)
 
 
+# Builds one livekit tool from a built-in tool ENTRY (the `tools.build_tools`
+# dispatch, which needs `CallControl` and the HTTP client). Injected rather
+# than imported for the reason the module docstring gives: constructing these
+# touches livekit, and this module must stay importable without it.
+BuildBuiltinTool = Callable[[dict[str, Any]], Any | None]
+
+
+def _raw_tool_schema(tool: Any) -> dict[str, Any] | None:
+    """The raw JSON schema a livekit tool was built with, if it has one.
+
+    `tools.build_tools`' built-ins are all constructed as
+    ``function_tool(handler, raw_schema=...)``, which returns a
+    ``RawFunctionTool`` carrying that schema on ``__livekit_raw_tool_info``.
+    Reading it back is what lets `make_routed_builtin_tool` re-expose the
+    built-in's own name/arguments unchanged instead of inventing a second
+    schema that could drift from the handler's expectations.
+    """
+    info = getattr(tool, "__livekit_raw_tool_info", None)
+    schema = getattr(info, "raw_schema", None)
+    return dict(schema) if isinstance(schema, dict) else None
+
+
+def make_routed_builtin_tool(
+    node: dict[str, Any],
+    inner: Any,
+    *,
+    variables: dict[str, Any],
+    on_transition: Callable[[dict[str, Any]], Awaitable[None]],
+    filler: str | None = None,
+) -> Any | None:
+    """Wrap a built-in livekit tool so *node*'s edges are followed after it runs.
+
+    A built-in from `tools.build_tools` performs its action and returns a
+    result string; it knows nothing about the flow graph. A flow node needs
+    the same thing plus "and then take an edge". Rather than reimplement eight
+    built-ins with routing baked in, this composes: the wrapper re-exposes the
+    inner tool's own schema (`_raw_tool_schema`), delegates the call to it,
+    and applies `make_function_node_tool`'s exact routing rule to the result —
+    an error follows `fallback_edge`, a success follows `_select_success_edge`.
+
+    ``filler`` is spoken before the inner tool runs when the node sets
+    ``speak_during_execution``. It lives here rather than in the built-ins
+    because it is a NODE-level field: only `tools._make_http_tool` reads the
+    tool-entry equivalent, so there is no double-speak to avoid.
+
+    Returns ``None`` when *inner* is missing or carries no readable schema —
+    the same "skip with a warning" policy the rest of this module uses for a
+    tool it cannot install.
+    """
+    if inner is None:
+        return None
+    schema = _raw_tool_schema(inner)
+    if schema is None:
+        logger.warning(
+            "node %r: built-in tool has no raw schema to re-expose; skipping",
+            node.get("id"),
+        )
+        return None
+
+    from livekit.agents import RunContext, function_tool
+
+    name = str(schema.get("name") or "tool")
+    success_edges = _own_success_edges(node)
+    failure_edge = fallback_edge(node)
+
+    async def handler(raw_arguments: dict[str, object], context: RunContext) -> str:
+        if filler:
+            try:
+                context.session.say(filler, add_to_chat_ctx=False)
+            except Exception:  # filler speech must never break the tool
+                logger.debug("speak_during_execution failed for %s", name, exc_info=True)
+        # The inner tool already records the invocation/result on `state` and
+        # merges any response variables — it is the same object the model
+        # would have called directly, so nothing is re-implemented here.
+        result = await inner(raw_arguments, context)
+        text = result if isinstance(result, str) else json.dumps({"result": result})
+        edge = (
+            failure_edge
+            if _is_error_result(text)
+            # `variables` read at call time, not closed over at build time: a
+            # response variable the tool just merged is exactly what an
+            # equation edge on this node branches on.
+            else _select_success_edge(success_edges, failure_edge, variables)
+        )
+        if edge is not None:
+            await on_transition(edge)
+        return text
+
+    return function_tool(handler, raw_schema=schema)
+
+
+def make_press_digit_node_tool(
+    node: dict[str, Any],
+    *,
+    build_builtin: BuildBuiltinTool,
+    variables: dict[str, Any],
+    on_transition: Callable[[dict[str, Any]], Awaitable[None]],
+) -> Any | None:
+    """The action tool for a ``press_digit`` node.
+
+    Retell's PressDigitNode carries a ``prompt`` instruction (what to press,
+    e.g. "press 2 for the pharmacy line") and an optional ``delay_ms``, but no
+    literal digits — the model reads the IVR menu and decides. So the node is
+    exactly the built-in ``press_digit`` tool with the node's delay, plus this
+    node's routing: `node_instructions` installs the instruction, the model
+    calls the tool with the digits it heard, and the wrapper takes the edge.
+
+    The synthetic entry is deliberately minimal — ``delay_ms`` is the only
+    field the node contributes; name and description come from the built-in's
+    own defaults so the model sees the same tool it would on a single-prompt
+    agent.
+    """
+    entry: dict[str, Any] = {"type": "press_digit", "name": "press_digit"}
+    delay_ms = node.get("delay_ms")
+    if isinstance(delay_ms, (int, float)) and not isinstance(delay_ms, bool):
+        entry["delay_ms"] = delay_ms
+    inner = build_builtin(entry)
+    if inner is None:
+        logger.warning("press_digit node %r: could not build the built-in tool", node.get("id"))
+        return None
+    return make_routed_builtin_tool(node, inner, variables=variables, on_transition=on_transition)
+
+
 def make_function_node_tool(
     node: dict[str, Any],
     flow_tools: list[dict[str, Any]],
@@ -1013,6 +1228,7 @@ def make_function_node_tool(
     call_info: Mapping[str, Any] | None,
     state: CallState,
     on_transition: Callable[[dict[str, Any]], Awaitable[None]],
+    build_builtin: BuildBuiltinTool | None = None,
 ) -> Any | None:
     """The action tool for a ``function`` node: run its tool, merge variables, advance.
 
@@ -1042,20 +1258,59 @@ def make_function_node_tool(
     result yet to call an error, so only the success side of the rule
     applies.
 
-    Returns ``None`` — nothing to install — if ``tool_id`` does not resolve or
-    the resolved entry has no ``url``, mirroring `tools.build_tools`'s
-    "skip with a warning" policy for an unsupported/misconfigured tool.
+    A resolved entry with no ``url`` but a built-in ``type``
+    (`_BUILTIN_TOOL_TYPES` — Cal.com, SMS, press_digit, end_call, …) is built
+    by *build_builtin* and wrapped with this node's routing via
+    `make_routed_builtin_tool`, so a function node wired to one performs the
+    action instead of silently installing nothing.
+
+    Returns ``None`` — nothing to install — if ``tool_id`` does not resolve, or
+    the resolved entry is neither a URL tool nor a supported built-in,
+    mirroring `tools.build_tools`'s "skip with a warning" policy.
     """
     tool_id = node.get("tool_id")
     entry = next(
         (t for t in flow_tools if isinstance(t, dict) and t.get("tool_id") == tool_id),
         None,
     )
-    if not entry or not entry.get("url"):
+    if not entry:
         logger.warning(
             "function node %r: tool_id %r not found in flow tools", node.get("id"), tool_id
         )
         return None
+
+    # `speak_during_execution` is the NODE's field on both paths, so compute
+    # the filler before the split rather than once per branch.
+    speak_during = bool(node.get("speak_during_execution"))
+    execution_message = entry.get("execution_message_description") or ""
+    # Same filler-selection rule as `tools._make_http_tool` — a function
+    # node's tool entry is the same shape as a customer HTTP tool, so it may
+    # carry the same execution-message fields even though neither real
+    # fixture's entries happen to.
+    filler = (
+        resolve_template(execution_message, variables)
+        if entry.get("execution_message_type") == "static_text" and execution_message
+        else "One moment, let me check that."
+    )
+
+    if not entry.get("url"):
+        tool_type = entry.get("type")
+        if build_builtin is None or tool_type not in _BUILTIN_TOOL_TYPES:
+            logger.warning(
+                "function node %r: tool %r (type=%s) has no url and is not a supported "
+                "built-in; skipping",
+                node.get("id"),
+                tool_id,
+                tool_type,
+            )
+            return None
+        return make_routed_builtin_tool(
+            node,
+            build_builtin(dict(entry)),
+            variables=variables,
+            on_transition=on_transition,
+            filler=filler if speak_during else None,
+        )
 
     from livekit.agents import RunContext, function_tool
 
@@ -1068,17 +1323,6 @@ def make_function_node_tool(
             entry.get("parameters") or {"type": "object", "properties": {}}, variables
         ),
     }
-    speak_during = bool(node.get("speak_during_execution"))
-    execution_message = entry.get("execution_message_description") or ""
-    # Same filler-selection rule as `tools._make_http_tool` — a function
-    # node's tool entry is the same shape as a customer HTTP tool, so it may
-    # carry the same execution-message fields even though neither real
-    # fixture's entries happen to.
-    filler = (
-        resolve_template(execution_message, variables)
-        if entry.get("execution_message_type") == "static_text" and execution_message
-        else "One moment, let me check that."
-    )
     speak_after = entry.get("speak_after_execution")
     wait_for_result = node.get("wait_for_result", True) is not False
     success_edges = _own_success_edges(node)

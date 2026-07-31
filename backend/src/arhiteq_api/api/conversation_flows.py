@@ -31,6 +31,7 @@ _MUTABLE_FIELDS = {
     "is_transfer_llm",
     "flex_mode",
     "is_published",
+    "begin_after_user_silence_ms",
 }
 
 
@@ -76,6 +77,7 @@ async def create_conversation_flow(
         is_transfer_llm=body.is_transfer_llm,
         flex_mode=body.flex_mode,
         is_published=body.is_published,
+        begin_after_user_silence_ms=body.begin_after_user_silence_ms,
     )
     session.add(flow)
     await session.commit()

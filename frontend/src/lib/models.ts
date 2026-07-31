@@ -63,3 +63,8 @@ export const POST_CALL_ANALYSIS_MODELS: LlmModel[] = LLM_MODELS.filter((m) =>
 // Default for the agent-level `post_call_analysis_model` field; the lite
 // model is the cheap/fast tier, which extraction tasks don't need more than.
 export const DEFAULT_POST_CALL_ANALYSIS_MODEL = "gemini-3.1-flash-lite";
+
+// Model seeded into a brand-new conversation flow's `model_choice`
+// (`emptyFlow` in `components/flow/flowModel.ts`). The suggested conversational
+// tier — flows drive live calls, so the lite tier is the wrong default here.
+export const DEFAULT_FLOW_MODEL = "gemini-3.5-flash";
