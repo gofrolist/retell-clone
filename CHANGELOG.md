@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.1](https://github.com/gofrolist/retell-clone/compare/v0.22.0...v0.22.1) (2026-07-31)
+
+
+### Bug Fixes
+
+* **flows:** price agent details off the flow's own model ([#203](https://github.com/gofrolist/retell-clone/issues/203)) ([31c86e6](https://github.com/gofrolist/retell-clone/commit/31c86e638959739617764e4cb667b5f83227e5f2))
+
 ## [0.22.0](https://github.com/gofrolist/retell-clone/compare/v0.21.0...v0.22.0) (2026-07-31)
 
 
