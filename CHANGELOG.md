@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.22.0](https://github.com/gofrolist/retell-clone/compare/v0.21.0...v0.22.0) (2026-07-31)
+
+
+### Features
+
+* **agents:** duplicate, export and convert-to-chat in the row menu ([#191](https://github.com/gofrolist/retell-clone/issues/191)) ([a672775](https://github.com/gofrolist/retell-clone/commit/a672775570c419a2fea0f717509f403c279c1b9a))
+* **flows:** conversation flow editor ([#196](https://github.com/gofrolist/retell-clone/issues/196)) ([8b2f2e6](https://github.com/gofrolist/retell-clone/commit/8b2f2e6b6e019d504fc5872e3bffba794ec30002))
+* **flows:** full-fidelity conversation flow storage ([#194](https://github.com/gofrolist/retell-clone/issues/194)) ([42c9e19](https://github.com/gofrolist/retell-clone/commit/42c9e19c34d3e1fba6f06ad9dbd68affd1555b94))
+* **flows:** press_digit nodes, built-in function tools, operator fixes ([#198](https://github.com/gofrolist/retell-clone/issues/198)) ([f3c0920](https://github.com/gofrolist/retell-clone/commit/f3c09205637be50bc8988d06efa997de2d44af3b))
+* **flows:** Retell-shaped flow editor layout, drag fix, auto layout, undo ([#201](https://github.com/gofrolist/retell-clone/issues/201)) ([3fedc4b](https://github.com/gofrolist/retell-clone/commit/3fedc4bd793ec3791fa5bf93292930cf4f343e4a))
+* **workspaces:** multiple workspaces, switching, and role management ([#193](https://github.com/gofrolist/retell-clone/issues/193)) ([95b016a](https://github.com/gofrolist/retell-clone/commit/95b016a2b04cf689e641160a84e217dd3f96b5fe))
+
+
+### Bug Fixes
+
+* **flows:** correct node speech, edge routing and flow copying ([#197](https://github.com/gofrolist/retell-clone/issues/197)) ([eda8ab3](https://github.com/gofrolist/retell-clone/commit/eda8ab3f5f5d17c71266ef063c095fc80ac56ef1))
+
 ## [0.21.0](https://github.com/gofrolist/retell-clone/compare/v0.20.0...v0.21.0) (2026-07-28)
 
 
