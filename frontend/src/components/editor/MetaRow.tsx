@@ -2,10 +2,10 @@
 
 import CopyId from "@/components/ui/CopyId";
 import HoverCard from "@/components/ui/HoverCard";
-import type { RawLlm } from "@/lib/api";
 import type { ReactNode } from "react";
 import {
   type Estimate,
+  type EstimateInput,
   estimateCost,
   estimateLatency,
   estimateTokens,
@@ -94,12 +94,18 @@ function StackedRow({
 
 export default function MetaRow({
   agentId,
-  llm,
+  input,
   chat = false,
   stacked = false,
 }: {
   agentId: string;
-  llm: RawLlm | null;
+  /**
+   * Normalized engine/prompt config to price. Build it with
+   * `llmEstimateInput` for a single-prompt agent or `flowEstimateInput` for a
+   * conversation-flow agent — a flow keeps its model on the flow document,
+   * not on a Retell LLM.
+   */
+  input: EstimateInput | null;
   /** Chat agent: cost-per-minute and voice latency don't apply to text. */
   chat?: boolean;
   /**
@@ -109,9 +115,9 @@ export default function MetaRow({
    */
   stacked?: boolean;
 }) {
-  const tokens = estimateTokens(llm);
-  const cost = estimateCost(llm, tokens);
-  const latency = estimateLatency(llm);
+  const tokens = estimateTokens(input);
+  const cost = estimateCost(input, tokens);
+  const latency = estimateLatency(input);
   // Sum the rows as displayed (each rounded to $0.001) so the breakdown
   // always adds up to the total shown on screen.
   const costTotal = cost.rows.reduce((s, r) => s + Number(r.max.toFixed(3)), 0);
