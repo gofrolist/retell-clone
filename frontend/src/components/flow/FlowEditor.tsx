@@ -9,15 +9,19 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type DragEvent,
   type Dispatch,
+  type ReactNode,
   type SetStateAction,
 } from "react";
 import {
   Background,
+  BackgroundVariant,
   Controls,
   MiniMap,
+  Panel,
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
@@ -29,6 +33,8 @@ import {
 } from "@xyflow/react";
 import type { RawConversationFlow } from "@/lib/api";
 import { PillTabs } from "@/components/ui/Tabs";
+import { cn } from "@/lib/utils";
+import { LayoutGrid, Redo2, Undo2 } from "lucide-react";
 import {
   edgeAddress,
   edgeRemovalActions,
@@ -37,7 +43,13 @@ import {
   type FlowEdgeData,
 } from "./flowGraph";
 import { useStableGraph } from "./useStableGraph";
-import { connectShapeFor, type FlowAction, type FlowNode as RetellNode } from "./flowModel";
+import { autoLayout } from "./autoLayout";
+import {
+  connectShapeFor,
+  type FlowAction,
+  type FlowNode as RetellNode,
+  type Position,
+} from "./flowModel";
 import NodePalette, { NODE_DRAG_MIME } from "./NodePalette";
 import FlowNode from "./nodes/FlowNode";
 import NoteNode from "./nodes/NoteNode";
@@ -49,10 +61,42 @@ import NodeSettings from "./settings/NodeSettings";
 const nodeTypes: NodeTypes = { flowNode: FlowNode, note: NoteNode };
 const edgeTypes: EdgeTypes = {};
 
+/** Sizes React Flow has measured, by node id — see `Canvas`'s `sizes` state. */
+type Sizes = Record<string, { width: number; height: number }>;
+
 /** The `type` of the flow node *nodeId* names, or `""` if it names none. */
 function nodeTypeOf(flow: RawConversationFlow, nodeId: string): string {
   const nodes = Array.isArray(flow.nodes) ? (flow.nodes as RetellNode[]) : [];
   return nodes.find((node) => node.id === nodeId)?.type ?? "";
+}
+
+function ToolbarButton({
+  icon: Icon,
+  label,
+  onClick,
+  disabled,
+}: {
+  icon: typeof Undo2;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-[12px] font-medium text-ink transition-colors",
+        disabled ? "cursor-not-allowed opacity-40" : "cursor-pointer hover:bg-app",
+      )}
+    >
+      <Icon className="size-4 text-sub" />
+      {label}
+    </button>
+  );
 }
 
 function Canvas({
@@ -63,6 +107,10 @@ function Canvas({
   setSelectedNodeId,
   selectedEdgeId,
   setSelectedEdgeId,
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo,
 }: {
   flow: RawConversationFlow;
   dispatch: (action: FlowAction) => void;
@@ -71,8 +119,38 @@ function Canvas({
   setSelectedNodeId: Dispatch<SetStateAction<string | null>>;
   selectedEdgeId: string | null;
   setSelectedEdgeId: Dispatch<SetStateAction<string | null>>;
+  onUndo: () => void;
+  onRedo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
 }) {
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, fitView } = useReactFlow();
+
+  /**
+   * Where a node is being dragged to *right now*. React Flow is controlled
+   * here (`nodes` is a prop), so it does not move a node itself: it reports
+   * the pointer's position through `onNodesChange` and renders whatever comes
+   * back. Committing every one of those frames through `dispatch` would push
+   * a graph rewrite (and an autosave draft entry) per pixel, so mid-drag
+   * positions live here and only the drag-end position reaches the reducer.
+   * Without this the dragged node stayed nailed to its old spot until the
+   * mouse came up, which is the "the block doesn't move when I drag it" bug.
+   */
+  const [dragPositions, setDragPositions] = useState<Record<string, Position>>({});
+
+  /**
+   * Sizes React Flow measured, fed back into the nodes we hand it.
+   *
+   * React Flow keeps a node's measurements only while the object it adopted is
+   * identity-equal to the one it is given (`adoptUserNodes`); any other object
+   * takes the rebuild branch, which re-reads `measured` from OUR node — and a
+   * node derived fresh from the flow document has none, so the rebuilt node is
+   * dimensionless and `NodeWrapper` renders it `visibility: hidden` until the
+   * ResizeObserver fires again. `useStableGraph` spares every *unchanged* node
+   * that fate, but the node being dragged changes on every frame by
+   * definition: without this it would blink out for the whole drag.
+   */
+  const [sizes, setSizes] = useState<Sizes>({});
 
   // The flow object is the single source of truth: `nodes`/`edges` are always
   // DERIVED from it, never a second source of truth held in local state.
@@ -82,36 +160,42 @@ function Canvas({
   // decide whether it may keep a node's measured size — hence
   // `useStableGraph`, without which the whole graph goes `visibility: hidden`
   // for a frame on every edit.
-  const derived = useMemo(
-    () => {
-      const graph = toReactFlow(flow);
-      return {
-        nodes: graph.nodes.map((node) => ({
+  const derived = useMemo(() => {
+    const graph = toReactFlow(flow);
+    return {
+      nodes: graph.nodes.map((node) => {
+        const dragged = dragPositions[node.id];
+        const measured = sizes[node.id];
+        return {
           ...node,
+          position: dragged ?? node.position,
+          ...(measured ? { measured } : null),
           selected: node.id === selectedNodeId,
-        })),
-        edges: graph.edges.map((edge) => {
-          const selected = edge.id === selectedEdgeId;
-          return {
-            ...edge,
-            selected,
-            label: (edge.data as FlowEdgeData | undefined)?.label,
-            // React Flow marks a selected edge with a CSS class, but every
-            // edge here carries an inline `stroke` that outranks it. Widen
-            // the stroke instead of recolouring it: the five shapes already
-            // use colour to mean five different things, and width is the one
-            // channel still free (and legible without colour vision).
-            style: selected ? { ...edge.style, strokeWidth: 3 } : edge.style,
-          };
-        }),
-      };
-    },
-    [flow, selectedNodeId, selectedEdgeId],
-  );
+        };
+      }),
+      edges: graph.edges.map((edge) => {
+        const selected = edge.id === selectedEdgeId;
+        return {
+          ...edge,
+          selected,
+          label: (edge.data as FlowEdgeData | undefined)?.label,
+          // React Flow marks a selected edge with a CSS class, but every
+          // edge here carries an inline `stroke` that outranks it. Widen
+          // the stroke instead of recolouring it: the five shapes already
+          // use colour to mean five different things, and width is the one
+          // channel still free (and legible without colour vision).
+          style: selected ? { ...edge.style, strokeWidth: 3 } : edge.style,
+        };
+      }),
+    };
+  }, [flow, selectedNodeId, selectedEdgeId, dragPositions, sizes]);
   const { nodes, edges } = useStableGraph(derived);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
+      const moves: Record<string, Position> = {};
+      const settled: string[] = [];
+
       for (const change of changes) {
         if (change.type === "select") {
           if (change.selected) {
@@ -121,7 +205,25 @@ function Canvas({
           }
           continue;
         }
+        if (change.type === "dimensions" && change.dimensions) {
+          const { width, height } = change.dimensions;
+          setSizes((current) => {
+            const known = current[change.id];
+            if (known && known.width === width && known.height === height) return current;
+            return { ...current, [change.id]: { width, height } };
+          });
+          continue;
+        }
         if (readOnly) continue;
+        if (change.type === "position") {
+          // Mid-drag: hold it locally (see `dragPositions`). Drag-end still
+          // falls through to `nodeChangeAction`, which is what commits it.
+          if (change.dragging && change.position) {
+            moves[change.id] = change.position;
+            continue;
+          }
+          if (change.dragging === false) settled.push(change.id);
+        }
         // `nodeChangeAction` tells a note id from a graph node id and
         // dispatches the right action family (`moveNode`/`deleteNode` vs.
         // `patchNote`/`deleteNote`); it also filters out changes that must
@@ -132,6 +234,21 @@ function Canvas({
         if (change.type === "remove") {
           setSelectedNodeId((current) => (current === change.id ? null : current));
         }
+      }
+
+      if (Object.keys(moves).length > 0) {
+        setDragPositions((current) => ({ ...current, ...moves }));
+      }
+      // Dropped: the reducer now owns this position, so the local override has
+      // to go — leaving it would pin the node here and silently outrank every
+      // later `display_position` the document gets (an undo, say).
+      if (settled.length > 0) {
+        setDragPositions((current) => {
+          if (!settled.some((id) => id in current)) return current;
+          const next = { ...current };
+          for (const id of settled) delete next[id];
+          return next;
+        });
       }
     },
     [dispatch, flow, readOnly, setSelectedNodeId],
@@ -160,7 +277,9 @@ function Canvas({
       // Batched, and positional: the order these are applied in decides which
       // edges survive. See `edgeRemovalActions`.
       for (const action of edgeRemovalActions(removed)) dispatch(action);
-      setSelectedEdgeId((current) => (current !== null && removed.includes(current) ? null : current));
+      setSelectedEdgeId((current) =>
+        current !== null && removed.includes(current) ? null : current,
+      );
     },
     [dispatch, readOnly, setSelectedEdgeId],
   );
@@ -191,7 +310,10 @@ function Canvas({
       if (readOnly) return;
       const nodeType = event.dataTransfer.getData(NODE_DRAG_MIME);
       if (!nodeType) return;
-      const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      const position = screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
+      });
       dispatch({ type: "addNode", nodeType, position });
     },
     [dispatch, readOnly, screenToFlowPosition],
@@ -206,8 +328,59 @@ function Canvas({
     [readOnly],
   );
 
+  // The graph has just moved wholesale, so frame it — but not from the click
+  // handler: `fitView` reads React Flow's store, which is only updated once
+  // the moved `flow` has come back down as a prop and been adopted. Fitting
+  // inline (even one `requestAnimationFrame` later) framed the OLD positions
+  // and left the freshly laid-out graph half off-screen.
+  const [fitPending, setFitPending] = useState(false);
+  useEffect(() => {
+    if (!fitPending) return;
+    // The flag is cleared inside the frame, not before it: clearing it here
+    // re-runs this effect (its own dependency changed), whose cleanup then
+    // cancels the frame it just scheduled — so the fit never happened.
+    let cancelled = false;
+    // Two frames, not one: the first gets us past this commit, the second past
+    // React Flow's own store update (`adoptUserNodes` runs from its effects,
+    // and `fitView` reads the node lookup that produces). Fitting after a
+    // single frame framed the PREVIOUS positions — verified in the browser.
+    let inner = 0;
+    const frame = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => {
+        if (!cancelled) {
+          // Graph nodes only. Notes keep their authored spot (auto layout does
+          // not move an author's annotations), and a real flow has one parked
+          // thousands of pixels off to the side — fitting to it would zoom the
+          // freshly tidied graph down to a smear.
+          void fitView({
+            duration: 300,
+            padding: 0.2,
+            minZoom: 0.05,
+            nodes: (Array.isArray(flow.nodes) ? (flow.nodes as RetellNode[]) : []).map((node) => ({
+              id: node.id,
+            })),
+          });
+        }
+        setFitPending(false);
+      });
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+      cancelAnimationFrame(inner);
+    };
+  }, [fitPending, fitView, flow, nodes]);
+
+  const runAutoLayout = useCallback(() => {
+    if (readOnly) return;
+    const positions = autoLayout(flow);
+    if (Object.keys(positions).length === 0) return;
+    dispatch({ type: "moveNodes", positions });
+    setFitPending(true);
+  }, [dispatch, flow, readOnly]);
+
   return (
-    <div className="h-full min-w-0 flex-1" onDrop={onDrop} onDragOver={onDragOver}>
+    <div className="h-full min-w-0 flex-1 bg-app" onDrop={onDrop} onDragOver={onDragOver}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -220,22 +393,72 @@ function Canvas({
         nodesConnectable={!readOnly}
         elementsSelectable
         deleteKeyCode={readOnly ? null : ["Backspace", "Delete"]}
+        // A real flow is thousands of pixels wide once laid out; React Flow's
+        // default floor of 0.5 leaves "fit view" unable to actually fit it.
+        minZoom={0.05}
         fitView
       >
-        <Background />
+        <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
         <Controls />
         <MiniMap pannable zoomable />
+        <Panel position="top-right">
+          <div className="flex items-center gap-0.5 rounded-lg border border-line bg-card p-1 shadow-sm">
+            <ToolbarButton
+              icon={Undo2}
+              label="Undo"
+              onClick={onUndo}
+              disabled={readOnly || !canUndo}
+            />
+            <ToolbarButton
+              icon={Redo2}
+              label="Redo"
+              onClick={onRedo}
+              disabled={readOnly || !canRedo}
+            />
+            <span className="mx-0.5 h-5 w-px bg-line" aria-hidden />
+            <ToolbarButton
+              icon={LayoutGrid}
+              label="Auto layout"
+              onClick={runAutoLayout}
+              disabled={readOnly}
+            />
+          </div>
+        </Panel>
       </ReactFlow>
     </div>
   );
 }
 
+/** Actions whose repeats collapse into one undo step while they keep coming. */
+function coalesceKey(action: FlowAction): string {
+  switch (action.type) {
+    case "patchFlow":
+      return `patchFlow:${Object.keys(action.patch).join(",")}`;
+    case "patchNode":
+      return `patchNode:${action.nodeId}:${Object.keys(action.patch).join(",")}`;
+    case "patchNote":
+      return `patchNote:${action.noteId}:${Object.keys(action.patch).join(",")}`;
+    case "patchEdge":
+      return `patchEdge:${action.nodeId}:${action.shape}:${action.index}:${Object.keys(action.patch).join(",")}`;
+    default:
+      // Structural edits (add/delete/connect/move) each get their own step.
+      return "";
+  }
+}
+
+/** How long a run of same-target edits keeps folding into one undo step. */
+const COALESCE_MS = 600;
+/** Snapshots kept. Deep documents, so this is a memory bound, not a UX one. */
+const HISTORY_LIMIT = 50;
+
 /**
  * The three-pane conversation-flow canvas: node palette (left) · React Flow
- * canvas (center) · settings pane (right, `<NodeSettings>`). `FlowEditor`
- * owns only selection state (`selectedNodeId`) — every graph mutation goes
- * out through `dispatch`, and `nodes`/`edges` are always derived from `flow`
- * (see `Canvas` above), never held as a second source of truth.
+ * canvas (center) · settings pane (right: `<GlobalSettings>` and whatever the
+ * page hangs off it, or `<NodeSettings>` for the selection). `FlowEditor`
+ * owns only editor-local state — selection, undo history, in-flight drags —
+ * and every graph mutation goes out through `dispatch`, with `nodes`/`edges`
+ * always derived from `flow` (see `Canvas` above), never held as a second
+ * source of truth.
  *
  * `canvasEpoch` is a remount key for the canvas only, and the caller must
  * increment it ONLY on a bulk graph replacement — the whole graph swapped out
@@ -271,15 +494,115 @@ export default function FlowEditor({
   dispatch,
   readOnly,
   canvasEpoch,
+  agentDetails,
+  globalHeader,
+  globalSections,
 }: {
   flow: RawConversationFlow;
   dispatch: (action: FlowAction) => void;
   readOnly: boolean;
   canvasEpoch: number;
+  /** Cost/latency/token card, pinned under the node rail. */
+  agentDetails?: ReactNode;
+  /** Agent-level controls (voice, language) above the flow's own settings. */
+  globalHeader?: ReactNode;
+  /** Agent-level accordions (functions, knowledge base, …) below them. */
+  globalSections?: ReactNode;
 }) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
-  const [rightTab, setRightTab] = useState<"node" | "global">("node");
+  const [rightTab, setRightTab] = useState<"node" | "global">("global");
+
+  /**
+   * Undo/redo over whole-document snapshots rather than inverse actions: the
+   * reducer's actions are not invertible on their own (a `deleteNode` also
+   * drops every edge pointing at it), and a flow is small enough that keeping
+   * the documents is cheaper than getting inversion right. Snapshots are safe
+   * to hold by reference because `flowReducer` clones before it mutates.
+   */
+  const [history, setHistory] = useState<{
+    past: RawConversationFlow[];
+    future: RawConversationFlow[];
+  }>({ past: [], future: [] });
+
+  // What the last recorded action was, for folding a run of keystrokes in one
+  // field into a single undo step. Only ever touched from event handlers.
+  const coalesceRef = useRef<{ key: string; at: number }>({ key: "", at: 0 });
+
+  /**
+   * `dispatch`, plus a snapshot of the document as it was before the action.
+   * Everything the editor's own UI dispatches goes through this; undo and redo
+   * dispatch straight through `dispatch` so they don't record themselves.
+   */
+  const record = useCallback(
+    (action: FlowAction) => {
+      const key = coalesceKey(action);
+      const now = Date.now();
+      const previous = coalesceRef.current;
+      const fold = key !== "" && key === previous.key && now - previous.at < COALESCE_MS;
+      coalesceRef.current = { key, at: now };
+      if (!fold) {
+        setHistory((h) => ({
+          past: [...h.past, flow].slice(-HISTORY_LIMIT),
+          future: [],
+        }));
+      } else {
+        // Still a new edit — anything redone from here on would be stale.
+        setHistory((h) => (h.future.length === 0 ? h : { ...h, future: [] }));
+      }
+      dispatch(action);
+    },
+    [dispatch, flow],
+  );
+
+  const undo = useCallback(() => {
+    if (readOnly) return;
+    const previous = history.past.at(-1);
+    if (!previous) return;
+    setHistory({
+      past: history.past.slice(0, -1),
+      future: [flow, ...history.future],
+    });
+    coalesceRef.current = { key: "", at: 0 };
+    dispatch({ type: "setFlow", flow: previous });
+  }, [dispatch, flow, history, readOnly]);
+
+  const redo = useCallback(() => {
+    if (readOnly) return;
+    const next = history.future[0];
+    if (!next) return;
+    setHistory({
+      past: [...history.past, flow],
+      future: history.future.slice(1),
+    });
+    coalesceRef.current = { key: "", at: 0 };
+    dispatch({ type: "setFlow", flow: next });
+  }, [dispatch, flow, history, readOnly]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey)) return;
+      const key = event.key.toLowerCase();
+      const isUndo = key === "z" && !event.shiftKey;
+      const isRedo = (key === "z" && event.shiftKey) || key === "y";
+      if (!isUndo && !isRedo) return;
+      // A text field has its own undo stack, and taking ⌘Z away from a user
+      // mid-sentence to revert a graph edit they can't see is worse than not
+      // having the shortcut at all.
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
+      ) {
+        return;
+      }
+      event.preventDefault();
+      if (isRedo) redo();
+      else undo();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [redo, undo]);
 
   // React Flow's selection is single-entity across kinds: selecting an edge
   // deselects every node (`addSelectedEdges` fires `triggerNodeChanges` with
@@ -299,46 +622,62 @@ export default function FlowEditor({
   }, [settingsNodeId]);
 
   // A selection made in one version's graph shouldn't linger, half-relevant,
-  // after a bulk replacement swaps the whole graph out from under it. Keyed
-  // off the same epoch as the remount, and for the same reason: anything that
-  // clears the selection unmounts whatever field the user is typing into, so
-  // it must never fire on an ordinary edit.
+  // after a bulk replacement swaps the whole graph out from under it, and an
+  // undo stack from the version just left would restore that version's graph
+  // onto this one. Keyed off the same epoch as the remount, and for the same
+  // reason: anything that clears the selection unmounts whatever field the
+  // user is typing into, so it must never fire on an ordinary edit.
   useEffect(() => {
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
+    setHistory({ past: [], future: [] });
+    coalesceRef.current = { key: "", at: 0 };
   }, [canvasEpoch]);
 
   return (
     <ReactFlowProvider>
       <div className="flex h-full min-h-0 w-full">
-        <NodePalette dispatch={dispatch} readOnly={readOnly} />
+        <NodePalette
+          flow={flow}
+          dispatch={record}
+          readOnly={readOnly}
+          agentDetails={agentDetails}
+        />
         <Canvas
           key={canvasEpoch}
           flow={flow}
-          dispatch={dispatch}
+          dispatch={record}
           readOnly={readOnly}
           selectedNodeId={selectedNodeId}
           setSelectedNodeId={setSelectedNodeId}
           selectedEdgeId={selectedEdgeId}
           setSelectedEdgeId={setSelectedEdgeId}
+          onUndo={undo}
+          onRedo={redo}
+          canUndo={history.past.length > 0}
+          canRedo={history.future.length > 0}
         />
-        <div className="flex h-full w-[320px] shrink-0 flex-col overflow-y-auto border-l border-line bg-card">
+        <div className="flex h-full w-[380px] shrink-0 flex-col overflow-y-auto border-l border-line bg-card">
           <div className="sticky top-0 z-10 shrink-0 border-b border-line bg-card p-2">
             <PillTabs
               tabs={[
-                { key: "node", label: "Node" },
                 { key: "global", label: "Global Settings" },
+                { key: "node", label: "Node Settings" },
               ]}
               active={rightTab}
               onChange={(k) => setRightTab(k === "global" ? "global" : "node")}
             />
           </div>
           {rightTab === "global" ? (
-            <GlobalSettings flow={flow} dispatch={dispatch} readOnly={readOnly} />
+            <>
+              {globalHeader}
+              <GlobalSettings flow={flow} dispatch={record} readOnly={readOnly} />
+              {globalSections}
+            </>
           ) : (
             <NodeSettings
               flow={flow}
-              dispatch={dispatch}
+              dispatch={record}
               selectedNodeId={settingsNodeId}
               readOnly={readOnly}
             />

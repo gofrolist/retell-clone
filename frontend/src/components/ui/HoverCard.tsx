@@ -21,10 +21,20 @@ export default function HoverCard({
   trigger,
   children,
   className,
+  placement = "bottom",
 }: {
   trigger: ReactNode;
   children: ReactNode;
   className?: string;
+  /**
+   * Which side of the trigger the panel opens on. "top" is for triggers that
+   * sit near the bottom of the viewport (the flow editor's agent-details card
+   * is pinned there), where a downward panel would open off-screen. It is a
+   * prop rather than a measurement because the panel's height is only known
+   * after it renders, and `-translate-y-full` gets the same result with no
+   * measure/reposition round trip.
+   */
+  placement?: "bottom" | "top";
 }) {
   const panelId = useId();
   const anchorRef = useRef<HTMLSpanElement>(null);
@@ -37,7 +47,10 @@ export default function HoverCard({
       Math.max(rect.left + rect.width / 2 - PANEL_WIDTH / 2, VIEWPORT_MARGIN),
       window.innerWidth - PANEL_WIDTH - VIEWPORT_MARGIN,
     );
-    setPos({ top: rect.bottom + PANEL_GAP, left });
+    setPos({
+      top: placement === "top" ? rect.top - PANEL_GAP : rect.bottom + PANEL_GAP,
+      left,
+    });
   };
   const close = () => setPos(null);
 
@@ -63,6 +76,7 @@ export default function HoverCard({
             style={{ top: pos.top, left: pos.left }}
             className={cn(
               "pointer-events-none fixed z-50 w-72 rounded-xl border border-line bg-card p-2 shadow-lg",
+              placement === "top" && "-translate-y-full",
               className,
             )}
           >

@@ -637,6 +637,8 @@ export type FlowAction =
   | { type: "patchNode"; nodeId: string; patch: Record<string, unknown> }
   | { type: "addNode"; nodeType: string; position: Position }
   | { type: "moveNode"; nodeId: string; position: Position }
+  /** One history step for a whole-graph reposition (auto layout). */
+  | { type: "moveNodes"; positions: Record<string, Position> }
   | { type: "deleteNode"; nodeId: string }
   | { type: "connect"; nodeId: string; shape: EdgeShape; destinationNodeId: string }
   | {
@@ -650,7 +652,15 @@ export type FlowAction =
   | { type: "setStartNode"; nodeId: string }
   | { type: "addNote"; position: Position; content?: string }
   | { type: "patchNote"; noteId: string; patch: Record<string, unknown> }
-  | { type: "deleteNote"; noteId: string };
+  | { type: "deleteNote"; noteId: string }
+  /**
+   * Replace the whole document with *flow*. Undo/redo only (`FlowEditor`
+   * restores a snapshot it took before an earlier action) — no UI control
+   * dispatches this, and nothing else should: it is the one action whose
+   * payload is not a description of a change, so it cannot be replayed onto a
+   * document other than the one the snapshot came from.
+   */
+  | { type: "setFlow"; flow: RawConversationFlow };
 
 function assertNever(action: never): never {
   throw new Error(`unhandled flow action: ${JSON.stringify(action)}`);
@@ -777,6 +787,17 @@ export function flowReducer(flow: RawConversationFlow, action: FlowAction): RawC
       return next;
     }
 
+    case "moveNodes": {
+      // Unlike `moveNode`, an id with no node behind it is skipped rather than
+      // throwing: the positions come from a layout pass over a snapshot of the
+      // graph, and a node deleted between the two must not fail the whole move.
+      for (const node of nodesOf(next)) {
+        const position = action.positions[node.id];
+        if (position) node.display_position = position;
+      }
+      return next;
+    }
+
     case "deleteNode": {
       const { nodeId } = action;
       next.nodes = nodesOf(next).filter((n) => n.id !== nodeId);
@@ -871,6 +892,22 @@ export function flowReducer(flow: RawConversationFlow, action: FlowAction): RawC
       const index = noteIndexFor(next, action.noteId);
       if (index !== -1) next.notes = notesOf(next).filter((_, i) => i !== index);
       return next;
+    }
+
+    case "setFlow": {
+      // Cloned, not aliased: the caller's snapshot stays on an undo stack that
+      // may restore it again, so the editor must never get a handle a later
+      // action could mutate.
+      const restored = structuredClone(action.flow) as Record<string, unknown>;
+      // A snapshot taken before the current state can LACK a top-level key the
+      // document has grown since (`notes`, first written by `addNote`, is the
+      // one that actually happens). `diffFlowPatch` walks the keys of the
+      // result, so a key that merely vanishes here never reaches the PATCH and
+      // the edit being undone would quietly survive on the server. Null it.
+      for (const key of Object.keys(next)) {
+        if (!(key in restored)) restored[key] = null;
+      }
+      return restored as RawConversationFlow;
     }
 
     default:

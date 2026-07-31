@@ -5,10 +5,14 @@ import { Globe, type LucideIcon } from "lucide-react";
 import { Handle, Position } from "@xyflow/react";
 
 /**
- * Presentational shell every node type renders through: a target handle on
- * top, a title bar (icon, name, optional START/global pills), a two-line
- * subtitle, and a source handle on the bottom. Fixed width so edges land at
+ * Presentational shell every node type renders through: a target handle on the
+ * left, a title bar (icon, name, optional START/global pills), a two-line
+ * subtitle, and a source handle on the right. Fixed width so edges land at
  * predictable points regardless of node type.
+ *
+ * Left/right rather than top/bottom because the graph is laid out left to
+ * right (see `autoLayout`) — vertical handles made every connector leave the
+ * bottom of a card and loop back up into the top of the card beside it.
  *
  * `canConnect` hides that source handle. An `end` node has no outgoing edge
  * the worker will ever follow (`_enter_end` hangs up), so offering somewhere
@@ -41,7 +45,7 @@ export default function NodeShell({
         selected && "ring-1 ring-ink",
       )}
     >
-      <Handle type="target" position={Position.Top} className="!bg-faint" />
+      <Handle type="target" position={Position.Left} className="!size-2.5 !border-2 !border-card !bg-faint" />
       <div className={cn("flex items-center gap-2 rounded-t-lg px-3 py-2", accent)}>
         <Icon className="size-3.5 shrink-0" />
         <span className="grow truncate text-[13px] font-medium">{title}</span>
@@ -57,7 +61,13 @@ export default function NodeShell({
           <p className="line-clamp-2 text-[12px] text-sub">{subtitle}</p>
         </div>
       )}
-      {canConnect && <Handle type="source" position={Position.Bottom} className="!bg-faint" />}
+      {canConnect && (
+        <Handle
+          type="source"
+          position={Position.Right}
+          className="!size-2.5 !border-2 !border-card !bg-accent"
+        />
+      )}
     </div>
   );
 }
