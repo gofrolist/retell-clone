@@ -20,17 +20,35 @@ export interface LlmModel {
   // Cosmetic "Suggested" pill in the model picker (LlmModelSelect) — our
   // recommended default tiers. No wire/runtime effect.
   suggested?: boolean;
+  // Caveat shown in the picker while the option is highlighted. For models
+  // whose selection doesn't mean quite what the label implies (a preview build
+  // our deployment can't serve yet), so the gap is visible at pick time.
+  note?: string;
 }
 
-// Stable (non-preview) conversational Gemini models,
-// per https://ai.google.dev/gemini-api/docs/models (2026-07-12).
+// Selectable Gemini models, per https://ai.google.dev/gemini-api/docs/models.
+// The pipeline tier is stable-only; the Live tier includes a preview build,
+// which the Live API has not yet graduated out of (2026-07-31).
 export const LLM_MODELS = [
   { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", provider: "google", suggested: true },
   { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite", provider: "google", suggested: true },
   { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", provider: "google" },
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", provider: "google" },
   { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite", provider: "google" },
-  // Gemini Live API (Vertex, native audio) — realtime speech-to-speech.
+  // Gemini Live API — realtime speech-to-speech (audio in, audio out). The 3.1
+  // preview is our recommended tier but is Gemini-API-only: Vertex, which our
+  // deployments use, has no version of it, so the worker serves every Live
+  // session with whatever `ARHITEQ_GEMINI_LIVE_MODEL` names until that changes
+  // (see `_build_realtime_model`, worker/src/arhiteq_worker/main.py). Hence the
+  // `note` below — picking it selects "Gemini Live", not this exact build.
+  {
+    id: "gemini-3.1-flash-live-preview",
+    label: "Gemini 3.1 Flash Live (Preview)",
+    provider: "google",
+    live: true,
+    suggested: true,
+    note: "Preview: Google serves this build on the Gemini API only, so calls run the Live model this deployment is configured with until it reaches Vertex.",
+  },
   {
     id: "gemini-live-2.5-flash-native-audio",
     label: "Gemini 2.5 Flash Live (Native Audio)",
