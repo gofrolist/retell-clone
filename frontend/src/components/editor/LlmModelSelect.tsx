@@ -62,6 +62,7 @@ export default function LlmModelSelect({
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
+  const noteId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -78,6 +79,10 @@ export default function LlmModelSelect({
   // instead of pretending the first catalog model is selected.
   const selected = value ? options.find((m) => m.id === value) : undefined;
   const selectedLive = isLiveModel(value);
+  // Caveat for whichever option the pointer/keyboard is on. Opening the picker
+  // sets `active` to the current value, so the note for an already-chosen model
+  // is one click away rather than only visible before it was picked.
+  const activeNote = options[active]?.note;
 
   // Return focus to the trigger whenever the popover closes via keyboard or a
   // pick, so a keyboard user doesn't get dropped back to <body>.
@@ -168,53 +173,61 @@ export default function LlmModelSelect({
 
       {open && (
         <div
-          role="listbox"
-          aria-label="Language model"
           onKeyDown={onListKeyDown}
           className="absolute left-0 top-full z-50 mt-1.5 min-w-[300px] overflow-hidden rounded-xl border border-line bg-white p-1 shadow-lg shadow-black/5"
         >
           <div className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium uppercase tracking-wide text-faint">
             Versatile and highly intelligent
           </div>
-          {options.map((m, i) => {
-            const isSelected = m.id === value;
-            const live = m.live ?? isLiveModel(m.id);
-            return (
-              <button
-                key={m.id}
-                type="button"
-                role="option"
-                aria-selected={isSelected}
-                tabIndex={-1}
-                ref={(el) => {
-                  optionRefs.current[i] = el;
-                }}
-                onClick={() => pick(m.id)}
-                onMouseEnter={() => setActive(i)}
-                className={cn(
-                  "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] outline-none transition-colors",
-                  isSelected ? "bg-accent/10" : active === i ? "bg-app" : "bg-transparent",
-                )}
-              >
-                {live ? (
-                  <Radio className="size-4 shrink-0 text-purple-600" />
-                ) : (
-                  <GeminiMark className="size-4 shrink-0" />
-                )}
-                <span className={cn("font-medium", isSelected ? "text-accent-deep" : "text-ink")}>
-                  {m.label}
-                </span>
-                {m.suggested && <Pill>Suggested</Pill>}
-                {live && <Pill tone="live">Live</Pill>}
-                <span className="ml-auto pl-2 text-[12px] tabular-nums text-faint">
-                  {formatUsdPerMin(llmDisplayCostPerMin(m.id))}
-                </span>
-              </button>
-            );
-          })}
-          {options[active]?.note && (
-            <p className="mx-1 mb-1 mt-1.5 rounded-lg bg-app px-2.5 py-2 text-[11px] leading-snug text-sub">
-              {options[active].note}
+          {/* Only options live inside the listbox: a listbox's children must
+              all be `option`s, and assistive tech drops anything else — which
+              is how the caveat note below would go unannounced. It reaches the
+              highlighted option through aria-describedby instead. */}
+          <div role="listbox" aria-label="Language model">
+            {options.map((m, i) => {
+              const isSelected = m.id === value;
+              const live = m.live ?? isLiveModel(m.id);
+              return (
+                <button
+                  key={m.id}
+                  type="button"
+                  role="option"
+                  aria-selected={isSelected}
+                  aria-describedby={m.note && active === i ? noteId : undefined}
+                  tabIndex={-1}
+                  ref={(el) => {
+                    optionRefs.current[i] = el;
+                  }}
+                  onClick={() => pick(m.id)}
+                  onMouseEnter={() => setActive(i)}
+                  className={cn(
+                    "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] outline-none transition-colors",
+                    isSelected ? "bg-accent/10" : active === i ? "bg-app" : "bg-transparent",
+                  )}
+                >
+                  {live ? (
+                    <Radio className="size-4 shrink-0 text-purple-600" />
+                  ) : (
+                    <GeminiMark className="size-4 shrink-0" />
+                  )}
+                  <span className={cn("font-medium", isSelected ? "text-accent-deep" : "text-ink")}>
+                    {m.label}
+                  </span>
+                  {m.suggested && <Pill>Suggested</Pill>}
+                  {live && <Pill tone="live">Live</Pill>}
+                  <span className="ml-auto pl-2 text-[12px] tabular-nums text-faint">
+                    {formatUsdPerMin(llmDisplayCostPerMin(m.id))}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          {activeNote && (
+            <p
+              id={noteId}
+              className="mx-1 mb-1 mt-1.5 rounded-lg bg-app px-2.5 py-2 text-[11px] leading-snug text-sub"
+            >
+              {activeNote}
             </p>
           )}
         </div>

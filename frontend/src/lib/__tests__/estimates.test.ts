@@ -86,6 +86,19 @@ describe("flow agents price off the flow's own model", () => {
     expect(cost.max).toBeCloseTo(0.0135 + 0.001, 6);
   });
 
+  // Live ids are marker-matched, so an id newer than the rate card still lands
+  // on the Live path. It must fall back to an audio rate, not the text-model
+  // default — that would under-price an audio minute by ~6x.
+  test("an uncatalogued Live id still prices at the audio rate", () => {
+    const input = flowEstimateInput(
+      flow({ model_choice: { model: "gemini-9.9-flash-live-preview" } }),
+    );
+    const cost = estimateCost(input, estimateTokens(input));
+
+    expect(labels(cost.rows)).toEqual(["Gemini Live: gemini-9.9-flash-live-preview", "Voice Infra"]);
+    expect(cost.max).toBeCloseTo(0.0135 + 0.001, 6);
+  });
+
   test("a pipeline flow keeps Cartesia and prices its chosen model", () => {
     const cheap = flowEstimateInput(
       flow({ model_choice: { model: "gemini-2.5-flash-lite" } }),

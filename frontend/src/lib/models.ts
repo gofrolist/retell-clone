@@ -26,15 +26,21 @@ export interface LlmModel {
   note?: string;
 }
 
-// Stable (non-preview) conversational Gemini models,
-// per https://ai.google.dev/gemini-api/docs/models (2026-07-12).
+// Selectable Gemini models, per https://ai.google.dev/gemini-api/docs/models.
+// The pipeline tier is stable-only; the Live tier includes a preview build,
+// which the Live API has not yet graduated out of (2026-07-31).
 export const LLM_MODELS = [
   { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", provider: "google", suggested: true },
   { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite", provider: "google", suggested: true },
   { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", provider: "google" },
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", provider: "google" },
   { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite", provider: "google" },
-  // Gemini Live API — realtime speech-to-speech (audio in, audio out).
+  // Gemini Live API — realtime speech-to-speech (audio in, audio out). The 3.1
+  // preview is our recommended tier but is Gemini-API-only: Vertex, which our
+  // deployments use, has no version of it, so the worker serves every Live
+  // session with whatever `ARHITEQ_GEMINI_LIVE_MODEL` names until that changes
+  // (see `_build_realtime_model`, worker/src/arhiteq_worker/main.py). Hence the
+  // `note` below — picking it selects "Gemini Live", not this exact build.
   {
     id: "gemini-3.1-flash-live-preview",
     label: "Gemini 3.1 Flash Live (Preview)",
@@ -80,17 +86,6 @@ export const DEFAULT_POST_CALL_ANALYSIS_MODEL = "gemini-3.1-flash-lite";
 // (`emptyFlow` in `components/flow/flowModel.ts`). The suggested conversational
 // tier — flows drive live calls, so the lite tier is the wrong default here.
 export const DEFAULT_FLOW_MODEL = "gemini-3.5-flash";
-
-// The Live tier we recommend: the newest speech-to-speech model, and the one
-// the cost/latency estimates price Live calls at (lib/estimates.ts LIVE_RATE).
-// Caveat, deliberate: the worker serves every Live session with whatever
-// `ARHITEQ_GEMINI_LIVE_MODEL` names (see `_build_realtime_model`,
-// worker/src/arhiteq_worker/main.py), because gemini-3.1-flash-live-preview is
-// Gemini-API-only — Vertex, which our deployments use, has no version of it.
-// So picking it here selects "Gemini Live", not this exact build, until Vertex
-// serves it and that env var moves. The two audio rate cards are identical
-// ($3/1M in, $12/1M out), so estimates are unaffected either way.
-export const DEFAULT_LIVE_MODEL = "gemini-3.1-flash-live-preview";
 
 // What actually runs when a config names no model at all — an imported or
 // legacy flow with no `model_choice`, where `DEFAULT_FLOW_MODEL` (a UI seed

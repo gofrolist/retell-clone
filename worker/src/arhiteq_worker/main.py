@@ -320,7 +320,9 @@ def _build_realtime_model(google_plugin: Any, cfg: CallConfig, requested: str = 
         # exactly that: AI-Studio-only, with no Vertex version in any region
         # (verified 2026-07-31; a Vertex live.connect for it fails with
         # "Publisher model ... was not found"). When Vertex serves it, point
-        # ARHITEQ_GEMINI_LIVE_MODEL at it — no code change needed.
+        # ARHITEQ_GEMINI_LIVE_MODEL at it — no code change needed. To run it
+        # off Vertex instead, ARHITEQ_GEMINI_LIVE_LOCATION must be cleared too:
+        # it forces vertexai=True below, which would override the API-key path.
         "model": DEFAULT_GEMINI_LIVE_MODEL,
         "voice": resolve_gemini_voice(cfg.agent.voice_id),
         "input_audio_transcription": genai_types.AudioTranscriptionConfig(),

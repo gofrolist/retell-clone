@@ -13,12 +13,7 @@
 
 import { iterNodeEdges, type FlowNode } from "@/components/flow/flowModel";
 import type { RawConversationFlow, RawLlm } from "@/lib/api";
-import {
-  DEFAULT_LIVE_MODEL,
-  isLiveModel,
-  type LlmModelId,
-  RUNTIME_DEFAULT_MODEL,
-} from "@/lib/models";
+import { isLiveModel, type LlmModelId, RUNTIME_DEFAULT_MODEL } from "@/lib/models";
 import { formatCost } from "@/lib/utils";
 
 export interface EstimateRow {
@@ -213,14 +208,25 @@ const LLM_RATES = {
 // the whole minute the model listens to the caller, plus output for the share
 // of the minute the agent actually speaks (~50%, matching the TTS assumption
 // below). At $3/1M in + $12/1M out that is ~$0.0135/min — the old flat $0.60
-// guess overstated it by ~40x. Derived from the rate-card entry above so the
-// audio prices live in one place.
+// guess overstated it by ~40x. Read per model from the rate card above (not
+// pinned to one Live id) so repricing a single Live model there is enough:
+// the two ship identical audio rates today, but that is a coincidence, not a
+// rule, and a stale second entry would price silently wrong.
 const LIVE_AUDIO_TOKENS_PER_MIN = 25 * 60;
 const LIVE_AGENT_TALK_RATIO = 0.5;
-const LIVE_RATE = LLM_RATES[DEFAULT_LIVE_MODEL];
-const GEMINI_LIVE_COST_PER_MIN =
-  (LIVE_AUDIO_TOKENS_PER_MIN / 1e6) * LIVE_RATE.inputPer1M +
-  ((LIVE_AGENT_TALK_RATIO * LIVE_AUDIO_TOKENS_PER_MIN) / 1e6) * LIVE_RATE.outputPer1M;
+// Live ids are matched by marker, so an imported or newer-than-the-catalog one
+// reaches here with no rate card. It must still fall back to an AUDIO rate:
+// getLlmRate's text-model default would under-price an audio minute ~6x.
+const DEFAULT_LIVE_RATE: LlmRate = LLM_RATES["gemini-3.1-flash-live-preview"];
+function liveCostPerMin(model: string): number {
+  const rate = Object.hasOwn(LLM_RATES, model)
+    ? (LLM_RATES as Record<string, LlmRate>)[model]
+    : DEFAULT_LIVE_RATE;
+  return (
+    (LIVE_AUDIO_TOKENS_PER_MIN / 1e6) * rate.inputPer1M +
+    ((LIVE_AGENT_TALK_RATIO * LIVE_AUDIO_TOKENS_PER_MIN) / 1e6) * rate.outputPer1M
+  );
+}
 const GEMINI_LIVE_LATENCY_MS: [number, number] = [300, 700];
 
 // Catalog drift safety net: unknown model ids estimate as gemini-2.5-flash.
@@ -332,11 +338,8 @@ export function estimateCost(
   // Gemini Live is one speech-to-speech model: no separate Cartesia STT/TTS,
   // and it's billed per audio minute rather than per text turn.
   if (input && isLiveModel(input.model)) {
-    rows.push({
-      label: `Gemini Live: ${input.model}`,
-      min: GEMINI_LIVE_COST_PER_MIN,
-      max: GEMINI_LIVE_COST_PER_MIN,
-    });
+    const perMin = liveCostPerMin(input.model);
+    rows.push({ label: `Gemini Live: ${input.model}`, min: perMin, max: perMin });
     rows.push({ label: "Voice Infra", min: INFRA_COST_PER_MIN, max: INFRA_COST_PER_MIN });
     if (input.hasKb) {
       rows.push({ label: "Knowledge Base", min: KB_COST_PER_MIN, max: KB_COST_PER_MIN });
@@ -415,7 +418,7 @@ const DISPLAY_INPUT_TOKENS_PER_TURN = 1500;
  * report their audio-minute cost.
  */
 export function llmDisplayCostPerMin(model: string): number {
-  if (isLiveModel(model)) return GEMINI_LIVE_COST_PER_MIN;
+  if (isLiveModel(model)) return liveCostPerMin(model);
   const rate = getLlmRate(model);
   return (
     TURNS_PER_MIN *
