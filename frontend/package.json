@@ -13,7 +13,7 @@
     "@xyflow/react": "12.11.2",
     "livekit-client": "^2.21.0",
     "lucide-react": "^1.26.0",
-    "next": "16.2.11",
+    "next": "16.2.12",
     "react": "19.2.7",
     "react-dom": "19.2.8",
     "recharts": "^3.10.0"
