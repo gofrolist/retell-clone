@@ -73,6 +73,19 @@ describe("flow agents price off the flow's own model", () => {
     ]);
   });
 
+  test("the 3.1 Live preview prices as Live, same audio rate card as 2.5", () => {
+    const input = flowEstimateInput(
+      flow({ model_choice: { model: "gemini-3.1-flash-live-preview" } }),
+    );
+    const cost = estimateCost(input, estimateTokens(input));
+
+    expect(labels(cost.rows)).toEqual([
+      "Gemini Live: gemini-3.1-flash-live-preview",
+      "Voice Infra",
+    ]);
+    expect(cost.max).toBeCloseTo(0.0135 + 0.001, 6);
+  });
+
   test("a pipeline flow keeps Cartesia and prices its chosen model", () => {
     const cheap = flowEstimateInput(
       flow({ model_choice: { model: "gemini-2.5-flash-lite" } }),

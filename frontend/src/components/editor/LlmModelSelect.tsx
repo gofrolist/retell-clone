@@ -212,6 +212,11 @@ export default function LlmModelSelect({
               </button>
             );
           })}
+          {options[active]?.note && (
+            <p className="mx-1 mb-1 mt-1.5 rounded-lg bg-app px-2.5 py-2 text-[11px] leading-snug text-sub">
+              {options[active].note}
+            </p>
+          )}
         </div>
       )}
     </div>

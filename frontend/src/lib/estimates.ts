@@ -13,7 +13,12 @@
 
 import { iterNodeEdges, type FlowNode } from "@/components/flow/flowModel";
 import type { RawConversationFlow, RawLlm } from "@/lib/api";
-import { isLiveModel, type LlmModelId, RUNTIME_DEFAULT_MODEL } from "@/lib/models";
+import {
+  DEFAULT_LIVE_MODEL,
+  isLiveModel,
+  type LlmModelId,
+  RUNTIME_DEFAULT_MODEL,
+} from "@/lib/models";
 import { formatCost } from "@/lib/utils";
 
 export interface EstimateRow {
@@ -193,9 +198,12 @@ const LLM_RATES = {
   "gemini-2.5-flash-lite": { inputPer1M: 0.1, outputPer1M: 0.4, ttftMs: [250, 450] },
   // Live/native-audio is billed on AUDIO tokens, not text turns: input
   // $3.00/1M, output $12.00/1M (paid tier,
-  // https://ai.google.dev/gemini-api/docs/pricing, 2026-07-17). These rates
-  // feed GEMINI_LIVE_COST_PER_MIN below — the token-turn path is skipped for
-  // Live — so this is the single source of truth for the audio prices.
+  // https://ai.google.dev/gemini-api/docs/pricing, 2026-07-31 — both Live
+  // models carry the same audio rate card; their text rates differ but Live
+  // sessions are audio-to-audio). These rates feed GEMINI_LIVE_COST_PER_MIN
+  // below — the token-turn path is skipped for Live — so this is the single
+  // source of truth for the audio prices.
+  "gemini-3.1-flash-live-preview": { inputPer1M: 3.0, outputPer1M: 12.0, ttftMs: [300, 700] },
   "gemini-live-2.5-flash-native-audio": { inputPer1M: 3.0, outputPer1M: 12.0, ttftMs: [300, 700] },
 } satisfies Record<LlmModelId, LlmRate>;
 
@@ -209,7 +217,7 @@ const LLM_RATES = {
 // audio prices live in one place.
 const LIVE_AUDIO_TOKENS_PER_MIN = 25 * 60;
 const LIVE_AGENT_TALK_RATIO = 0.5;
-const LIVE_RATE = LLM_RATES["gemini-live-2.5-flash-native-audio"];
+const LIVE_RATE = LLM_RATES[DEFAULT_LIVE_MODEL];
 const GEMINI_LIVE_COST_PER_MIN =
   (LIVE_AUDIO_TOKENS_PER_MIN / 1e6) * LIVE_RATE.inputPer1M +
   ((LIVE_AGENT_TALK_RATIO * LIVE_AUDIO_TOKENS_PER_MIN) / 1e6) * LIVE_RATE.outputPer1M;

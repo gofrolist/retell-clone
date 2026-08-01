@@ -167,8 +167,10 @@ def _positive_int_env(name: str) -> int | None:
 
 # Gemini Live (speech-to-speech) — a single realtime model that replaces the
 # whole Cartesia-STT → Gemini → Cartesia-TTS pipeline. The default is the
-# Vertex-served Live model; the plugin inherits the worker's Vertex env
-# (GOOGLE_GENAI_USE_VERTEXAI / GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION).
+# newest Vertex-served Live model, which is NOT the newest Live model overall
+# (see the `model` opt in _build_realtime_model); the plugin inherits the
+# worker's Vertex env (GOOGLE_GENAI_USE_VERTEXAI / GOOGLE_CLOUD_PROJECT /
+# GOOGLE_CLOUD_LOCATION).
 DEFAULT_GEMINI_LIVE_MODEL = os.getenv(
     "ARHITEQ_GEMINI_LIVE_MODEL", "gemini-live-2.5-flash-native-audio"
 )
@@ -278,7 +280,7 @@ def _assemble_session(
     return AgentSession(**kwargs)
 
 
-def _build_realtime_model(google_plugin: Any, cfg: CallConfig) -> Any:
+def _build_realtime_model(google_plugin: Any, cfg: CallConfig, requested: str = "") -> Any:
     """Build a Gemini Live realtime model for a speech-to-speech session.
 
     Enables input+output transcription (the Retell contract's post-call
@@ -287,8 +289,18 @@ def _build_realtime_model(google_plugin: Any, cfg: CallConfig) -> Any:
     native-audio window ≈ 15 min of audio would otherwise overflow and drop
     the call). Auth and region are inherited from the worker's Vertex env
     unless ARHITEQ_GEMINI_LIVE_LOCATION pins a region.
+
+    *requested* is the agent's own Live model id, logged when it differs from
+    what this deployment actually serves (see the ``model`` opt below).
     """
     from google.genai import types as genai_types
+
+    if requested and requested != DEFAULT_GEMINI_LIVE_MODEL:
+        logger.info(
+            "live: agent selected %s; this deployment serves %s (ARHITEQ_GEMINI_LIVE_MODEL)",
+            requested,
+            DEFAULT_GEMINI_LIVE_MODEL,
+        )
 
     sliding = (
         genai_types.SlidingWindow(target_tokens=GEMINI_LIVE_TARGET_TOKENS)
@@ -303,8 +315,12 @@ def _build_realtime_model(google_plugin: Any, cfg: CallConfig) -> Any:
         # The wire model id just selects "Gemini Live"; the exact model sent to
         # Vertex is deployment config (ARHITEQ_GEMINI_LIVE_MODEL), mirroring how
         # _gemini_model maps the pipeline model. This keeps a Gemini-API-only
-        # live id (e.g. gemini-3.1-flash-live-preview) from reaching Vertex,
-        # where the plugin would reject it.
+        # live id from reaching Vertex, where the plugin would reject it — the
+        # dashboard's default Live pick, gemini-3.1-flash-live-preview, is
+        # exactly that: AI-Studio-only, with no Vertex version in any region
+        # (verified 2026-07-31; a Vertex live.connect for it fails with
+        # "Publisher model ... was not found"). When Vertex serves it, point
+        # ARHITEQ_GEMINI_LIVE_MODEL at it — no code change needed.
         "model": DEFAULT_GEMINI_LIVE_MODEL,
         "voice": resolve_gemini_voice(cfg.agent.voice_id),
         "input_audio_transcription": genai_types.AudioTranscriptionConfig(),
@@ -352,7 +368,7 @@ def build_session(
 
     engine = model or cfg.llm.model
     if _is_live_model(engine):
-        realtime = _build_realtime_model(google, cfg)
+        realtime = _build_realtime_model(google, cfg, requested=engine)
         session = _assemble_session(cfg, {"llm": realtime}, realtime=True)
         amd_llm = (
             google.LLM(model=DEFAULT_GEMINI_MODEL, temperature=0.0)
