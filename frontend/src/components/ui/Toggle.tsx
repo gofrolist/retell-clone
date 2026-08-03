@@ -25,8 +25,8 @@ export default function Toggle({
     >
       <span
         className={cn(
-          "absolute top-0.5 size-4 rounded-full bg-white shadow transition-transform",
-          checked ? "translate-x-4.5" : "translate-x-0.5",
+          "absolute left-0.5 top-0.5 size-4 rounded-full bg-white shadow transition-transform",
+          checked ? "translate-x-4" : "translate-x-0",
         )}
       />
     </button>
