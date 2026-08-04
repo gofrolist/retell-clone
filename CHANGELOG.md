@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.23.0](https://github.com/gofrolist/retell-clone/compare/v0.22.1...v0.23.0) (2026-08-04)
+
+
+### Features
+
+* **models:** add Gemini 3.1 Flash Live and make it the default Live pick ([#205](https://github.com/gofrolist/retell-clone/issues/205)) ([c081b1f](https://github.com/gofrolist/retell-clone/commit/c081b1f165d1a97f71c04681c13488f53d992755))
+
+
+### Bug Fixes
+
+* **ui:** anchor toggle knob to the track's left edge ([#215](https://github.com/gofrolist/retell-clone/issues/215)) ([0db2b22](https://github.com/gofrolist/retell-clone/commit/0db2b22be9c4e8839f2ced388fb73af52dbb33e9))
+* **worker:** keep an agent_swap from being heard on a Gemini Live call ([#216](https://github.com/gofrolist/retell-clone/issues/216)) ([f033633](https://github.com/gofrolist/retell-clone/commit/f0336335be9c2f95c5653ce2d6d5d06255d559b8))
+
 ## [0.22.1](https://github.com/gofrolist/retell-clone/compare/v0.22.0...v0.22.1) (2026-07-31)
 
 
