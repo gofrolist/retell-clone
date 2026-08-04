@@ -23,7 +23,7 @@ toggles dark when on; thin sliders with round thumb + right-aligned value.
 BUILD:    Agents (/agents), Knowledge Base (/knowledgeBase)
 DEPLOY:   Phone Numbers (/phoneNumbers), Batch Call (/batchCall)
 DATA:     Call History (/call-history), Chat History (stub), Contacts (/contacts)
-MONITOR:  Analytics (/analytics), Live Monitoring (stub),
+MONITOR:  Analytics (/analytics), Live Monitoring (/live-monitoring),
           AI Quality Assurance (/quality-assurance), Alerting (/alerting)
 SYSTEM:   Integrations (stub), Settings (/settings/* — sidebar becomes sub-nav:
           ‹ GO BACK, Limits, Reliability, API Keys, Webhooks, Workspace)
@@ -197,5 +197,14 @@ FOOTER:   plan pill ("Pay As You Go"), account email row, Help | Updates
     description · System); Billing; Danger Zone → delete modal (type the name
     to confirm; moves you to another workspace if you have one, else signs
     you out).
-16. Stubs (nav item + empty state): Chat History, Live Monitoring,
-    Integrations.
+16. **Live Monitoring** — calls that are dialing or in progress, newest
+    first, with a "Live — streaming updates" badge in the header. Tiles: Live
+    Calls, Concurrency Used, Concurrency Remaining. Columns: Started (or
+    "Dialing…") | Duration (ticks each second) | Status | Agent | Channel |
+    From | To | Call ID. New rows flash briefly; ended ones drop off.
+    Selecting a row opens the call drawer in live mode: a Live/Dialing pill,
+    a ticking duration, no analysis panel (there is none until the call
+    ends), and a transcript that streams in — following the newest turn until
+    you scroll up, with "Jump to latest" to re-attach.
+    Fed by SSE (`GET /live-calls/stream`, `GET /live-calls/{id}/stream`);
+    the page falls back to 5s polling whenever the stream isn't connected.

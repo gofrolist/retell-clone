@@ -256,6 +256,10 @@ class CallEventRequest(BaseModel):
     start_timestamp: int | None = None
     transcript: str | None = None
     transcript_object: list[Any] | None = None
+    # Tool calls and their results, in the same stream as the utterances.
+    # Sent mid-call (not just at finalize) so Live Monitoring can show the
+    # agent's tool activity as it happens.
+    transcript_with_tool_calls: list[Any] | None = None
 
 
 @router.post("/calls/{call_id}/events")
@@ -276,6 +280,8 @@ async def post_call_event(
         call.transcript = body.transcript
         if body.transcript_object is not None:
             call.transcript_object = body.transcript_object
+        if body.transcript_with_tool_calls is not None:
+            call.transcript_with_tool_calls = body.transcript_with_tool_calls
         await session.commit()
     else:
         raise HTTPException(422, detail=f"Unknown event {body.event}")

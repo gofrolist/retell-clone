@@ -21,6 +21,7 @@ from .api import (
     dashboard,
     internal,
     knowledge_bases,
+    live,
     llms,
     phone_numbers,
     voices,
@@ -159,6 +160,7 @@ app.include_router(conversation_flows.router)
 app.include_router(chats.router)
 app.include_router(chat_agents.router)
 app.include_router(dashboard.router)
+app.include_router(live.router)
 app.include_router(agent_tests.router)
 app.include_router(workspaces.router)
 

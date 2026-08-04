@@ -5,17 +5,18 @@ import CopyId from "@/components/ui/CopyId";
 import EmptyState from "@/components/ui/EmptyState";
 import StatusDot from "@/components/ui/StatusDot";
 import { api } from "@/lib/api";
-import type { Call } from "@/lib/types";
+import type { StreamStatus } from "@/lib/stream";
+import type { Call, Concurrency } from "@/lib/types";
 import { cn, formatCallTime, formatDuration, pressableProps, truncateId } from "@/lib/utils";
 import { Activity, RadioTower } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-const POLL_MS = 5000;
+// Only used while the stream is down (a proxy that eats SSE, a backend
+// restart): the stream itself pushes as soon as anything changes.
+const FALLBACK_POLL_MS = 5000;
 
-interface Concurrency {
-  current_concurrency: number;
-  concurrency_limit: number;
-}
+// How long a freshly-appeared call stays highlighted, as on Retell's list.
+const NEW_CALL_HIGHLIGHT_MS = 2500;
 
 function StatTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
@@ -38,47 +39,106 @@ function LiveDuration({ start }: { start: number }) {
   return <span className="tabular-nums">{formatDuration(now - start)}</span>;
 }
 
+function ConnectionBadge({ status }: { status: StreamStatus }) {
+  const live = status === "live";
+  return (
+    <span className="ml-auto flex items-center gap-1.5 text-[12px] text-faint">
+      <Activity className={cn("size-3.5", live ? "text-ok" : "text-faint")} />
+      {live ? "Live — streaming updates" : status === "connecting" ? "Connecting…" : "Reconnecting…"}
+    </span>
+  );
+}
+
 export default function LiveMonitoringPage() {
   const [calls, setCalls] = useState<Call[]>([]);
   const [concurrency, setConcurrency] = useState<Concurrency | null>(null);
   const [selected, setSelected] = useState<Call | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [lastRefresh, setLastRefresh] = useState<number | null>(null);
+  const [status, setStatus] = useState<StreamStatus>("connecting");
+  const [fresh, setFresh] = useState<Set<string>>(() => new Set());
 
-  const refresh = useCallback(async () => {
-    try {
-      const [res, conc] = await Promise.all([
-        api.listCalls({
-          limit: 100,
-          filter_criteria: { call_status: ["registered", "ongoing"] },
-          sort_order: "descending",
-        }),
-        api.getConcurrency(),
-      ]);
-      setCalls(res.calls);
-      setConcurrency(conc);
-      setError(null);
-      setLastRefresh(Date.now());
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to load live calls");
-    } finally {
-      setLoaded(true);
+  // Ids from the previous snapshot, so we can tell an arriving call from one
+  // that was already there. Null until the first snapshot: that one is the
+  // existing backlog, not a burst of new calls, and must not all flash.
+  const seenIds = useRef<Set<string> | null>(null);
+  const highlightTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  useEffect(() => () => highlightTimers.current.forEach(clearTimeout), []);
+
+  const apply = useCallback((next: Call[], conc: Concurrency | null) => {
+    const previous = seenIds.current;
+    const arriving = previous
+      ? next.filter((c) => !previous.has(c.call_id)).map((c) => c.call_id)
+      : [];
+    seenIds.current = new Set(next.map((c) => c.call_id));
+
+    setCalls(next);
+    // An open drawer keeps its call even after that call ends and drops off
+    // the list — closing the panel out from under the operator mid-read is
+    // worse than showing a call that just finished.
+    setSelected((cur) => (cur ? (next.find((c) => c.call_id === cur.call_id) ?? cur) : cur));
+    if (conc) setConcurrency(conc);
+    setError(null);
+    setLoaded(true);
+
+    if (arriving.length) {
+      setFresh((prev) => new Set([...prev, ...arriving]));
+      highlightTimers.current.push(
+        setTimeout(
+          () => setFresh((prev) => new Set([...prev].filter((id) => !arriving.includes(id)))),
+          NEW_CALL_HIGHLIGHT_MS,
+        ),
+      );
     }
   }, []);
 
   useEffect(() => {
-    refresh();
-    const t = setInterval(refresh, POLL_MS);
-    return () => clearInterval(t);
-  }, [refresh]);
+    const unsubscribe = api.streamLiveCalls({
+      onStatus: setStatus,
+      onSnapshot: (snapshot) => apply(snapshot.calls, snapshot.concurrency),
+    });
+    return unsubscribe;
+  }, [apply]);
 
+  // Fallback path: whenever the stream isn't live, poll so the page still
+  // updates (just less promptly) instead of showing a frozen list.
+  useEffect(() => {
+    if (status === "live") return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const [res, conc] = await Promise.all([
+          api.listCalls({
+            limit: 100,
+            filter_criteria: { call_status: ["registered", "ongoing"] },
+            sort_order: "descending",
+          }),
+          api.getConcurrency(),
+        ]);
+        if (!cancelled) apply(res.calls, conc);
+      } catch (e: unknown) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Failed to load live calls");
+          setLoaded(true);
+        }
+      }
+    };
+    poll();
+    const t = setInterval(poll, FALLBACK_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [status, apply]);
+
+  // Arrow keys walk the list. Position is resolved by id at press time, so a
+  // snapshot landing between presses can't scroll the drawer onto another call.
   const navigate = useCallback(
     (dir: 1 | -1) => {
       setSelected((cur) => {
         if (!cur) return cur;
         const idx = calls.findIndex((c) => c.call_id === cur.call_id);
-        return calls[idx + dir] ?? cur;
+        return idx === -1 ? cur : (calls[idx + dir] ?? cur);
       });
     },
     [calls],
@@ -93,10 +153,7 @@ export default function LiveMonitoringPage() {
       <div className="mb-4 flex items-center gap-2">
         <RadioTower className="size-4.5 text-sub" strokeWidth={1.8} />
         <h1 className="text-[17px] font-semibold">Live Monitoring</h1>
-        <span className="ml-auto flex items-center gap-1.5 text-[12px] text-faint">
-          <Activity className="size-3.5 text-ok" />
-          {lastRefresh ? `Auto-refreshing every ${POLL_MS / 1000}s` : "Connecting…"}
-        </span>
+        <ConnectionBadge status={status} />
       </div>
 
       {error && (
@@ -126,7 +183,7 @@ export default function LiveMonitoringPage() {
         <EmptyState
           icon={RadioTower}
           title="No live calls right now"
-          description="Calls that are dialing or in progress appear here in real time. This page refreshes automatically."
+          description="Calls that are dialing or in progress appear here the moment they start. Open one to follow its transcript as it happens."
         />
       ) : (
         <div className="min-h-0 grow overflow-auto rounded-t-lg border border-line border-b-0">
@@ -149,7 +206,11 @@ export default function LiveMonitoringPage() {
                   {...pressableProps(`Live call ${c.call_id}`, () => setSelected(c))}
                   className={cn(
                     "cursor-pointer border-b border-line/70 transition-colors",
-                    selected?.call_id === c.call_id ? "bg-app" : "hover:bg-app/60",
+                    selected?.call_id === c.call_id
+                      ? "bg-app"
+                      : fresh.has(c.call_id)
+                        ? "bg-ok/10"
+                        : "hover:bg-app/60",
                   )}
                 >
                   <td className="whitespace-nowrap py-3 pl-4 pr-3">
@@ -187,7 +248,7 @@ export default function LiveMonitoringPage() {
       )}
 
       {selected && (
-        <CallDrawer call={selected} onClose={() => setSelected(null)} onNavigate={navigate} />
+        <CallDrawer call={selected} live onClose={() => setSelected(null)} onNavigate={navigate} />
       )}
     </div>
   );

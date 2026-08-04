@@ -6,6 +6,7 @@
 // explicitly run with NEXT_PUBLIC_DEMO_MODE=true, which is labelled in the UI.
 
 import { getValidSession } from "./auth";
+import { type StreamStatus, subscribeStream } from "./stream";
 import { formatDuration, kbFromBytes } from "./utils";
 import type {
   Agent,
@@ -15,11 +16,13 @@ import type {
   ApiKey,
   Call,
   ChatAnalyticsData,
+  Concurrency,
   Contact,
   ContactFieldDefinition,
   KnowledgeBase,
   KnowledgeDocument,
   ListCallsResponse,
+  LiveCallsSnapshot,
   PhoneNumber,
   QaCohort,
   TranscriptItem,
@@ -72,7 +75,7 @@ export function subscribeBackendStatus(onChange: () => void): () => void {
 
 // ------------------------------------------------------------------ request
 
-function bearerToken(): string | undefined {
+export function bearerToken(): string | undefined {
   return getValidSession()?.token ?? API_KEY;
 }
 
@@ -510,6 +513,12 @@ export interface RawCall {
   collected_dynamic_variables?: Record<string, unknown>;
   detail_logs?: { time_ms: number; level: string; message: string }[];
   [key: string]: unknown;
+}
+
+/** A live-calls stream push, before the calls are mapped to the UI shape. */
+export interface RawLiveCallsSnapshot {
+  calls: RawCall[];
+  concurrency: Concurrency;
 }
 
 export interface RawPhoneNumber {
@@ -1264,19 +1273,47 @@ export const api = {
       post(body),
     ),
 
+  // --------------------------------------------------- live monitoring
+  // SSE, not request(): these connections stay open for as long as the page is
+  // watching. Demo mode has no backend to stream from, so subscribing is a
+  // no-op there and callers fall back to their poll loop.
+  /** Every dialing/ongoing call in the workspace, pushed as it changes. */
+  streamLiveCalls: (opts: {
+    onSnapshot: (snapshot: LiveCallsSnapshot) => void;
+    onStatus?: (status: StreamStatus) => void;
+  }): (() => void) =>
+    DEMO_MODE
+      ? () => {}
+      : subscribeStream<RawLiveCallsSnapshot>(`${API_BASE}/live-calls/stream`, {
+          token: bearerToken,
+          onStatus: opts.onStatus,
+          onEvent: (_event, data) =>
+            opts.onSnapshot({
+              calls: data.calls.map(uiCallFromRaw),
+              concurrency: data.concurrency,
+            }),
+        }),
+
+  /** One call, re-sent whenever it changes, until it ends (`onEnd`). */
+  streamCall: (
+    callId: string,
+    opts: {
+      onCall: (call: Call) => void;
+      onStatus?: (status: StreamStatus) => void;
+      onEnd?: () => void;
+    },
+  ): (() => void) =>
+    DEMO_MODE
+      ? () => {}
+      : subscribeStream<RawCall>(`${API_BASE}/live-calls/${encodeURIComponent(callId)}/stream`, {
+          token: bearerToken,
+          onStatus: opts.onStatus,
+          onEnd: opts.onEnd,
+          onEvent: (_event, data) => opts.onCall(uiCallFromRaw(data)),
+        }),
+
   // ------------------------------------------------------- concurrency
-  getConcurrency: () =>
-    request<{
-      current_concurrency: number;
-      concurrency_limit: number;
-      base_concurrency: number;
-      purchased_concurrency: number;
-      concurrency_purchase_limit: number;
-      remaining_purchase_limit: number;
-      reserved_inbound_concurrency: number;
-      concurrency_burst_enabled: boolean;
-      concurrency_burst_limit: number;
-    }>("/get-concurrency"),
+  getConcurrency: () => request<Concurrency>("/get-concurrency"),
 
   // ---------------------------------------------------------------- QA
   listCohorts: () => request<QaCohort[]>("/list-qa-cohorts"),

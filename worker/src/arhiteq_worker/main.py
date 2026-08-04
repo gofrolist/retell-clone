@@ -120,7 +120,10 @@ def _gcp_credentials() -> str:
 
 
 AGENT_NAME = "arhiteq-agent"
-TRANSCRIPT_UPDATE_INTERVAL_S = 10.0
+# Live Monitoring follows this pump, so it sets how far behind the conversation
+# a watching operator is. Only turns that actually happened are posted (the
+# pump no-ops otherwise), so a short interval costs nothing on a quiet call.
+TRANSCRIPT_UPDATE_INTERVAL_S = 2.0
 AMD_SPEECH_WINDOW_S = 5.0
 DIAL_TIMEOUT_S = float(os.getenv("ARHITEQ_DIAL_TIMEOUT_S", "60"))
 DEFAULT_GEMINI_MODEL = os.getenv("ARHITEQ_GEMINI_MODEL", "gemini-2.5-flash")
@@ -1559,6 +1562,10 @@ async def entrypoint(ctx: JobContext) -> None:
                     "event": "transcript_update",
                     "transcript": state.transcript_text(),
                     "transcript_object": state.transcript_object(),
+                    # Tool calls too: Live Monitoring renders the same
+                    # tool-bearing stream mid-call that Call History shows
+                    # after finalize.
+                    "transcript_with_tool_calls": list(state.items),
                 },
             )
 

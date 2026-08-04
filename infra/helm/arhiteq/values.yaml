@@ -82,6 +82,9 @@ api:
     repository: arhiteq-api # appended to global.imageRegistry
     tag: latest
   containerPort: 8080
+  # LB backend timeout. Must exceed the API's own SSE stream cap (30 min) so
+  # the load balancer is never what ends a Live Monitoring stream.
+  backendTimeoutSec: 2400
   resources:
     requests:
       cpu: 250m

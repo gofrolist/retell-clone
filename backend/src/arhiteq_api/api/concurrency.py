@@ -65,23 +65,52 @@ async def effective_concurrency_limit(
 LIVE_STATUSES = ("registered", "ongoing")
 
 
-# Web calls that never got answered by a worker (down/crashlooping) have no
-# finalizer: sweep them to a terminal status before counting, so dead test
-# calls can't eat the workspace's concurrency budget.
-WEB_CALL_REGISTERED_TTL_MS = 15 * 60 * 1000
+# Calls only leave a live status when a worker finalizes them. Anything the
+# worker never picked up (LiveKit dispatch lost, worker down/crashlooping) or
+# dropped mid-call (OOM-kill, node preemption) would otherwise sit "dialing" or
+# "ongoing" forever: eating the workspace's concurrency budget and showing up
+# on Live Monitoring as a call that will never end. These TTLs sweep them to a
+# terminal status.
+#
+# A registered call is still dialing, which no telephony provider stretches
+# past a couple of minutes; the generous ceiling only has to beat "forever".
+# An ongoing one is bounded by the agent's max_call_duration_ms (default well
+# under an hour) plus the worker's own hangup grace.
+REGISTERED_TTL_MS = 15 * 60 * 1000
+ONGOING_TTL_MS = 4 * 60 * 60 * 1000
 
 
-async def expire_stale_web_calls(session: AsyncSession, workspace_id: str) -> None:
-    cutoff = now_ms() - WEB_CALL_REGISTERED_TTL_MS
+async def expire_stale_calls(session: AsyncSession, workspace_id: str) -> None:
+    now = now_ms()
     await session.execute(
         update(Call)
         .where(
             Call.workspace_id == workspace_id,
-            Call.call_type == "web_call",
             Call.call_status == "registered",
-            Call.created_at_ms < cutoff,
+            Call.created_at_ms < now - REGISTERED_TTL_MS,
         )
-        .values(call_status="not_connected", disconnection_reason="dial_no_answer")
+        .values(
+            call_status="not_connected",
+            disconnection_reason="dial_no_answer",
+            end_timestamp=now,
+            duration_ms=0,
+        )
+    )
+    # An abandoned ongoing call did connect, so it ends as an error rather than
+    # a failed dial; duration is measured from the answer like a normal call.
+    await session.execute(
+        update(Call)
+        .where(
+            Call.workspace_id == workspace_id,
+            Call.call_status == "ongoing",
+            Call.start_timestamp < now - ONGOING_TTL_MS,
+        )
+        .values(
+            call_status="error",
+            disconnection_reason="error_unknown",
+            end_timestamp=now,
+            duration_ms=now - Call.start_timestamp,
+        )
     )
     await session.commit()
 
@@ -114,7 +143,7 @@ async def assert_outbound_capacity(session: AsyncSession, workspace_id: str) -> 
     Only calls drawing on the outbound budget count against it: live inbound
     traffic above its reservation must not starve outbound dialing.
     """
-    await expire_stale_web_calls(session, workspace_id)
+    await expire_stale_calls(session, workspace_id)
     limit = await effective_concurrency_limit(session, workspace_id)
     live = await count_live_calls(session, workspace_id, outbound_only=True)
     if live >= limit:
@@ -126,6 +155,7 @@ async def get_concurrency(
     api_key: ApiKey = Depends(require_api_key),
     session: AsyncSession = Depends(get_session),
 ):
+    await expire_stale_calls(session, api_key.workspace_id)
     current = await count_live_calls(session, api_key.workspace_id)
     numbers = await workspace_concurrency(session, api_key.workspace_id)
     return {"current_concurrency": current, **numbers}

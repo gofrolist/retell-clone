@@ -183,7 +183,7 @@ async def test_stale_registered_web_call_is_swept_and_frees_the_slot(client, mon
         await session.execute(
             update(Call)
             .where(Call.call_id == stale["call_id"])
-            .values(created_at_ms=now_ms() - concurrency.WEB_CALL_REGISTERED_TTL_MS - 1)
+            .values(created_at_ms=now_ms() - concurrency.REGISTERED_TTL_MS - 1)
         )
         await session.commit()
 

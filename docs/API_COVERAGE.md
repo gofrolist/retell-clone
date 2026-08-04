@@ -89,6 +89,12 @@ Known intentional deviations (all additive or dashboard-only):
   agent. Test LLM (text chat against a saved prompt) is still single-prompt
   only, since a flow has no one prompt to chat against.
 - Auth additionally accepts Arhiteq dashboard session JWTs (Google Sign-In).
+- `GET /live-calls/stream` and `GET /live-calls/{call_id}/stream` are
+  dashboard-only SSE streams behind Live Monitoring (Retell serves this from
+  its private dashboard API). Same bearer auth and workspace scoping as the
+  REST surface; they add no fields, only a push channel for data get-call and
+  list-calls already return. Both cap themselves at 30 minutes and expect the
+  client to reconnect.
 - Not implemented (no consumer, dashboard-only in Retell): SIP-trunk
   self-serve endpoints, phone-number A/B tests, Retell billing endpoints.
 

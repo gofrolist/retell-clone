@@ -78,8 +78,11 @@ ever sees one in.
 Lifecycle + streaming updates. Body: `{"event": "...", ...}`:
 - `{"event":"call_started","start_timestamp":<unix_ms>}` → status `ongoing`,
   fires `call_started` webhook.
-- `{"event":"transcript_update","transcript":"…","transcript_object":[…]}` —
-  periodic; keeps get-call fresh mid-call.
+- `{"event":"transcript_update","transcript":"…","transcript_object":[…],
+  "transcript_with_tool_calls":[…]}` — every 2s while turns are landing; keeps
+  get-call fresh mid-call and feeds Live Monitoring's streaming transcript.
+  Omitted arrays are left alone, so a partial update never truncates what the
+  call already accumulated.
 
 ### `POST /internal/calls/{call_id}/finalize`
 Terminal update; idempotent (second call is a no-op).
