@@ -21,6 +21,11 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+class _FakeChan:
+    def __init__(self) -> None:
+        self.closed = False
+
+
 class _FakeRealtime:
     """Stands in for the plugin's RealtimeSession restart bookkeeping."""
 
@@ -29,6 +34,7 @@ class _FakeRealtime:
         if restarting:
             self._session_should_close.set()
         self._active_session = None if restarting else object()
+        self._msg_ch = _FakeChan()
 
 
 class _FakeActivity:
@@ -80,10 +86,35 @@ def test_a_wedged_reconnect_does_not_fail_the_swap(caplog):
     assert "did not settle" in caplog.text
 
 
-def test_a_renamed_plugin_internal_costs_the_wait_not_the_call():
-    """The restart flag is private; losing it must degrade, not explode."""
+def test_a_hangup_mid_swap_does_not_hold_the_turn_open():
+    """aclose() closes the channel without ever clearing the restart flag.
 
-    class _Renamed:
+    `_main_task` loops on `while not self._msg_ch.closed`, so a teardown exits
+    it for good — the flag stays set and the session is never republished.
+    Polling on would spend the entire timeout delaying the turn's teardown.
+    """
+    rt = _FakeRealtime(restarting=True)
+    rt._msg_ch.closed = True
+    _run(asyncio.wait_for(_settle_realtime_session(_FakeSession(rt), timeout=30.0), 0.5))
+
+
+def test_a_renamed_plugin_internal_costs_neither_the_wait_nor_the_call():
+    """Every internal is checked for, not just the first.
+
+    A partial rename is the dangerous case: keep the restart flag, rename the
+    session handle, and a getattr default of None would look like "still
+    reconnecting" forever — the full timeout on every swap of every call rather
+    than one degraded swap.
+    """
+
+    class _AllRenamed:
         pass
 
-    _run(asyncio.wait_for(_settle_realtime_session(_FakeSession(_Renamed()), timeout=5.0), 0.5))
+    class _PartiallyRenamed:
+        def __init__(self) -> None:
+            self._session_should_close = asyncio.Event()
+            self._session_should_close.set()
+            self._msg_ch = _FakeChan()  # but no _active_session
+
+    for rt in (_AllRenamed(), _PartiallyRenamed()):
+        _run(asyncio.wait_for(_settle_realtime_session(_FakeSession(rt), timeout=30.0), 0.5))

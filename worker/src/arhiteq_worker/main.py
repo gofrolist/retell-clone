@@ -226,20 +226,29 @@ async def _settle_realtime_session(session: Any, *, timeout: float) -> None:
     session.
 
     Best-effort by construction. Pipeline (non-realtime) sessions never restart
-    and fall straight through, and the private attributes below are read through
-    getattr so a plugin that renames them costs us the wait, not the call.
+    and fall straight through, and every plugin internal below is checked for
+    before it is relied on: if a version bump renames any of them we skip the
+    wait entirely rather than poll for something that will never change. Waiting
+    on a renamed attribute would not degrade to "one slow swap" — it would spend
+    the full timeout on every swap of every call.
     """
     activity = getattr(session, "_activity", None)
     rt = getattr(activity, "realtime_llm_session", None)
     should_close = getattr(rt, "_session_should_close", None)
-    if should_close is None or not should_close.is_set():
-        # Not a Live session, or nothing was invalidated — nothing to wait for.
-        return
+    if should_close is None or not hasattr(rt, "_active_session") or not hasattr(rt, "_msg_ch"):
+        return  # not a Live session, or the plugin no longer looks like this one
+    if not should_close.is_set():
+        return  # nothing was invalidated — no reconnect to wait for
 
     async def _wait() -> None:
         # Cleared at the top of the reconnect loop; the socket is only usable
-        # again once the new session has also been published.
-        while should_close.is_set() or getattr(rt, "_active_session", None) is None:
+        # again once the new session has also been published. A closed channel
+        # means the loop has exited for good — on a hangup mid-swap it never
+        # clears the flag, and polling on would hold the turn's teardown for the
+        # whole timeout.
+        while should_close.is_set() or rt._active_session is None:
+            if rt._msg_ch.closed:
+                return
             await asyncio.sleep(0.02)
 
     try:
@@ -1427,15 +1436,28 @@ async def entrypoint(ctx: JobContext) -> None:
         a swap is not free and a redundant one is not harmless — see
         `_settle_realtime_session`. Swapping onto the agent already running is
         therefore refused outright rather than paid for.
+
+        The claim on `running_agent_id` is staked before the first await, not
+        after the last one. livekit runs every function call of a generation as
+        its own task, and the doubled generation this settle exists to prevent
+        can re-emit the same agent_swap — so a guard that only committed at the
+        end would let both copies through and rebuild the socket twice, which is
+        the exact cost it was added to avoid. A failed swap puts the old id back.
         """
         nonlocal running_agent_id
         if agent_id and agent_id == running_agent_id:
             logger.info("agent swap: call %s already running agent %s", cfg.call_id, agent_id)
             return json.dumps({"result": f"already acting as agent {agent_id}"})
-        swap_raw = await api_client.get_agent_config(agent_id, call_id=cfg.call_id)
+        previous_agent_id, running_agent_id = running_agent_id, agent_id
+        try:
+            swap_raw = await api_client.get_agent_config(agent_id, call_id=cfg.call_id)
+        except Exception:
+            running_agent_id = previous_agent_id
+            raise
         if not isinstance(swap_raw.get("llm"), dict):
             # A destination without an LLM would wipe the live prompt/tools.
             logger.warning("agent swap rejected: agent %s has no LLM config", agent_id)
+            running_agent_id = previous_agent_id
             return json.dumps({"error": "destination agent has no LLM configuration"})
         swap_cfg = CallConfig.from_dict({**cfg.raw, **swap_raw})
         # The destination agent's own "Current Time Awareness" takes over for
@@ -1462,7 +1484,6 @@ async def entrypoint(ctx: JobContext) -> None:
         # it: by the time this tool's result reaches the model, the model it
         # reaches is the reconnected one running the destination agent.
         await _settle_realtime_session(session, timeout=SWAP_SETTLE_TIMEOUT_S)
-        running_agent_id = agent_id
         if not entry.get("keep_current_voice"):
             # Gemini Live sessions have no separate TTS (voice is baked into the
             # realtime model), so getattr(...) is None and the voice stays put —
