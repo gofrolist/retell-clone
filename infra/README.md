@@ -150,9 +150,16 @@ Redeploy/rollback: run the Deploy workflow manually (workflow_dispatch) with
 any existing release tag.
 
 Caveat: `--reuse-values` re-renders the chart with the values already in the
-cluster. A chart change that introduces a NEW required value (e.g. a new
-secret) must first be applied locally once:
-`helm upgrade arhiteq infra/helm/arhiteq -n arhiteq -f infra/private/arhiteq-prod.yaml --reuse-values`.
+cluster and does NOT merge in new defaults from `values.yaml`. A key added in
+the same release is therefore undefined when CI deploys it — v0.24.0 failed
+exactly this way (`spec.timeoutSec: Invalid value: "null"`, rolled back
+automatically). So:
+- Non-secret values: give the template a literal default —
+  `{{ .Values.api.backendTimeoutSec | default 2400 }}` — and the deploy works
+  on the first try. Adding the key to `values.yaml` alone is not enough.
+- Values that can't have a default (a NEW secret) must first be applied locally
+  once:
+  `helm upgrade arhiteq infra/helm/arhiteq -n arhiteq -f infra/private/arhiteq-prod.yaml --reuse-values`.
 Image tags are owned by CI: keep `image.tag` pins OUT of
 `infra/private/arhiteq-prod.yaml`, or `-f` will override the CI-set tags
 with stale ones.
