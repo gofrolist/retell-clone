@@ -1,0 +1,14 @@
+# The GCE load balancer's default backend timeout is 30s, which it applies to
+# the whole response — including one that streams. Live Monitoring's SSE
+# streams would be cut every 30 seconds, and while the dashboard reconnects,
+# each cycle costs a fresh connect. The API caps its own streams (30 min), so
+# this ceiling only has to sit above that.
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: {{ .Release.Name }}-api
+  labels:
+    {{- include "arhiteq.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  timeoutSec: {{ .Values.api.backendTimeoutSec }}

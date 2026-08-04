@@ -69,7 +69,9 @@ export type EndReason =
   | "voicemail reached"
   | "dial no answer";
 
-export type SessionStatus = "ended" | "not_connected" | "ongoing" | "error";
+// "registered" is a call that exists but hasn't connected yet (dialing) — the
+// state Live Monitoring shows before the worker answers.
+export type SessionStatus = "ended" | "not_connected" | "ongoing" | "error" | "registered";
 export type Sentiment = "Neutral" | "Positive" | "Negative" | "Unknown";
 
 export interface TranscriptItem {
@@ -123,6 +125,25 @@ export interface DetailLog {
 export interface ListCallsResponse {
   calls: Call[];
   pagination_key?: string;
+}
+
+/** Workspace concurrency numbers (Retell get-concurrency shape). */
+export interface Concurrency {
+  current_concurrency: number;
+  concurrency_limit: number;
+  base_concurrency: number;
+  purchased_concurrency: number;
+  concurrency_purchase_limit: number;
+  remaining_purchase_limit: number;
+  reserved_inbound_concurrency: number;
+  concurrency_burst_enabled: boolean;
+  concurrency_burst_limit: number;
+}
+
+/** One push from the live-calls stream: the whole live view, not a delta. */
+export interface LiveCallsSnapshot {
+  calls: Call[];
+  concurrency: Concurrency;
 }
 
 export interface KnowledgeDocument {

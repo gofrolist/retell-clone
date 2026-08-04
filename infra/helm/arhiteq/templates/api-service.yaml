@@ -8,6 +8,9 @@ metadata:
     app.kubernetes.io/component: api
   annotations:
     cloud.google.com/neg: '{"ingress": true}'
+    # Raises the LB's 30s backend timeout so Live Monitoring's SSE streams
+    # aren't cut mid-call (see api-backendconfig.yaml).
+    cloud.google.com/backend-config: '{"default": "{{ .Release.Name }}-api"}'
 spec:
   type: ClusterIP
   selector:

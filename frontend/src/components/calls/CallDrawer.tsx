@@ -1,6 +1,8 @@
 "use client";
 
 import AudioPlayer, { type AudioMarker } from "./AudioPlayer";
+import LiveDuration from "./LiveDuration";
+import LiveTranscript from "./LiveTranscript";
 import Transcript from "./Transcript";
 import CopyId from "@/components/ui/CopyId";
 import StatusDot from "@/components/ui/StatusDot";
@@ -23,6 +25,12 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+
+// After a call ends, refetch it on this cadence until the post-call pipeline
+// (which runs after finalize responds) has written its analysis — or until the
+// attempts run out, since a workspace with no Gemini credentials never gets one.
+const ANALYSIS_POLL_MS = 3000;
+const ANALYSIS_POLL_ATTEMPTS = 5;
 
 function MetaItem({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -100,11 +108,14 @@ export default function CallDrawer({
   onClose,
   onNavigate,
   onUpdated,
+  live = false,
 }: {
   call: Call;
   onClose: () => void;
   onNavigate: (dir: 1 | -1) => void;
   onUpdated?: (call: Call) => void;
+  /** Live Monitoring: follow the call over SSE instead of fetching it once. */
+  live?: boolean;
 }) {
   const [tab, setTab] = useState("transcription");
   // list rows can be partial — fetch the full call on open
@@ -124,6 +135,40 @@ export default function CallDrawer({
     let cancelled = false;
     setFull(null);
     setError(null);
+
+    if (live) {
+      // The stream's first event is the full call, so there's no separate
+      // fetch: every later event is the transcript filling in.
+      const unsubscribe = api.streamCall(call.call_id, {
+        onCall: (c) => setFull(c),
+        onEnd: () => {
+          // The call just ended. Recording, cost and analysis are written by
+          // the post-call pipeline (a Gemini round-trip) after finalize has
+          // already responded, so refetch until the analysis actually lands
+          // rather than betting the panel on one fixed delay.
+          let attempt = 0;
+          const poll = async () => {
+            if (cancelled) return;
+            attempt += 1;
+            try {
+              const updated = await api.getCall(call.call_id);
+              if (cancelled) return;
+              setFull(updated);
+              if (updated.call_summary || updated.call_successful !== null) return;
+            } catch {
+              // transient — the retry below covers it
+            }
+            if (attempt < ANALYSIS_POLL_ATTEMPTS) setTimeout(poll, ANALYSIS_POLL_MS);
+          };
+          setTimeout(poll, ANALYSIS_POLL_MS);
+        },
+      });
+      return () => {
+        cancelled = true;
+        unsubscribe();
+      };
+    }
+
     api
       .getCall(call.call_id)
       .then((c) => {
@@ -135,9 +180,10 @@ export default function CallDrawer({
     return () => {
       cancelled = true;
     };
-  }, [call.call_id]);
+  }, [call.call_id, live]);
 
   const c = full ?? call;
+  const isLive = c.call_status === "ongoing" || c.call_status === "registered";
 
   // Timeline annotations: one dot per tool invocation (popup includes its
   // paired result) and per KB retrieval. Items without time_ms (calls
@@ -216,7 +262,15 @@ export default function CallDrawer({
           </div>
 
           <div className="min-h-0 grow overflow-y-auto px-5 py-4">
-            <h2 className="text-[15px] font-semibold">{formatCallTime(c.start_timestamp)}</h2>
+            <h2 className="flex items-center gap-2 text-[15px] font-semibold">
+              {c.start_timestamp ? formatCallTime(c.start_timestamp) : "Dialing…"}
+              {isLive && (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-ok/10 px-2 py-0.5 text-[11.5px] font-medium text-ok">
+                  <span className="size-1.5 animate-pulse rounded-full bg-ok" />
+                  {c.call_status === "ongoing" ? "Live" : "Dialing"}
+                </span>
+              )}
+            </h2>
 
             {error && (
               <p className="mt-2 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-[13px] text-bad">
@@ -249,9 +303,16 @@ export default function CallDrawer({
                 </span>
               </MetaItem>
               <MetaItem label="Duration">
-                {formatCallTime(c.start_timestamp).split("·")[1] ?? "—"} -{" "}
-                {formatDuration(c.duration_ms)}{" "}
-                <span className="text-sub">({formatDurationLong(c.duration_ms)})</span>
+                {isLive ? (
+                  // No duration_ms until finalize — count from the answer.
+                  <LiveDuration start={c.start_timestamp} />
+                ) : (
+                  <>
+                    {formatCallTime(c.start_timestamp).split("·")[1] ?? "—"} -{" "}
+                    {formatDuration(c.duration_ms)}{" "}
+                    <span className="text-sub">({formatDurationLong(c.duration_ms)})</span>
+                  </>
+                )}
               </MetaItem>
               <MetaItem label="Cost">{formatCost(c.cost)}</MetaItem>
               <MetaItem label="LLM Token">
@@ -269,6 +330,11 @@ export default function CallDrawer({
               </div>
             )}
 
+            {/* Analysis only exists after the call ends — the post-call
+                pipeline writes it — so a live call goes straight to the
+                transcript rather than showing a panel of "Unknown"s and a
+                Rerun that has nothing to rerun. */}
+            {!isLive && (
             <section className="mt-5">
               <div className="mb-1 flex items-center justify-between">
                 <h3 className="text-[14px] font-semibold">Conversation Analysis</h3>
@@ -315,6 +381,7 @@ export default function CallDrawer({
                 </AnalysisRow>
               </div>
             </section>
+            )}
 
             {c.call_summary && (
               <section className="mt-5">
@@ -336,7 +403,11 @@ export default function CallDrawer({
               />
               <div className="pt-4 pb-6">
                 {tab === "transcription" ? (
-                  <Transcript turns={c.transcript ?? []} />
+                  isLive ? (
+                    <LiveTranscript turns={c.transcript ?? []} />
+                  ) : (
+                    <Transcript turns={c.transcript ?? []} />
+                  )
                 ) : tab === "data" ? (
                   <DataPanel vars={c.dynamic_variables} />
                 ) : tab === "logs" ? (
