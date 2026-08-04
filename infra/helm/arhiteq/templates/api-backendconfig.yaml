@@ -11,4 +11,11 @@ metadata:
     {{- include "arhiteq.labels" . | nindent 4 }}
     app.kubernetes.io/component: api
 spec:
-  timeoutSec: {{ .Values.api.backendTimeoutSec }}
+  # The literal default is load-bearing, not belt-and-braces: deploys run
+  # `helm upgrade --reuse-values`, which re-renders the new chart against the
+  # values already live in the cluster and does NOT merge in new defaults from
+  # values.yaml. A freshly added key is therefore undefined at deploy time —
+  # here that rendered `timeoutSec: null`, which the BackendConfig CRD rejects,
+  # failing the release. Any new value this chart adds needs a default in the
+  # template that uses it.
+  timeoutSec: {{ .Values.api.backendTimeoutSec | default 2400 }}
