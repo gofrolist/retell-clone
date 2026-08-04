@@ -60,9 +60,15 @@ export function subscribeStream<T = unknown>(url: string, opts: StreamOptions<T>
         });
         if (!res.ok || !res.body) throw new Error(`stream failed: ${res.status}`);
 
-        emit.status("live");
-        retryMs = FIRST_RETRY_MS;
+        // "live" waits for a real event, not just the 200. A buffering proxy
+        // answers with a perfectly good text/event-stream it never flushes —
+        // promoting on the response would tell the page to stop its fallback
+        // poll in precisely the case the fallback exists for. Both streams
+        // send their current state on connect, so a healthy one promotes
+        // immediately.
         const ended = await readEvents(res.body, (event, data) => {
+          emit.status("live");
+          retryMs = FIRST_RETRY_MS;
           if (event === "end") emit.end();
           else emit.event(event, data as T);
         });

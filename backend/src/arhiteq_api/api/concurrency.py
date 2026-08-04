@@ -74,10 +74,16 @@ LIVE_STATUSES = ("registered", "ongoing")
 #
 # A registered call is still dialing, which no telephony provider stretches
 # past a couple of minutes; the generous ceiling only has to beat "forever".
-# An ongoing one is bounded by the agent's max_call_duration_ms (default well
-# under an hour) plus the worker's own hangup grace.
+# An ongoing one is bounded by the agent's max_call_duration_ms — which
+# defaults to an hour and is not capped, so the ceiling here sits far above any
+# call length anyone would configure.
 REGISTERED_TTL_MS = 15 * 60 * 1000
-ONGOING_TTL_MS = 4 * 60 * 60 * 1000
+ONGOING_TTL_MS = 12 * 60 * 60 * 1000
+
+# Marks a call this sweep gave up on, as opposed to one a worker ended. It is
+# how `finalize` recognises a row it may still overwrite: a worker that was
+# alive after all must not lose its transcript to a premature sweep.
+SWEPT_REASON = "error_worker_lost"
 
 
 async def expire_stale_calls(session: AsyncSession, workspace_id: str) -> None:
@@ -88,6 +94,13 @@ async def expire_stale_calls(session: AsyncSession, workspace_id: str) -> None:
             Call.workspace_id == workspace_id,
             Call.call_status == "registered",
             Call.created_at_ms < now - REGISTERED_TTL_MS,
+            # Batch tasks are all created "registered" up front and dialed over
+            # as long as a day as slots free up (batch_calls._drain_batch), so
+            # age says nothing about whether one was ever dialed. Their
+            # lifecycle — including giving up on undialed tasks — belongs to
+            # the drainer, and sweeping them here would mark a queued task
+            # not_connected and then dial it anyway.
+            Call.batch_call_id.is_(None),
         )
         .values(
             call_status="not_connected",
@@ -107,7 +120,7 @@ async def expire_stale_calls(session: AsyncSession, workspace_id: str) -> None:
         )
         .values(
             call_status="error",
-            disconnection_reason="error_unknown",
+            disconnection_reason=SWEPT_REASON,
             end_timestamp=now,
             duration_ms=now - Call.start_timestamp,
         )

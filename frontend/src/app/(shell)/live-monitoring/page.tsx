@@ -62,8 +62,14 @@ export default function LiveMonitoringPage() {
   // that was already there. Null until the first snapshot: that one is the
   // existing backlog, not a burst of new calls, and must not all flash.
   const seenIds = useRef<Set<string> | null>(null);
-  const highlightTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
-  useEffect(() => () => highlightTimers.current.forEach(clearTimeout), []);
+  // Cleared on unmount, and each handle drops itself once it has fired — a tab
+  // left open on a busy workspace would otherwise collect one dead handle per
+  // batch of arriving calls, all day.
+  const highlightTimers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  useEffect(() => {
+    const timers = highlightTimers.current;
+    return () => timers.forEach(clearTimeout);
+  }, []);
 
   const apply = useCallback((next: Call[], conc: Concurrency | null) => {
     const previous = seenIds.current;
@@ -83,12 +89,11 @@ export default function LiveMonitoringPage() {
 
     if (arriving.length) {
       setFresh((prev) => new Set([...prev, ...arriving]));
-      highlightTimers.current.push(
-        setTimeout(
-          () => setFresh((prev) => new Set([...prev].filter((id) => !arriving.includes(id)))),
-          NEW_CALL_HIGHLIGHT_MS,
-        ),
-      );
+      const timer = setTimeout(() => {
+        highlightTimers.current.delete(timer);
+        setFresh((prev) => new Set([...prev].filter((id) => !arriving.includes(id))));
+      }, NEW_CALL_HIGHLIGHT_MS);
+      highlightTimers.current.add(timer);
     }
   }, []);
 

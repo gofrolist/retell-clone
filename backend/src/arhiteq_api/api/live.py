@@ -164,18 +164,25 @@ async def stream_call(
     straight onto the stream. Once the call reaches a terminal status the
     stream sends that final state and closes with `end`; post-call analysis
     usually lands later, which is the client's cue to refetch.
+
+    `end` means the call is over — never merely that this stream hit its
+    lifetime cap. The client treats it as terminal and stops reconnecting, so
+    sending it on the cap would freeze the transcript of a call still running.
     """
     previous: str | None = None
     for _ in _ticks():
         async with session_factory()() as session:
             payload = await _call_snapshot(session, call_id, workspace_id)
-        if payload is None:  # deleted mid-stream
-            break
+        if payload is None:
+            # Deleted mid-stream: terminal for a watcher, so say so rather than
+            # leaving the client to reconnect into a 404 forever.
+            yield ServerSentEvent(event="end", data={"call_id": call_id})
+            return
         serialized = json.dumps(payload, sort_keys=True, default=str)
         if serialized != previous:
             previous = serialized
             yield ServerSentEvent(event="call", data=payload)
         if payload.get("call_status") not in concurrency.LIVE_STATUSES:
-            break
+            yield ServerSentEvent(event="end", data={"call_id": call_id})
+            return
         await asyncio.sleep(POLL_INTERVAL_S)
-    yield ServerSentEvent(event="end", data={"call_id": call_id})

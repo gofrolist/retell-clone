@@ -79,6 +79,12 @@ export function bearerToken(): string | undefined {
   return getValidSession()?.token ?? API_KEY;
 }
 
+/** Demo mode's stand-in for a stream: report offline once, subscribe to nothing. */
+function demoStream(onStatus?: (status: StreamStatus) => void): () => void {
+  onStatus?.("offline");
+  return () => {};
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (DEMO_MODE) {
     const { demoResponse } = await import("./mock");
@@ -1275,15 +1281,17 @@ export const api = {
 
   // --------------------------------------------------- live monitoring
   // SSE, not request(): these connections stay open for as long as the page is
-  // watching. Demo mode has no backend to stream from, so subscribing is a
-  // no-op there and callers fall back to their poll loop.
+  // watching. Demo mode has no backend to stream from, so subscribing reports
+  // "offline" and does nothing else — callers fall back to their poll loop,
+  // and the connection badge tells the truth instead of saying "Connecting…"
+  // for as long as the page is open.
   /** Every dialing/ongoing call in the workspace, pushed as it changes. */
   streamLiveCalls: (opts: {
     onSnapshot: (snapshot: LiveCallsSnapshot) => void;
     onStatus?: (status: StreamStatus) => void;
   }): (() => void) =>
     DEMO_MODE
-      ? () => {}
+      ? demoStream(opts.onStatus)
       : subscribeStream<RawLiveCallsSnapshot>(`${API_BASE}/live-calls/stream`, {
           token: bearerToken,
           onStatus: opts.onStatus,
@@ -1304,7 +1312,7 @@ export const api = {
     },
   ): (() => void) =>
     DEMO_MODE
-      ? () => {}
+      ? demoStream(opts.onStatus)
       : subscribeStream<RawCall>(`${API_BASE}/live-calls/${encodeURIComponent(callId)}/stream`, {
           token: bearerToken,
           onStatus: opts.onStatus,

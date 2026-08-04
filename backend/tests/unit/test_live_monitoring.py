@@ -11,7 +11,7 @@ import asyncio
 import json
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 import arhiteq_api.db as db_module
 from arhiteq_api.api import concurrency, live
@@ -145,6 +145,19 @@ async def test_call_stream_follows_the_transcript_then_ends_with_the_call(client
     assert events[-1] == ("end", {"call_id": call_id})
 
 
+async def test_call_stream_hitting_its_lifetime_cap_does_not_say_the_call_ended(client):
+    """`end` is terminal to the client — it stops reconnecting on one. Sending
+    it when the stream merely aged out would freeze the transcript of a call
+    that is still running."""
+    call_id = await _place_call(client)
+    await _answer(client, call_id)
+
+    resp = await client.get(f"/live-calls/{call_id}/stream", headers=AUTH_HEADERS)
+    events = _events(resp.text)
+    assert events[0][1]["call_status"] == "ongoing"
+    assert all(name != "end" for name, _ in events)
+
+
 async def test_call_stream_hides_another_workspaces_call(client, other_workspace):
     call_id = await _place_call(client)
     resp = await client.get(f"/live-calls/{call_id}/stream", headers=OTHER_AUTH_HEADERS)
@@ -180,8 +193,42 @@ async def test_abandoned_ongoing_call_is_swept_as_an_error(client):
 
     got = (await client.get(f"/v2/get-call/{call_id}", headers=AUTH_HEADERS)).json()
     assert got["call_status"] == "error"
-    assert got["disconnection_reason"] == "error_unknown"
+    assert got["disconnection_reason"] == concurrency.SWEPT_REASON
     assert got["duration_ms"] > 0
+
+
+async def test_a_worker_that_outlived_the_sweep_still_finalizes(client):
+    """The sweep is a guess. A worker that was alive after all must not lose
+    its transcript to it — unlike a genuinely finalized call, which stays
+    idempotent."""
+    call_id = await _place_call(client)
+    await _answer(client, call_id, start_timestamp=now_ms() - concurrency.ONGOING_TTL_MS - 1)
+    async with db_module.session_factory()() as session:
+        await concurrency.expire_stale_calls(session, WORKSPACE_ID)
+
+    late = await client.post(
+        f"/internal/calls/{call_id}/finalize",
+        headers=INTERNAL_HEADERS,
+        json={
+            "duration_ms": 42_000,
+            "disconnection_reason": "user_hangup",
+            "transcript": "Agent: Still here.",
+        },
+    )
+    assert late.json() == {"ok": True}
+
+    got = (await client.get(f"/v2/get-call/{call_id}", headers=AUTH_HEADERS)).json()
+    assert got["call_status"] == "ended"
+    assert got["disconnection_reason"] == "user_hangup"
+    assert got["transcript"] == "Agent: Still here."
+
+    # A second finalize is a no-op again — the exception is for swept rows only.
+    again = await client.post(
+        f"/internal/calls/{call_id}/finalize",
+        headers=INTERNAL_HEADERS,
+        json={"duration_ms": 1, "disconnection_reason": "agent_hangup"},
+    )
+    assert again.json() == {"ok": True, "idempotent": True}
 
 
 async def test_a_live_call_is_never_swept(client):
@@ -192,3 +239,35 @@ async def test_a_live_call_is_never_swept(client):
 
     got = (await client.get(f"/v2/get-call/{call_id}", headers=AUTH_HEADERS)).json()
     assert got["call_status"] == "ongoing"
+
+
+async def test_queued_batch_tasks_are_never_swept(client, monkeypatch):
+    """A batch creates every task "registered" up front and dials them over as
+    long as a day; age says nothing about whether one was dialed. Sweeping them
+    here would mark a queued task not_connected and then dial it anyway — and
+    drop it out of the live count the drainer paces itself against."""
+    # One slot, three tasks: two stay queued for the background drainer.
+    monkeypatch.setattr(concurrency, "BASE_CONCURRENCY", 1)
+    created = await client.post(
+        "/create-batch-call",
+        headers=AUTH_HEADERS,
+        json={
+            "from_number": FROM_NUMBER,
+            "tasks": [{"to_number": f"+1555000{n:04d}"} for n in range(3)],
+        },
+    )
+    assert created.status_code == 201
+
+    async with db_module.session_factory()() as session:
+        await session.execute(
+            update(Call)
+            .where(Call.batch_call_id.is_not(None))
+            .values(created_at_ms=now_ms() - concurrency.REGISTERED_TTL_MS - 1)
+        )
+        await session.commit()
+        await concurrency.expire_stale_calls(session, WORKSPACE_ID)
+
+        statuses = (
+            await session.scalars(select(Call.call_status).where(Call.batch_call_id.is_not(None)))
+        ).all()
+    assert set(statuses) == {"registered"}

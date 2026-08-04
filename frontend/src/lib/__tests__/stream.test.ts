@@ -97,6 +97,28 @@ describe("subscribeStream", () => {
     expect((seen as Record<string, string>).Authorization).toBe("Bearer tok");
   });
 
+  test("stays offline until a real event arrives, not just a 200", async () => {
+    // A buffering proxy answers with a valid text/event-stream it never
+    // flushes. Reporting "live" there would stop the page's fallback poll in
+    // exactly the case the fallback exists for.
+    globalThis.fetch = (async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start() {
+            // headers sent, body never flushed
+          },
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+
+    const sink = collect();
+    const stop = subscribeStream("http://api.test/s", sink.opts);
+    await tick(50);
+    stop();
+
+    expect(sink.statuses).not.toContain("live");
+  });
+
   test("an end event stops the stream instead of reconnecting", async () => {
     let calls = 0;
     globalThis.fetch = (async () => {

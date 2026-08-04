@@ -26,9 +26,11 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-// How long after a call ends to refetch it, so the post-call pipeline (which
-// runs after finalize responds) has written recording, cost and analysis.
-const ANALYSIS_SETTLE_MS = 4000;
+// After a call ends, refetch it on this cadence until the post-call pipeline
+// (which runs after finalize responds) has written its analysis — or until the
+// attempts run out, since a workspace with no Gemini credentials never gets one.
+const ANALYSIS_POLL_MS = 3000;
+const ANALYSIS_POLL_ATTEMPTS = 5;
 
 function MetaItem({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -141,15 +143,24 @@ export default function CallDrawer({
         onCall: (c) => setFull(c),
         onEnd: () => {
           // The call just ended. Recording, cost and analysis are written by
-          // the post-call pipeline moments later, so pick them up once it has
-          // had a chance to run rather than leaving the panel half-empty.
-          setTimeout(() => {
+          // the post-call pipeline (a Gemini round-trip) after finalize has
+          // already responded, so refetch until the analysis actually lands
+          // rather than betting the panel on one fixed delay.
+          let attempt = 0;
+          const poll = async () => {
             if (cancelled) return;
-            api
-              .getCall(call.call_id)
-              .then((c) => !cancelled && setFull(c))
-              .catch(() => {});
-          }, ANALYSIS_SETTLE_MS);
+            attempt += 1;
+            try {
+              const updated = await api.getCall(call.call_id);
+              if (cancelled) return;
+              setFull(updated);
+              if (updated.call_summary || updated.call_successful !== null) return;
+            } catch {
+              // transient — the retry below covers it
+            }
+            if (attempt < ANALYSIS_POLL_ATTEMPTS) setTimeout(poll, ANALYSIS_POLL_MS);
+          };
+          setTimeout(poll, ANALYSIS_POLL_MS);
         },
       });
       return () => {

@@ -85,7 +85,11 @@ Lifecycle + streaming updates. Body: `{"event": "...", ...}`:
   call already accumulated.
 
 ### `POST /internal/calls/{call_id}/finalize`
-Terminal update; idempotent (second call is a no-op).
+Terminal update; idempotent (second call is a no-op). One exception: a call the
+stale-call sweep gave up on (`disconnection_reason: "error_worker_lost"`, set
+when an `ongoing` call outlives `ONGOING_TTL_MS` with no finalize) is still
+writable, so a worker that turns out to have been alive doesn't lose its
+transcript, recording and end-of-call webhooks to a premature sweep.
 
 ```jsonc
 {

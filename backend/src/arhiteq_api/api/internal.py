@@ -20,6 +20,7 @@ from ..services import knowledge, versions, webhooks
 from ..services.analysis import analyze_call
 from ..services.metrics import CALL_DURATION, CALLS_ONGOING, CALLS_TOTAL
 from ..services.recordings import sign_recording_url
+from . import concurrency
 
 log = logging.getLogger(__name__)
 router = APIRouter(
@@ -310,7 +311,12 @@ async def finalize_call(
     call = await session.get(Call, call_id)
     if call is None:
         raise HTTPException(404, detail="Call not found")
-    if call.call_status in ("ended", "error"):
+    # A row the stale-call sweep gave up on was never really finalized, so a
+    # worker that turns out to still be alive is allowed through: the
+    # alternative is silently dropping its transcript, recording, cost and both
+    # end-of-call webhooks. Genuinely finalized calls stay idempotent.
+    swept = call.disconnection_reason == concurrency.SWEPT_REASON
+    if call.call_status in ("ended", "error") and not swept:
         return {"ok": True, "idempotent": True}
 
     was_ongoing = call.call_status == "ongoing"
