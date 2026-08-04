@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.0](https://github.com/gofrolist/retell-clone/compare/v0.23.0...v0.24.0) (2026-08-04)
+
+
+### Features
+
+* **dashboard:** stream Live Monitoring instead of polling it ([#217](https://github.com/gofrolist/retell-clone/issues/217)) ([60792a4](https://github.com/gofrolist/retell-clone/commit/60792a4d471ef0e8a14a272990aec0d20c3dcab4))
+
 ## [0.23.0](https://github.com/gofrolist/retell-clone/compare/v0.22.1...v0.23.0) (2026-08-04)
 
 
