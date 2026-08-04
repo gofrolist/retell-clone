@@ -141,6 +141,15 @@ try:
 except ValueError:
     HANGUP_FLUSH_GRACE_S = 1.0
 
+# How long an agent_swap waits for a Gemini Live session to finish the reconnect
+# that changing its tool set forces (see `_settle_realtime_session`). Long enough
+# to cover a normal Live connect, short enough that a wedged reconnect costs the
+# caller a pause rather than the call. Parsed safely (see above).
+try:
+    SWAP_SETTLE_TIMEOUT_S = max(0.0, float(os.getenv("ARHITEQ_SWAP_SETTLE_TIMEOUT_S", "5.0")))
+except ValueError:
+    SWAP_SETTLE_TIMEOUT_S = 5.0
+
 # Live-only safety net: native-audio Gemini Live voices its goodbye but defers
 # the end_call tool call to its next turn (which only fires on fresh user
 # input), leaving seconds of dead air. When the agent voices a closing line and
@@ -198,6 +207,56 @@ _SIP_ANSWERED_STATUSES = {"active", "automation"}
 
 def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
+
+
+async def _settle_realtime_session(session: Any, *, timeout: float) -> None:
+    """Wait out the reconnect a tool-set change forces on a Gemini Live session.
+
+    A Live session's tools are baked into the WebSocket's setup message, so
+    livekit's google plugin cannot mutate them in place: `update_tools` flags the
+    connection for restart and `_main_task` tears it down and dials a new one.
+    `update_instructions` alone is mutable and does not do this — a swap only
+    restarts because the destination agent brings a different tool set.
+
+    That restart is what made an agent_swap audible. The reply that follows the
+    swap's tool result would begin on the dying session, get clipped mid-word
+    when the socket closed, and then be generated again in full on the new one:
+    the listener heard the same sentence twice, the first time cut off. Blocking
+    the swap tool here keeps its result — and therefore the whole reply — on one
+    session.
+
+    Best-effort by construction. Pipeline (non-realtime) sessions never restart
+    and fall straight through, and every plugin internal below is checked for
+    before it is relied on: if a version bump renames any of them we skip the
+    wait entirely rather than poll for something that will never change. Waiting
+    on a renamed attribute would not degrade to "one slow swap" — it would spend
+    the full timeout on every swap of every call.
+    """
+    activity = getattr(session, "_activity", None)
+    rt = getattr(activity, "realtime_llm_session", None)
+    should_close = getattr(rt, "_session_should_close", None)
+    if should_close is None or not hasattr(rt, "_active_session") or not hasattr(rt, "_msg_ch"):
+        return  # not a Live session, or the plugin no longer looks like this one
+    if not should_close.is_set():
+        return  # nothing was invalidated — no reconnect to wait for
+
+    async def _wait() -> None:
+        # Cleared at the top of the reconnect loop; the socket is only usable
+        # again once the new session has also been published. A closed channel
+        # means the loop has exited for good — on a hangup mid-swap it never
+        # clears the flag, and polling on would hold the turn's teardown for the
+        # whole timeout.
+        while should_close.is_set() or rt._active_session is None:
+            if rt._msg_ch.closed:
+                return
+            await asyncio.sleep(0.02)
+
+    try:
+        await asyncio.wait_for(_wait(), timeout=timeout)
+    except TimeoutError:
+        # The reply may double, which is worse to listen to than to lose — but
+        # it is still a live call, so carry on rather than failing the swap.
+        logger.warning("agent swap: realtime session did not settle in %.1fs", timeout)
 
 
 def _cartesia_speed(voice_speed: float) -> float:
@@ -1360,6 +1419,11 @@ async def entrypoint(ctx: JobContext) -> None:
     if flow_wiring is not None:
         flow_wiring.attach(session, agent)
 
+    # Which agent the live session is currently running. Seeded from the call's
+    # own config so a hand-back to the entry agent before anything was swapped
+    # is recognised as the no-op it is.
+    running_agent_id = str((cfg.raw.get("agent") or {}).get("agent_id") or "")
+
     async def _do_agent_swap(agent_id: str, entry: Mapping[str, Any]) -> str:
         """agent_swap tool: re-point the live session at another agent's config.
 
@@ -1367,11 +1431,33 @@ async def entrypoint(ctx: JobContext) -> None:
         prompt, tools and — unless keep_current_voice — the TTS voice switch
         to the destination agent. keep_current_language is implicit: the STT
         pipeline is fixed for the session.
+
+        On a Gemini Live call the tool-set change costs a session reconnect, so
+        a swap is not free and a redundant one is not harmless — see
+        `_settle_realtime_session`. Swapping onto the agent already running is
+        therefore refused outright rather than paid for.
+
+        The claim on `running_agent_id` is staked before the first await, not
+        after the last one. livekit runs every function call of a generation as
+        its own task, and the doubled generation this settle exists to prevent
+        can re-emit the same agent_swap — so a guard that only committed at the
+        end would let both copies through and rebuild the socket twice, which is
+        the exact cost it was added to avoid. A failed swap puts the old id back.
         """
-        swap_raw = await api_client.get_agent_config(agent_id, call_id=cfg.call_id)
+        nonlocal running_agent_id
+        if agent_id and agent_id == running_agent_id:
+            logger.info("agent swap: call %s already running agent %s", cfg.call_id, agent_id)
+            return json.dumps({"result": f"already acting as agent {agent_id}"})
+        previous_agent_id, running_agent_id = running_agent_id, agent_id
+        try:
+            swap_raw = await api_client.get_agent_config(agent_id, call_id=cfg.call_id)
+        except Exception:
+            running_agent_id = previous_agent_id
+            raise
         if not isinstance(swap_raw.get("llm"), dict):
             # A destination without an LLM would wipe the live prompt/tools.
             logger.warning("agent swap rejected: agent %s has no LLM config", agent_id)
+            running_agent_id = previous_agent_id
             return json.dumps({"error": "destination agent has no LLM configuration"})
         swap_cfg = CallConfig.from_dict({**cfg.raw, **swap_raw})
         # The destination agent's own "Current Time Awareness" takes over for
@@ -1394,6 +1480,10 @@ async def entrypoint(ctx: JobContext) -> None:
         )
         await agent.update_instructions(new_instructions)
         await agent.update_tools(new_tools)
+        # update_tools is what invalidates a Live socket, so the wait goes after
+        # it: by the time this tool's result reaches the model, the model it
+        # reaches is the reconnected one running the destination agent.
+        await _settle_realtime_session(session, timeout=SWAP_SETTLE_TIMEOUT_S)
         if not entry.get("keep_current_voice"):
             # Gemini Live sessions have no separate TTS (voice is baked into the
             # realtime model), so getattr(...) is None and the voice stays put —
