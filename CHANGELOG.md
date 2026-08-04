@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.1](https://github.com/gofrolist/retell-clone/compare/v0.24.0...v0.24.1) (2026-08-04)
+
+
+### Bug Fixes
+
+* **infra:** default the API backend timeout so --reuse-values can't null it ([#219](https://github.com/gofrolist/retell-clone/issues/219)) ([e5fb5ae](https://github.com/gofrolist/retell-clone/commit/e5fb5ae151ea50a1607d5a576d0433502e27974d))
+
 ## [0.24.0](https://github.com/gofrolist/retell-clone/compare/v0.23.0...v0.24.0) (2026-08-04)
 
 
