@@ -40,18 +40,23 @@ function Popover({
   onClose,
   children,
   wide,
+  align = "left",
 }: {
   open: boolean;
   onClose: () => void;
   children: React.ReactNode;
   wide?: boolean;
+  /** Which edge the panel hangs from. Anything in the toolbar's right-hand
+   *  group must use "right": left-anchored, the panel is wider than its
+   *  trigger and runs off the viewport. */
+  align?: "left" | "right";
 }) {
   if (!open) return null;
   return (
     <>
       <div className="fixed inset-0 z-20" onClick={onClose} />
       <div
-        className={`absolute left-0 top-full z-30 mt-1 ${wide ? "w-80" : "w-56"} space-y-1 rounded-xl border border-line bg-white p-2 shadow-lg`}
+        className={`absolute ${align === "right" ? "right-0" : "left-0"} top-full z-30 mt-1 ${wide ? "w-80" : "w-56"} space-y-1 rounded-xl border border-line bg-white p-2 shadow-lg`}
       >
         {children}
       </div>
@@ -338,7 +343,7 @@ export default function AnalyticsPage() {
                 <Plus className="size-3.5" />
                 Add Chart
               </Button>
-              <Popover open={openMenu === "add"} onClose={() => setOpenMenu(null)}>
+              <Popover open={openMenu === "add"} onClose={() => setOpenMenu(null)} align="right">
                 {EXTRA_CHARTS.map((c) => (
                   <CheckboxRow
                     key={c.key}
@@ -364,7 +369,7 @@ export default function AnalyticsPage() {
             >
               <MoreHorizontal className="size-4" />
             </Button>
-            <Popover open={openMenu === "more"} onClose={() => setOpenMenu(null)}>
+            <Popover open={openMenu === "more"} onClose={() => setOpenMenu(null)} align="right">
               <button
                 className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] hover:bg-app cursor-pointer"
                 onClick={() => {

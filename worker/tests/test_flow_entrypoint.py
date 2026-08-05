@@ -38,12 +38,20 @@ def _run(coro):
 
 
 class _FakeAgent:
-    def __init__(self) -> None:
-        self.instructions: list[str] = []
+    """`instructions` mirrors livekit's Agent property; `pushed` keeps history.
+
+    The property has to read back as the *current* string, not a log: a Live
+    `say` reads it to append a verbatim block and restores it afterwards.
+    """
+
+    def __init__(self, instructions: str = "") -> None:
+        self.instructions = instructions
+        self.pushed: list[str] = []
         self.tools: list[list] = []
 
     async def update_instructions(self, instructions: str) -> None:
-        self.instructions.append(instructions)
+        self.instructions = instructions
+        self.pushed.append(instructions)
 
     async def update_tools(self, tools: list) -> None:
         self.tools.append(tools)
@@ -319,7 +327,7 @@ def test_start_speaks_the_start_nodes_line_and_installs_its_tools() -> None:
 
     session, agent = _run(scenario())
     assert session.said == ["Hi, this is Clara."]
-    assert "Be brief." in agent.instructions[0]
+    assert "Be brief." in agent.pushed[0]
     assert _names(agent.tools[0]) == ["transition_to"]
 
 
@@ -426,19 +434,92 @@ def test_a_transfer_node_dials_through_the_call_runtime() -> None:
 
 
 def test_a_speech_to_speech_session_voices_a_line_through_the_model() -> None:
-    # Gemini Live has no TTS, so say() would raise; the line is voiced by the
-    # realtime model instead (the same fallback ArhiteqAgent's greeting takes).
+    # Gemini Live has no TTS, so say() would raise. The line is pinned in the
+    # system instructions and the model asked for the turn it governs — NOT
+    # passed as generate_reply(instructions=…), which the google plugin replays
+    # as a model turn (see arhiteq_worker.live_speech).
     async def scenario():
         wiring = _wiring(_two_step_flow())
         session = _FakeSession(tts=False)
-        wiring.attach(session, _FakeAgent())
+        agent = _FakeAgent("Be brief.")
+        wiring.attach(session, agent)
         await wiring.start()
-        return session
+        return session, agent
 
-    session = _run(scenario())
+    session, agent = _run(scenario())
     assert session.said == []
-    assert len(session.replies) == 1
-    assert "Hi, this is Clara." in (session.replies[0] or "")
+    assert session.replies == [None]  # no instructions= on the reply
+    pinned = next(i for i in agent.pushed if "SAY THIS NOW" in i)
+    assert "Hi, this is Clara." in pinned
+
+
+def test_a_speech_to_speech_line_is_unpinned_once_it_has_been_voiced() -> None:
+    """The verbatim block must not outlive its turn.
+
+    Left in place it would read as a standing order and have the model repeat
+    the same line on every later turn.
+    """
+
+    async def scenario():
+        wiring = _wiring(_two_step_flow())
+        agent = _FakeAgent("Be brief.")
+        wiring.attach(_FakeSession(tts=False), agent)
+        await wiring.start()
+        return agent
+
+    agent = _run(scenario())
+    assert "SAY THIS NOW" not in agent.instructions
+    # Restored to exactly what the node entry installed (pushed[0]).
+    assert agent.pushed[-1] == agent.pushed[0]
+
+
+def test_a_speech_to_speech_model_turn_installs_the_node_prompt_not_a_turn_hint() -> None:
+    """A ``prompt`` instruction must govern the turn, not be spoken back.
+
+    `generate_reply(instructions=…)` would hand the google plugin a model turn
+    carrying the node's whole prompt — the model then reacts to it as its own
+    last utterance. It goes in as the session's instructions instead.
+    """
+    flow = _two_step_flow(
+        instruction={"type": "prompt", "text": "Ask how their week went."},
+    )
+
+    async def scenario():
+        wiring = _wiring(flow)
+        session = _FakeSession(tts=False)
+        agent = _FakeAgent()
+        wiring.attach(session, agent)
+        await wiring.start()
+        return session, agent
+
+    session, agent = _run(scenario())
+    assert session.replies == [None]  # never instructions=
+    assert any("Ask how their week went." in pushed for pushed in agent.pushed)
+
+
+def test_a_speech_to_speech_model_turn_puts_the_installed_prompt_back() -> None:
+    """A parked turn must not leave its node's prompt installed.
+
+    Under a ``start_speaker: "user"`` deferral the parked turn is released only
+    after the cascade has installed the NEXT node's prompt and tools. Pinning
+    node A's prompt without restoring would run the rest of the call on A's
+    prompt against B's tool set.
+    """
+    node_b = "Node B is in charge now."
+
+    async def scenario():
+        wiring = _wiring(_two_step_flow(instruction={"type": "prompt", "text": "Ask away."}))
+        agent = _FakeAgent()
+        wiring.attach(_FakeSession(tts=False), agent)
+        await wiring.start()
+        # Stand in for the cascade: B is entered while A's turn is in flight.
+        await wiring.set_instructions(node_b)
+        await wiring.generate_reply("Ask away.")
+        return agent
+
+    agent = _run(scenario())
+    assert node_b in agent.instructions
+    assert "Ask away." not in agent.instructions
 
 
 # ---------------------------------------------------------------------------
