@@ -64,6 +64,7 @@ from arhiteq_worker.flow import (
 from arhiteq_worker.flow_runtime import FlowRuntime
 from arhiteq_worker.goodbye import looks_like_goodbye
 from arhiteq_worker.internal_api import InternalAPI, InternalAPIError
+from arhiteq_worker.live_speech import live_opening_instructions, live_verbatim_instructions
 from arhiteq_worker.state import CallState, now_ms
 from arhiteq_worker.tools import DTMF_CODES, build_tools
 from arhiteq_worker.variables import resolve_template
@@ -466,8 +467,16 @@ class ArhiteqAgent(Agent):
         tools: list[Any],
         begin_message: str | None,
         start_speaker: str,
+        live: bool = False,
         on_user_turn: Callable[[str | None], Awaitable[None]] | None = None,
     ) -> None:
+        # A Gemini Live session has no TTS to voice the greeting and cannot be
+        # handed one per turn either (see live_speech), so the greeting is
+        # pinned in the instructions the realtime session opens with — before
+        # `session.start()`, so it rides the setup message. `on_enter` then only
+        # has to ask for the turn it governs.
+        if live and begin_message and start_speaker == "agent":
+            instructions += live_opening_instructions(begin_message)
         super().__init__(instructions=instructions, tools=tools)
         self._begin_message = begin_message
         self._start_speaker = start_speaker
@@ -505,21 +514,17 @@ class ArhiteqAgent(Agent):
     async def on_enter(self) -> None:
         if self._start_speaker != "agent":
             return  # start_speaker == "user": wait for the callee to talk
-        if not self._begin_message:
-            self.session.generate_reply()
-        elif self.session.tts is None:
-            # A speech-to-speech session (Gemini Live) has no TTS, so say()
-            # raises ("...without a TTS model or a RealtimeSession that supports
-            # say()"). Have the realtime model open the call by voicing the
-            # greeting verbatim instead.
-            self.session.generate_reply(
-                instructions=(
-                    "Start the call by saying this greeting to the user, word "
-                    f'for word and nothing else first: "{self._begin_message}"'
-                )
-            )
-        else:
+        if self._begin_message and self.session.tts is not None:
             await self.session.say(self._begin_message)
+            return
+        # No begin_message, or a Live session whose greeting `__init__` already
+        # pinned in the instructions. Either way the model composes the turn.
+        #
+        # Never pass instructions= here: on the google realtime plugin they come
+        # back as a MODEL turn plus a placeholder "." user turn, so Gemini reads
+        # the greeting as something it already said and answers a message the
+        # caller never spoke — see live_speech for the two calls that proved it.
+        self.session.generate_reply()
 
 
 class CallRuntime:
@@ -664,6 +669,7 @@ class _FlowWiring:
         self._http = http
         self._knowledge = knowledge
         self._session: AgentSession | None = None
+        self._agent: Agent | None = None
         self._runtime: FlowRuntime | None = None
         self._classifier_llm: Any = None
         self._lock = asyncio.Lock()
@@ -694,6 +700,9 @@ class _FlowWiring:
     def attach(self, session: AgentSession, agent: Agent) -> FlowRuntime:
         """Bind the live session/agent and build the runtime that drives them."""
         self._session = session
+        # Kept for `say`: on a Live session a verbatim line is delivered by
+        # temporarily pinning it in the agent's instructions.
+        self._agent = agent
         self._runtime = FlowRuntime(
             self._graph,
             # The start node may override who opens the call; FlowRuntime reads
@@ -898,24 +907,49 @@ class _FlowWiring:
         session = self._session
         if session is None:
             return
-        if getattr(session, "tts", None) is None:
-            # Gemini Live: no TTS, so say() raises. Have the realtime model
-            # voice the line verbatim instead (same fallback ArhiteqAgent's
-            # begin_message takes).
-            await session.generate_reply(
-                instructions=f'Say this to the user, word for word and nothing else: "{text}"'
-            )
+        if getattr(session, "tts", None) is not None:
+            await session.say(text)
             return
-        await session.say(text)
+        # Gemini Live: no TTS, so say() raises, and generate_reply(instructions=…)
+        # cannot stand in for it — the google plugin replays those instructions
+        # as a model turn, which makes Gemini answer the line instead of saying
+        # it (see live_speech). Pin the line in the system instructions for the
+        # one turn it governs, then ask for that turn.
+        agent = self._agent
+        base = getattr(agent, "instructions", None)
+        if agent is None or not isinstance(base, str):
+            # No agent bound, or livekit handed back a modality-aware
+            # Instructions object the worker never sets: still ask for the turn
+            # rather than dropping the line's slot in the conversation.
+            await session.generate_reply()
+            return
+        await agent.update_instructions(f"{base}{live_verbatim_instructions(text)}")
+        try:
+            await session.generate_reply()
+        finally:
+            # Restore even if the turn was interrupted: a lingering "say this
+            # now" block would have the model repeat the line every turn.
+            await agent.update_instructions(base)
 
     async def generate_reply(self, instructions: str | None) -> None:
         session = self._session
         if session is None:
             return
-        if instructions:
-            await session.generate_reply(instructions=instructions)
-        else:
+        if not instructions:
             await session.generate_reply()
+            return
+        if getattr(session, "tts", None) is not None:
+            await session.generate_reply(instructions=instructions)
+            return
+        # Gemini Live: per-turn instructions arrive as a MODEL turn (see
+        # live_speech), so the model would answer the node's prompt as though it
+        # had just recited it. Install it as the session's instructions —
+        # which is what a node prompt is — and then ask for the turn. No
+        # restore: the next node entry installs its own.
+        agent = self._agent
+        if agent is not None:
+            await agent.update_instructions(instructions)
+        await session.generate_reply()
 
     async def classify(self, instructions: str, edges: list[dict[str, Any]]) -> str | None:
         """The one extra LLM call in the design: route a ``branch`` node.
@@ -1415,6 +1449,9 @@ async def entrypoint(ctx: JobContext) -> None:
         # it, and honours a "user" start_speaker by deferring it), so the agent
         # itself must not also open — "user" is what keeps on_enter quiet.
         start_speaker="user" if flow_wiring is not None else cfg.llm.start_speaker,
+        # A Gemini Live session is the one built without a TTS; its greeting
+        # has to be pinned in the instructions rather than spoken by say().
+        live=session.tts is None,
         # The pre-reply walk seam; `_wire_session_events` above holds the
         # realtime fallback. Both go through `_FlowWiring`, which de-duplicates.
         on_user_turn=flow_wiring.on_user_turn if flow_wiring is not None else None,
