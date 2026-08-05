@@ -46,9 +46,19 @@ def _verbatim_block(*, header: str, when: str, line: str, lead: str = "") -> str
         "nothing before it, nothing after it, and no tool call before it.\n"
         "<<<SAY EXACTLY>>>\n"
         f"{line}\n"
-        "<<<END>>>\n"
-        f"{_PLACEHOLDER_NOTE}"
+        "<<<END>>>"
     )
+
+
+def live_placeholder_note() -> str:
+    """Disarm the ``"."`` turn. Belongs on EVERY Live session's instructions.
+
+    Not only the ones that pin a line: the plugin sends the placeholder ahead
+    of any ``generate_reply``, so an agent with no begin_message, or a flow node
+    asked to phrase its own line, meets it just as unprepared as the call that
+    read it as silence and hung up.
+    """
+    return f'\n\n## THE "." TURN\n{_PLACEHOLDER_NOTE}'
 
 
 def live_opening_instructions(greeting: str) -> str:
@@ -57,7 +67,7 @@ def live_opening_instructions(greeting: str) -> str:
     Appended to the agent's instructions before the session starts, so the
     greeting rides in the realtime setup message and costs no mid-call push.
     """
-    return _verbatim_block(
+    return live_placeholder_note() + _verbatim_block(
         header="OPENING LINE — this overrides everything above for your first turn",
         lead="The call has just connected and the other person has not spoken yet.\n",
         when="Your first spoken turn of this call",
@@ -70,6 +80,8 @@ def live_verbatim_instructions(line: str) -> str:
 
     Pushed as a temporary instructions update and removed once the line has
     been voiced — unlike the opening block, this one must not outlive its turn.
+    Carries no placeholder note: it is appended to instructions that already
+    hold one (`_FlowWiring.set_instructions` puts it on every node).
     """
     return _verbatim_block(
         header="SAY THIS NOW — this overrides everything above for your next turn",

@@ -5,7 +5,11 @@ Data-only, so these run in the dev-only test group. The livekit half — that
 ``generate_reply`` — is in `test_live_greeting.py`.
 """
 
-from arhiteq_worker.live_speech import live_opening_instructions, live_verbatim_instructions
+from arhiteq_worker.live_speech import (
+    live_opening_instructions,
+    live_placeholder_note,
+    live_verbatim_instructions,
+)
 
 GREETING = "Hi Tom, it's Clara — how are you doing today?"
 
@@ -31,20 +35,36 @@ def test_the_mid_call_block_scopes_itself_to_the_next_turn() -> None:
     assert "first spoken turn" not in block
 
 
-def test_both_blocks_disarm_the_placeholder_user_turn() -> None:
+def test_the_note_disarms_the_placeholder_user_turn() -> None:
     """The `"."` the google plugin sends must not read as the caller.
 
     Left unexplained it cost a production call its whole conversation: the
     model scored the placeholder as an unanswered greeting and fired
     log_mood → log_outcome(user_busy) → end_call four seconds in.
     """
-    for block in (live_opening_instructions(GREETING), live_verbatim_instructions("Hi.")):
-        assert '"."' in block
-        assert "never log an outcome or end the call over it" in block
+    note = live_placeholder_note()
+    assert '"."' in note
+    assert "never log an outcome or end the call over it" in note
+
+
+def test_the_opening_block_carries_the_note_itself() -> None:
+    # It is the one block installed before the session starts, so it cannot
+    # rely on anything else having put the note there first.
+    assert live_placeholder_note() in live_opening_instructions(GREETING)
+
+
+def test_the_mid_call_block_leaves_the_note_to_the_instructions_it_extends() -> None:
+    # `_FlowWiring.set_instructions` puts the note on every node, so repeating
+    # it here would only stack two copies in the same prompt.
+    assert live_placeholder_note() not in live_verbatim_instructions("Hi.")
 
 
 def test_a_block_is_appended_not_substituted() -> None:
-    # Both blocks are suffixes: callers concatenate them onto a prompt, so a
+    # Every block is a suffix: callers concatenate them onto a prompt, so the
     # leading separator is the module's job, not every call site's.
-    for block in (live_opening_instructions(GREETING), live_verbatim_instructions("Hi.")):
+    for block in (
+        live_opening_instructions(GREETING),
+        live_verbatim_instructions("Hi."),
+        live_placeholder_note(),
+    ):
         assert block.startswith("\n\n## ")

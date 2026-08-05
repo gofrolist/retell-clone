@@ -497,6 +497,31 @@ def test_a_speech_to_speech_model_turn_installs_the_node_prompt_not_a_turn_hint(
     assert any("Ask how their week went." in pushed for pushed in agent.pushed)
 
 
+def test_a_speech_to_speech_model_turn_puts_the_installed_prompt_back() -> None:
+    """A parked turn must not leave its node's prompt installed.
+
+    Under a ``start_speaker: "user"`` deferral the parked turn is released only
+    after the cascade has installed the NEXT node's prompt and tools. Pinning
+    node A's prompt without restoring would run the rest of the call on A's
+    prompt against B's tool set.
+    """
+    node_b = "Node B is in charge now."
+
+    async def scenario():
+        wiring = _wiring(_two_step_flow(instruction={"type": "prompt", "text": "Ask away."}))
+        agent = _FakeAgent()
+        wiring.attach(_FakeSession(tts=False), agent)
+        await wiring.start()
+        # Stand in for the cascade: B is entered while A's turn is in flight.
+        await wiring.set_instructions(node_b)
+        await wiring.generate_reply("Ask away.")
+        return agent
+
+    agent = _run(scenario())
+    assert node_b in agent.instructions
+    assert "Ask away." not in agent.instructions
+
+
 # ---------------------------------------------------------------------------
 # The branch classifier
 # ---------------------------------------------------------------------------

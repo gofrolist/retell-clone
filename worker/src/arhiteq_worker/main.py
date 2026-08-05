@@ -64,7 +64,11 @@ from arhiteq_worker.flow import (
 from arhiteq_worker.flow_runtime import FlowRuntime
 from arhiteq_worker.goodbye import looks_like_goodbye
 from arhiteq_worker.internal_api import InternalAPI, InternalAPIError
-from arhiteq_worker.live_speech import live_opening_instructions, live_verbatim_instructions
+from arhiteq_worker.live_speech import (
+    live_opening_instructions,
+    live_placeholder_note,
+    live_verbatim_instructions,
+)
 from arhiteq_worker.state import CallState, now_ms
 from arhiteq_worker.tools import DTMF_CODES, build_tools
 from arhiteq_worker.variables import resolve_template
@@ -475,8 +479,14 @@ class ArhiteqAgent(Agent):
         # pinned in the instructions the realtime session opens with — before
         # `session.start()`, so it rides the setup message. `on_enter` then only
         # has to ask for the turn it governs.
-        if live and begin_message and start_speaker == "agent":
-            instructions += live_opening_instructions(begin_message)
+        if live:
+            instructions += (
+                live_opening_instructions(begin_message)
+                if begin_message and start_speaker == "agent"
+                # No greeting to pin, but the placeholder still arrives ahead of
+                # the opening generate_reply and still has to be disarmed.
+                else live_placeholder_note()
+            )
         super().__init__(instructions=instructions, tools=tools)
         self._begin_message = begin_message
         self._start_speaker = start_speaker
@@ -712,7 +722,7 @@ class _FlowWiring:
                 start_speaker=start_speaker_for(self._graph.start, self._flow.start_speaker),
             ),
             self._variables,
-            set_instructions=agent.update_instructions,
+            set_instructions=self.set_instructions,
             set_tools=agent.update_tools,
             say=self.say,
             classify=self.classify,
@@ -903,33 +913,78 @@ class _FlowWiring:
                 )
         return tools
 
+    @property
+    def _live(self) -> bool:
+        """True on a Gemini Live session — the one built without a TTS."""
+        return self._session is not None and getattr(self._session, "tts", None) is None
+
+    async def set_instructions(self, instructions: str) -> None:
+        """Install a node's instructions, carrying the Live placeholder note.
+
+        Wraps `agent.update_instructions` rather than being it: a node install
+        replaces the whole prompt, so without this the note would survive only
+        until the first transition.
+        """
+        agent = self._agent
+        if agent is None:
+            return
+        await agent.update_instructions(
+            f"{instructions}{live_placeholder_note()}" if self._live else instructions
+        )
+
+    async def _pinned_turn(self, build: Callable[[str], str], *, what: str) -> None:
+        """Ask for one model turn under `build(current)`, then put it back.
+
+        The Live stand-in for both `say` and per-turn `generate_reply`
+        instructions: the google plugin cannot carry either without replaying
+        them as a model turn (see live_speech), so they go into the session's
+        instructions for exactly the turn they govern.
+
+        Restoring matters in both directions — a lingering "say this now" block
+        reads as a standing order, and a lingering node prompt outlives its node
+        (a turn parked by a ``start_speaker: "user"`` deferral is released only
+        after the cascade has installed the NEXT node's prompt and tools, so
+        without the restore the call would run node A's prompt against node B's
+        tools for good). When `build` returns what is already installed —
+        the ordinary, undeferred case — neither push happens at all.
+        """
+        session = self._session
+        if session is None:
+            return
+        agent = self._agent
+        base = getattr(agent, "instructions", None)
+        if agent is None or not isinstance(base, str):
+            # Nothing to pin onto: no agent bound, or livekit handed back a
+            # modality-aware Instructions object the worker never sets. Still
+            # ask for the turn rather than dropping its slot in the
+            # conversation — but say so, because the authored wording is lost.
+            logger.warning(
+                "flow call=%s: %s could not be pinned, the model will improvise it",
+                self._call_id,
+                what,
+            )
+            await session.generate_reply()
+            return
+        target = build(base)
+        if target == base:
+            await session.generate_reply()
+            return
+        await agent.update_instructions(target)
+        try:
+            await session.generate_reply()
+        finally:
+            await agent.update_instructions(base)
+
     async def say(self, text: str) -> None:
         session = self._session
         if session is None:
             return
-        if getattr(session, "tts", None) is not None:
+        if not self._live:
             await session.say(text)
             return
-        # Gemini Live: no TTS, so say() raises, and generate_reply(instructions=…)
-        # cannot stand in for it — the google plugin replays those instructions
-        # as a model turn, which makes Gemini answer the line instead of saying
-        # it (see live_speech). Pin the line in the system instructions for the
-        # one turn it governs, then ask for that turn.
-        agent = self._agent
-        base = getattr(agent, "instructions", None)
-        if agent is None or not isinstance(base, str):
-            # No agent bound, or livekit handed back a modality-aware
-            # Instructions object the worker never sets: still ask for the turn
-            # rather than dropping the line's slot in the conversation.
-            await session.generate_reply()
-            return
-        await agent.update_instructions(f"{base}{live_verbatim_instructions(text)}")
-        try:
-            await session.generate_reply()
-        finally:
-            # Restore even if the turn was interrupted: a lingering "say this
-            # now" block would have the model repeat the line every turn.
-            await agent.update_instructions(base)
+        await self._pinned_turn(
+            lambda base: f"{base}{live_verbatim_instructions(text)}", what="a static line"
+        )
 
     async def generate_reply(self, instructions: str | None) -> None:
         session = self._session
@@ -938,18 +993,15 @@ class _FlowWiring:
         if not instructions:
             await session.generate_reply()
             return
-        if getattr(session, "tts", None) is not None:
+        if not self._live:
             await session.generate_reply(instructions=instructions)
             return
-        # Gemini Live: per-turn instructions arrive as a MODEL turn (see
-        # live_speech), so the model would answer the node's prompt as though it
-        # had just recited it. Install it as the session's instructions —
-        # which is what a node prompt is — and then ask for the turn. No
-        # restore: the next node entry installs its own.
-        agent = self._agent
-        if agent is not None:
-            await agent.update_instructions(instructions)
-        await session.generate_reply()
+        # A node prompt REPLACES the installed one for its turn rather than
+        # stacking on it: the two would contradict each other whenever the
+        # deferral released this turn under the next node's prompt.
+        await self._pinned_turn(
+            lambda _base: f"{instructions}{live_placeholder_note()}", what="a node prompt"
+        )
 
     async def classify(self, instructions: str, edges: list[dict[str, Any]]) -> str | None:
         """The one extra LLM call in the design: route a ``branch`` node.

@@ -16,6 +16,7 @@ import pytest
 
 pytest.importorskip("livekit.agents")
 
+from arhiteq_worker.live_speech import live_placeholder_note
 from arhiteq_worker.main import ArhiteqAgent
 
 GREETING = "Hi Tom, it's Clara — how are you doing today?"
@@ -75,15 +76,33 @@ def test_a_pipeline_agent_still_speaks_the_greeting_through_tts() -> None:
     assert session.replies == []
 
 
-def test_a_live_agent_that_does_not_open_the_call_pins_nothing() -> None:
+def test_a_live_agent_that_does_not_open_the_call_pins_no_greeting() -> None:
     # start_speaker="user": the callee talks first, so a pinned "your first
-    # turn is the greeting" would have the model talk over them.
+    # turn is the greeting" would have the model talk over them. The
+    # placeholder note still belongs there — the "." arrives regardless.
     agent = _agent(live=True, start_speaker="user")
-    assert agent.instructions == PROMPT
+    assert "<<<SAY EXACTLY>>>" not in agent.instructions
+    assert live_placeholder_note() in agent.instructions
     session = _FakeSession(tts=False)
     _enter(agent, session)
     assert session.said == []
     assert session.replies == []
+
+
+def test_a_live_agent_with_no_begin_message_still_disarms_the_placeholder() -> None:
+    # The exact wire conditions of the call that read the "." as silence and
+    # hung up four seconds in — minus a greeting to pin.
+    agent = _agent(live=True, begin_message=None)
+    assert live_placeholder_note() in agent.instructions
+    session = _FakeSession(tts=False)
+    _enter(agent, session)
+    assert session.replies == [None]
+
+
+def test_a_pipeline_agent_is_told_nothing_about_the_placeholder() -> None:
+    # There is no placeholder on the pipeline path — it is a realtime-plugin
+    # artifact. Explaining a turn that never arrives is just prompt noise.
+    assert _agent(live=False).instructions == PROMPT
 
 
 def test_an_agent_without_a_begin_message_just_asks_for_a_turn() -> None:
