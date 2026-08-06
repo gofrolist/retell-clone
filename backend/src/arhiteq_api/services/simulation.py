@@ -73,6 +73,19 @@ log = logging.getLogger(__name__)
 # A simulated call is capped so a looping agent (or a user simulator that never
 # hangs up) can't burn tokens forever. Turns are user+agent exchanges.
 MAX_TURNS = 16
+# A scripted caller is not a runaway risk — the case wrote down every line it
+# will say — so its budget is sized from the script instead: one loop pass per
+# line, plus the pass that finds the script exhausted and hangs up. That last
+# pass is what sets `ending` and earns the agent its wrap-up turn, so leaving it
+# out of the budget would fail every `ends_with` assertion on a 16-line case for
+# a reason nothing in the output explains. Tool calls don't come out of this:
+# `_agent_turn` loops over them inside a single pass.
+SCRIPT_TURN_SLACK = 1
+# Sampling seed for a scripted run. `seed` is a real `GenerateContentConfig`
+# field, and a best-effort one — Gemini promises the same answer for repeated
+# identical requests rather than guaranteeing it — so it is worth pinning
+# alongside temperature 0 and worth nothing on its own.
+SCRIPT_SEED = 20260805
 # Consecutive tool calls the agent may make inside one turn before the harness
 # forces it to speak — guards against a tool-call loop. The last iteration is
 # spent on the spoken line, so a turn holds this many calls minus one and still
@@ -585,15 +598,41 @@ class _Simulator:
         # How the call finished, in the judge's and the wrap-up prompt's words.
         # Set by run(); the default covers a transcript nothing ever ran.
         self.ending = "the call did not get started"
+        # The caller's lines, read once: whether this case is scripted decides
+        # its turn budget and how its model calls are sampled, and re-reading
+        # the definition at each of those sites is how the three drift apart.
+        # Empty for an improvising case, which is the flag.
+        self._script = [str(line) for line in (definition.get("script") or [])]
         # How far through a scripted caller's lines this run has got. Unused by
         # an improvising case.
         self._script_position = 0
 
+    def _temperature(self, improvising: float) -> float:
+        """The temperature to sample at, given what an improvising case uses.
+
+        A scripted case exists to be graded mechanically, and mechanical grading
+        is worth nothing if the transcript underneath it is resampled every run.
+        So the agent's own turns and any invented tool result are taken greedily
+        — the caller saying the same words is only half of a repeatable call. An
+        improvising case is already a different conversation each time and keeps
+        the temperatures it has always used.
+        """
+        return 0.0 if self._script else improvising
+
     async def _json_call(self, model: str, prompt: str, temperature: float) -> dict[str, Any]:
+        config: dict[str, Any] = {
+            "response_mime_type": "application/json",
+            "temperature": temperature,
+        }
+        if self._script:
+            # Best-effort on Gemini's side, and only meaningful next to
+            # temperature 0 — but a scripted run is the one place it can help,
+            # and it costs an improvising run nothing because it is not sent.
+            config["seed"] = SCRIPT_SEED
         resp = await self._client.aio.models.generate_content(
             model=model,
             contents=prompt,
-            config={"response_mime_type": "application/json", "temperature": temperature},
+            config=config,
         )
         return _json_object(resp.text)
 
@@ -729,7 +768,7 @@ class _Simulator:
                     facts=self._call_facts(),
                     history=_history(self.transcript),
                 ),
-                0.4,
+                self._temperature(0.4),
             )
             return json.dumps(data, ensure_ascii=False)
         except Exception:
@@ -762,6 +801,17 @@ class _Simulator:
             {
                 "role": "tool_call_invocation",
                 "name": name,
+                # The tool's *type*, alongside its name, because the name is not
+                # enough to know what a call did: a tool of type `end_call` is
+                # named whatever the agent config called it, so grading a
+                # hang-up by name (`assertions._took_the_call_away`) would miss
+                # one named `hang_up` and report that the caller ended a call
+                # the agent ended. Empty when the agent invented a tool that is
+                # not in the catalog, which has no type to record.
+                # Purely additive: the dashboard projects transcript entries
+                # field by field (`uiTranscriptFromRaw`) and drops keys it does
+                # not know, and `_history` renders name and arguments only.
+                "type": str(tool["type"]) if tool is not None else "",
                 "arguments": json.dumps(args, ensure_ascii=False),
                 "tool_call_id": call_id,
             }
@@ -796,7 +846,7 @@ class _Simulator:
                     tools=_tool_block(self._catalog),
                     history=_history(self.transcript),
                 ),
-                0.3,
+                self._temperature(0.3),
             )
             if action.get("action") != "tool_call":
                 content = str(action.get("content") or "").strip()
@@ -893,7 +943,12 @@ class _Simulator:
                 self.ending = "the agent ended it"
                 return self.transcript
         self.ending = "the harness hit its turn limit before the call ended"
-        for _ in range(MAX_TURNS):
+        # A scripted case buys exactly the passes it needs (see
+        # SCRIPT_TURN_SLACK); an improvising one keeps the flat cap, because
+        # there is nothing to size a budget from and a caller that never hangs
+        # up is precisely what the cap is for.
+        turns = len(self._script) + SCRIPT_TURN_SLACK if self._script else MAX_TURNS
+        for _ in range(turns):
             ended = await self._user_turn()
             if ended is not None:
                 self.ending = ended
@@ -927,7 +982,7 @@ class _Simulator:
         a pass, and reporting it as one would put a green badge on an untested
         agent.
         """
-        metrics = [str(m) for m in (self._definition.get("metrics") or []) if str(m).strip()]
+        metrics = _metrics(self._definition)
         if not metrics:
             raise ValueError("This test case has no success criteria to grade.")
         data = await self._json_call(
@@ -984,6 +1039,25 @@ def _explain(status: str, results: list[dict[str, Any]]) -> str:
     return "\n".join([head, *(f"- {r['metric']}: {r['explanation']}" for r in failed)])
 
 
+def _metrics(snapshot: Mapping[str, Any]) -> list[str]:
+    """The judged criteria a case actually carries.
+
+    Blank entries are dropped: the dashboard's criteria editor leaves an empty
+    row behind, and a blank criterion is not something a judge can grade.
+    """
+    return [str(m) for m in (snapshot.get("metrics") or []) if str(m).strip()]
+
+
+def _has_metrics(snapshot: Mapping[str, Any]) -> bool:
+    """Whether the judge has anything to grade on this case.
+
+    One predicate, because it decides two different things — whether a case is
+    runnable at all, and whether a run pays for a judge — and two copies of it
+    is how those two answers end up disagreeing about a whitespace-only metric.
+    """
+    return bool(_metrics(snapshot))
+
+
 def has_gradable_criteria(snapshot: Mapping[str, Any]) -> bool:
     """Whether a case has anything to grade at all.
 
@@ -991,9 +1065,7 @@ def has_gradable_criteria(snapshot: Mapping[str, Any]) -> bool:
     criteria — that is the point of it — and the pre-existing guard checked only
     `metrics`, so without this every scripted case would error before it ran.
     """
-    if [m for m in (snapshot.get("metrics") or []) if str(m).strip()]:
-        return True
-    return bool(snapshot.get("assertions"))
+    return _has_metrics(snapshot) or bool(snapshot.get("assertions"))
 
 
 def combine_results(
@@ -1004,8 +1076,16 @@ def combine_results(
     Metrics first, then assertions, matching the order a case declares them, so
     the run drawer reads top-to-bottom the way the case does. A run passes only
     if everything passed — an assertion is not a softer kind of criterion.
+
+    Nothing to combine raises, the way `judge` does on a case with no criteria:
+    `all([])` is True, so without this a run that graded nothing would come back
+    a pass and put a green badge on an untested agent. `has_gradable_criteria`
+    should already have stopped such a case at the gate — this keeps that
+    invariant checkable here rather than inferred from a caller elsewhere.
     """
     results = list(judged) + list(asserted)
+    if not results:
+        raise ValueError("This test case has no success criteria to grade.")
     status = "pass" if all(r["passed"] for r in results) else "fail"
     return status, results, _explain(status, results)
 
@@ -1207,7 +1287,7 @@ async def _run_one(factory: Any, job_id: str) -> str:
             simulator.transcript, snapshot.get("assertions") or [], simulator.ending
         )
         judged: list[dict[str, Any]] = []
-        if [m for m in (snapshot.get("metrics") or []) if str(m).strip()]:
+        if _has_metrics(snapshot):
             _, judged = await simulator.judge()
         status, results, explanation = combine_results(judged, asserted)
     except Exception as exc:

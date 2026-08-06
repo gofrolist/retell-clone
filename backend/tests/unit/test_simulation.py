@@ -23,9 +23,13 @@ class FakeModel:
     def __init__(self, replies):
         self._replies = list(replies)
         self.prompts: list[str] = []
+        # Recorded alongside the prompts: how a call was sampled is part of the
+        # harness's behaviour, not Gemini's.
+        self.configs: list[dict] = []
 
     async def generate_content(self, *, model, contents, config):
         self.prompts.append(contents)
+        self.configs.append(dict(config))
         if not self._replies:
             raise AssertionError(f"unexpected extra model call:\n{contents[:400]}")
         reply = self._replies.pop(0)
@@ -1824,6 +1828,121 @@ async def test_a_script_of_one_line_still_hangs_up_rather_than_stalling(monkeypa
     assert sim.ending == "the caller hung up"
 
 
+async def test_a_script_as_long_as_the_turn_cap_still_reaches_its_last_line(monkeypatch):
+    """The cap is not the budget for a scripted case.
+
+    A script of MAX_TURNS lines spent the whole budget saying them, so the loop
+    fell out of `range` before the pass that hangs up: `ending` stayed at the
+    turn-limit text, no wrap-up turn ran, and every `ends_with` assertion failed
+    with nothing in the output saying why.
+    """
+    script = [f"line {i}" for i in range(simulation.MAX_TURNS)]
+    sim, _ = make_simulator(
+        monkeypatch,
+        # One agent reply per line, plus the wrap-up turn the hang-up earns.
+        [{"action": "speak", "content": "mm-hm"} for _ in script] + [{"action": "done"}],
+        definition={"user_prompt": "", "metrics": [], "script": script},
+    )
+    await sim.run()
+
+    said = [item["content"] for item in sim.transcript if item["role"] == "user"]
+    assert said == script
+    assert sim.ending == "the caller hung up"
+
+
+async def test_a_script_longer_than_the_turn_cap_is_played_in_full(monkeypatch):
+    script = [f"line {i}" for i in range(simulation.MAX_TURNS + 5)]
+    sim, _ = make_simulator(
+        monkeypatch,
+        [{"action": "speak", "content": "mm-hm"} for _ in script] + [{"action": "done"}],
+        definition={"user_prompt": "", "metrics": [], "script": script},
+    )
+    await sim.run()
+
+    said = [item["content"] for item in sim.transcript if item["role"] == "user"]
+    assert said == script
+    assert sim.ending == "the caller hung up"
+
+
+async def test_a_scripted_run_samples_greedily_and_pins_a_seed(monkeypatch):
+    """Repeatability is the whole premise, so nothing in the run may resample.
+
+    The agent's own turn ran at 0.3 and an unmocked tool's invented result at
+    0.4 — both feed the transcript the assertions read, so the same case graded
+    a different conversation on the next run however mechanical the grading was.
+    """
+    sim, model = make_simulator(
+        monkeypatch,
+        [
+            {"action": "tool_call", "tool_name": "schedule_callback", "arguments": {}},
+            {"status": "queued"},  # the invented tool result
+            {"action": "speak", "content": "Booked."},
+            {"action": "done"},  # the wrap-up turn
+        ],
+        definition={"user_prompt": "", "metrics": [], "script": ["Book me in."]},
+    )
+    await sim.run()
+
+    assert len(model.configs) == 4
+    assert [c["temperature"] for c in model.configs] == [0.0, 0.0, 0.0, 0.0]
+    assert all(c.get("seed") is not None for c in model.configs)
+    assert len({c["seed"] for c in model.configs}) == 1
+
+
+async def test_an_improvising_run_is_sampled_exactly_as_it_always_was(monkeypatch):
+    """The other half of the same fix: a case with no script is untouched."""
+    sim, model = make_simulator(
+        monkeypatch,
+        [
+            {"action": "speak", "content": "Book me in."},
+            {"action": "tool_call", "tool_name": "schedule_callback", "arguments": {}},
+            {"status": "queued"},
+            {"action": "speak", "content": "Booked."},
+            {"action": "hangup", "reason": "done"},
+            {"action": "done"},
+        ],
+        definition={"user_prompt": "You want a callback.", "metrics": []},
+    )
+    await sim.run()
+
+    # caller, agent, invented tool result, agent, caller, wrap-up.
+    assert [c["temperature"] for c in model.configs] == [0.7, 0.3, 0.4, 0.3, 0.7, 0.0]
+    assert not any("seed" in c for c in model.configs)
+
+
+async def test_an_invocation_records_the_tool_type(monkeypatch):
+    """Additive: the name alone cannot say whether a call ended the call."""
+    sim, _ = make_simulator(
+        monkeypatch,
+        [
+            {"action": "speak", "content": "Sure."},
+            {"action": "tool_call", "tool_name": "end_call", "arguments": {}},
+        ],
+        definition={"user_prompt": "", "metrics": [], "script": ["Bye."]},
+    )
+    await sim.run()
+
+    invocations = [t for t in sim.transcript if t["role"] == "tool_call_invocation"]
+    assert [(t["name"], t["type"]) for t in invocations] == [("end_call", "end_call")]
+
+
+async def test_an_invented_tool_records_an_empty_type(monkeypatch):
+    """A tool the agent made up has no catalog entry, so no type to record."""
+    sim, _ = make_simulator(
+        monkeypatch,
+        [
+            {"action": "tool_call", "tool_name": "wire_money", "arguments": {}},
+            {"action": "speak", "content": "Done."},
+            {"action": "done"},
+        ],
+        definition={"user_prompt": "", "metrics": [], "script": ["Send it."]},
+    )
+    await sim.run()
+
+    invocation = next(t for t in sim.transcript if t["role"] == "tool_call_invocation")
+    assert invocation["type"] == ""
+
+
 # ------------------------------------------------------------- grading
 
 
@@ -1842,6 +1961,32 @@ def test_combine_results_fails_when_any_entry_failed():
     status, _results, explanation = simulation.combine_results(judged, asserted)
     assert status == "fail"
     assert "a" in explanation and "nope" in explanation
+
+
+def test_combine_results_refuses_to_pass_a_run_that_graded_nothing():
+    """`all([])` is True, so an empty combination used to come back a pass.
+
+    `has_gradable_criteria` keeps such a case from ever running, but the
+    invariant belongs here too rather than three hundred lines away — a green
+    badge on an untested agent is exactly what `judge` refuses to produce.
+    """
+    with pytest.raises(ValueError):
+        simulation.combine_results([], [])
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "expected"),
+    [
+        ({"metrics": ["does the thing"]}, True),
+        ({}, False),
+        ({"metrics": []}, False),
+        ({"metrics": ["   "]}, False),
+        # Assertions are not the judge's business.
+        ({"assertions": [{"tool_called": "x"}]}, False),
+    ],
+)
+def test_has_metrics_is_the_one_judged_criteria_predicate(snapshot, expected):
+    assert simulation._has_metrics(snapshot) is expected
 
 
 def test_combine_results_handles_assertions_only():
