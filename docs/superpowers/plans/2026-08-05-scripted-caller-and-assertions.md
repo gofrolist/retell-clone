@@ -21,7 +21,7 @@
 
 ## Phase structure
 
-**Phase A (Tasks 1–3) is a `retell-clone` PR.** It ships the engine capability. It is complete and useful on its own: the dashboard can author a scripted case with assertions the moment it merges.
+**Phase A (Tasks 1–3) is a `retell-clone` PR.** It ships the engine capability: a scripted case with assertions can be authored **through the API** and runs the moment it merges. The dashboard cannot author one — `TestCaseModal.tsx` has no script or assertion editor and `testCaseBody()` does not send the fields. That is deliberate (no frontend change is in scope, and Phase B's cases are files in a repo, not hand-authored in a browser), but it means Phase A is useful to the runner, not to a dashboard user. A dashboard editor is a separate piece of work nobody has asked for yet.
 
 **Phase B (sketched at the end) is a `usan-retirement-backend` PR** that writes the ~15 Clara cases and turns on the prompt-repo gate. **It cannot start until Phase A is merged and released**, because the cases are authored against the shipped case format. Phase B is deliberately left as an outline here and gets its own plan once Phase A is released — the last plan in this series specified code before the thing existed and several of its blocks turned out to be wrong.
 
@@ -1104,5 +1104,6 @@ Shape it will take, in `usan-retirement-backend`:
 Open questions Phase B must answer, which Phase A's outcome will inform:
 
 - How the runner authenticates in CI, and which workspace it targets — this needs a reachable Arhiteq, which is the same unsolved problem that left parity out of CI in the previous PR. It may be that the layer-1 gate can only run locally and pre-publish until an Arhiteq instance is reachable from CI.
-- Whether 15 scripted cases actually hold their path stable across runs at temperature 0, measured rather than assumed.
+- Whether 15 scripted cases actually hold their path stable across runs at temperature 0, measured rather than assumed. **Measure this on one case, five times, before writing the other fourteen.** Phase A's final review enumerated what stays uncontrolled even at temperature 0: an unmocked tool has its result invented by a model, an unpinned `current_time` reads the wall clock, `kb_lookup` hits live rows anyone can edit, the agent config is read live rather than from a published snapshot, and a `-latest` model alias changes underneath a committed gate. Every case must mock every tool it expects and pin its clock; nothing enforces either.
 - Which handoff assertions the real cases need, which decides whether `swapped_to` / `agent_at_end` / `no_reask` are worth building.
+- **Whether to add an eighth assertion type ordering speech against a tool call.** `tool_order` orders tools among themselves and `said_matches` finds a line anywhere, so neither expresses "the agent read the value back and *then* saved it" — the confirm-before-save flow on Phase B's own list. `{"tool_called": "save_x"}` plus `{"said_matches": "(?i)is that right"}` passes just as happily when the agent saved first, which is the bug the case exists to catch. Phase A's review checked the other five named flows against the seven existing types and found them expressible; this is the one gap. Candidate shapes: a `said_before` / `said_after` taking `{pattern, tool}`, or allowing `{"said": "pattern"}` entries inside `tool_order`.
