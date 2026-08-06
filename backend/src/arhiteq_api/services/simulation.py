@@ -900,7 +900,7 @@ class _Simulator:
         is something the caller did, and only that one earns the agent a wrap-up
         turn.
         """
-        script = [str(line) for line in (self._definition.get("script") or [])]
+        script = self._script
         if script:
             # A scripted caller says exactly what the case wrote, in order. This
             # is the half of determinism the assertions cannot supply: grading is

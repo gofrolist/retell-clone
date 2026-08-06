@@ -290,3 +290,19 @@ def test_times_written_as_a_string_counts_as_the_number_it_says():
     t = [call("log_mood")]
     assert only(t, {"tool_called": "log_mood", "times": "1"})["passed"] is True
     assert only(t, {"tool_called": "log_mood", "times": "2"})["passed"] is False
+
+
+def test_the_terminal_tool_types_stay_in_step_with_the_simulator():
+    """`assertions` deliberately does not import `simulation` — so pin the copy.
+
+    `ends_with: caller_hangup` decides "the agent took the call away" from the
+    tool type the simulator recorded, using its own copy of the list because
+    importing the engine into a pure module would be the wrong trade. The cost
+    of that copy is drift: a terminal type added to the simulator and not here
+    would make a hang-up invisible to the assertion, and nothing else would
+    notice. This test is what notices.
+    """
+    from arhiteq_api.services import simulation
+    from arhiteq_api.services.assertions import _TERMINAL_TOOL_TYPES
+
+    assert _TERMINAL_TOOL_TYPES == simulation._TERMINAL_TOOL_TYPES
