@@ -599,10 +599,19 @@ async def test_script_and_assertions_are_updatable(client):
 
 
 async def test_they_can_be_cleared_with_an_empty_list(client):
-    case_id = (await _create_case(client, script=["hi"]))["test_case_definition_id"]
+    # Both fields, because they go through separate `is not None` branches: one
+    # of them clearing correctly says nothing about the other.
+    case_id = (await _create_case(client, script=["hi"], assertions=[{"ends_with": "end_call"}]))[
+        "test_case_definition_id"
+    ]
     res = await client.put(
         f"/update-test-case-definition/{case_id}",
-        json={"script": []},
+        json={"script": [], "assertions": []},
         headers=AUTH_HEADERS,
     )
     assert res.json()["script"] == []
+    assert res.json()["assertions"] == []
+
+    got = await client.get(f"/get-test-case-definition/{case_id}", headers=AUTH_HEADERS)
+    assert got.json()["script"] == []
+    assert got.json()["assertions"] == []

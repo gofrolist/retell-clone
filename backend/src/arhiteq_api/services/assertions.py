@@ -17,6 +17,20 @@ is written inline as `(?i)`; an exact match is anchored with `^` and `$`. The
 design doc offered a second `/pattern/flags` syntax as well — one syntax is used
 here on purpose, because two ways to write a pattern is a bug waiting for
 whoever writes the hundredth case.
+
+Two things to know before writing a case:
+
+* `{"tool_called": "x", "times": 0}` is **not** how you say "never called". The
+  "was never called" guard in `_check` fires before `times` is looked at, so
+  that assertion can only ever fail. Spell it `{"tool_not_called": "x"}`. The
+  guard order stays as it is on purpose: it is what makes every other
+  `tool_called` failure explain *which* tools did run.
+* Determinism is not something the assertions can supply on their own. A
+  scripted case should carry a `tool_mock` for every tool it expects to be
+  called, and should pin `current_time` in its `dynamic_variables`. An unmocked
+  tool has its result invented by a model, and an unpinned clock reads
+  `datetime.now(UTC)` — either one hands the same assertions a different call to
+  grade on the next run, however mechanical the grading itself is.
 """
 
 import json
@@ -28,13 +42,33 @@ from typing import Any
 # transcript, so this is the one string that has to stay in step with it.
 CALLER_HUNG_UP = "the caller hung up"
 
-# Tools that take the call away from the agent. `ends_with: caller_hangup` means
-# the *caller* ended it, so neither of these may have run.
+# Tool *types* that take the call away from the agent — the same tuple
+# `_Simulator` decides by (`simulation._TERMINAL_TOOL_TYPES`). This is the
+# reliable signal: a tool of type `end_call` may be named anything the agent
+# config likes, and the transcript records the type alongside the name.
+_TERMINAL_TOOL_TYPES = ("end_call", "transfer_call")
+# The same check for a transcript recorded before the type was written down.
+# Matching by name misses a hang-up tool the config renamed, so it is the
+# fallback rather than the rule.
 _TERMINAL_TOOLS = ("end_call", "transfer_call")
 
 
 def _invocations(transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [item for item in transcript if item.get("role") == "tool_call_invocation"]
+
+
+def _took_the_call_away(invocation: dict[str, Any]) -> bool:
+    """Whether this call ended the conversation for the agent.
+
+    `type` is what the simulator itself decides by, so it wins whenever the
+    transcript carries it. Only runs recorded after the type was added have it;
+    for anything older, fall back to the stock names — which is why a renamed
+    hang-up tool in an old transcript is the one case this can still miss.
+    """
+    tool_type = invocation.get("type")
+    if tool_type:
+        return str(tool_type) in _TERMINAL_TOOL_TYPES
+    return invocation.get("name") in _TERMINAL_TOOLS
 
 
 def _spoken(transcript: list[dict[str, Any]]) -> list[str]:
@@ -149,7 +183,11 @@ def _check(
                     f"{json.dumps(expected, ensure_ascii=False)}."
                 )
         times = assertion.get("times")
-        if times is not None and len(matching) != times:
+        # Coerced, because a case that wrote "1" means one call. Left as a
+        # string it would compare unequal to every count and fail with the
+        # nonsense "matched 1 call(s), expected 1"; a value that is no kind of
+        # number at all raises here and fails the assertion with a reason.
+        if times is not None and len(matching) != int(times):
             return False, f"{value} matched {len(matching)} call(s), expected {times}."
         return True, f"{value} was called {len(matching)} time(s)."
 
@@ -189,7 +227,7 @@ def _check(
         if value == "caller_hangup":
             if ending != CALLER_HUNG_UP:
                 return False, f"the call ended because {ending}."
-            hung_up = [c for c in invocations if c.get("name") in _TERMINAL_TOOLS]
+            hung_up = [c for c in invocations if _took_the_call_away(c)]
             if hung_up:
                 return False, f"the agent called {hung_up[-1].get('name')} first."
             return True, "the caller hung up."
@@ -219,8 +257,13 @@ def evaluate(
     """Grade every assertion against a finished call.
 
     One result per assertion, in the order declared, in the judge's own shape so
-    the dashboard needs no change. A bad regex fails its own assertion rather
-    than the run: one malformed case must not take the batch down with it.
+    the dashboard needs no change. A malformed assertion fails its own assertion
+    rather than the run: one bad entry must not take the batch down with it, and
+    a case is hand-written JSON, so the ways it can be wrong are open-ended — a
+    pattern that does not compile, a count written as a word, a `with` that is a
+    string instead of a map. Anything raised while deciding one assertion is
+    caught and reported against that assertion, and it *fails*: an assertion
+    nobody could evaluate is never a pass.
     """
     results: list[dict[str, Any]] = []
     for assertion in assertions or []:
@@ -237,5 +280,10 @@ def evaluate(
             passed, explanation = _check(transcript, assertion, ending)
         except _BadPattern as exc:
             passed, explanation = False, str(exc)
+        except Exception as exc:  # noqa: BLE001 — a bad assertion fails, alone
+            passed, explanation = (
+                False,
+                f"This assertion could not be evaluated: {type(exc).__name__}: {exc}",
+            )
         results.append({"metric": _label(assertion), "passed": passed, "explanation": explanation})
     return results

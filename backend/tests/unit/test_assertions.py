@@ -4,6 +4,8 @@ Every test builds a transcript literally — no database, no LLM, no fixtures �
 because that is the property the whole determinism argument rests on.
 """
 
+import pytest
+
 from arhiteq_api.services.assertions import evaluate
 
 HUNG_UP = "the caller hung up"
@@ -17,13 +19,18 @@ def user(text):
     return {"role": "user", "content": text}
 
 
-def call(name, arguments=None):
-    return {
+def call(name, arguments=None, tool_type=None):
+    """One invocation. `tool_type` left out is a transcript recorded before the
+    type was written down — the shape every stored run still has."""
+    entry = {
         "role": "tool_call_invocation",
         "name": name,
         "arguments": arguments if arguments is not None else "{}",
         "tool_call_id": f"tool_{name}",
     }
+    if tool_type is not None:
+        entry["type"] = tool_type
+    return entry
 
 
 def result(name, content='{"ok": true}'):
@@ -185,8 +192,25 @@ def test_ends_with_caller_hangup():
 
 
 def test_ends_with_caller_hangup_fails_if_the_agent_hung_up_too():
+    # No `type` on the entry: an older transcript, matched by name.
     t = [call("end_call")]
     assert only(t, {"ends_with": "caller_hangup"}, ending=HUNG_UP)["passed"] is False
+
+
+def test_ends_with_caller_hangup_sees_a_hang_up_tool_the_config_renamed():
+    # The agent config is free to call its `end_call` tool anything; the harness
+    # decides by type. Grading by name alone would report "the caller hung up"
+    # for a call the agent ended — a silently wrong pass.
+    t = [call("hang_up", tool_type="end_call")]
+    r = only(t, {"ends_with": "caller_hangup"}, ending=HUNG_UP)
+    assert r["passed"] is False
+    assert "hang_up" in r["explanation"]
+
+
+def test_ends_with_caller_hangup_trusts_the_type_over_the_name():
+    # A custom tool that happens to be named `end_call` did not end anything.
+    t = [call("end_call", tool_type="custom")]
+    assert only(t, {"ends_with": "caller_hangup"}, ending=HUNG_UP)["passed"] is True
 
 
 # --- turn_count_max ------------------------------------------------------
@@ -229,3 +253,40 @@ def test_an_invalid_regex_fails_the_assertion_instead_of_raising():
     r = only([agent("hi")], {"said_matches": "(unclosed"})
     assert r["passed"] is False
     assert "regex" in r["explanation"].lower()
+
+
+@pytest.mark.parametrize(
+    "assertion",
+    [
+        # A count written as a string: compared against an int by `>`.
+        {"turn_count_max": "2"},
+        # A `with` that is a string rather than a map of argument patterns.
+        {"tool_called": "log_mood", "with": "nope"},
+        # A count that is no kind of number at all.
+        {"tool_called": "log_mood", "times": "twice"},
+    ],
+)
+def test_a_malformed_assertion_fails_instead_of_raising(assertion):
+    """A case is hand-written JSON; every way of being wrong has to land here.
+
+    Before this, each of these escaped `evaluate` and marked the whole run
+    `error`, discarding every other assertion's verdict along with it.
+    """
+    r = only([user("a"), call("log_mood"), agent("hi")], assertion)
+    assert r["passed"] is False
+    assert "could not be evaluated" in r["explanation"]
+
+
+def test_a_malformed_assertion_does_not_take_the_other_verdicts_with_it():
+    results = evaluate(
+        [call("log_mood")],
+        [{"turn_count_max": "2"}, {"tool_called": "log_mood"}],
+        HUNG_UP,
+    )
+    assert [r["passed"] for r in results] == [False, True]
+
+
+def test_times_written_as_a_string_counts_as_the_number_it_says():
+    t = [call("log_mood")]
+    assert only(t, {"tool_called": "log_mood", "times": "1"})["passed"] is True
+    assert only(t, {"tool_called": "log_mood", "times": "2"})["passed"] is False

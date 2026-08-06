@@ -661,6 +661,12 @@ class TestCaseDefinition(Base):
     # `assertions` are graded mechanically (services/assertions.py) instead of
     # by the judge. A case carrying only assertions never calls a model to be
     # graded at all.
+    #
+    # `assertions` must stay JSON and must never be "optimized" to JSONB:
+    # Postgres stores JSONB as a parsed object and does not preserve key order,
+    # and the evaluator identifies an assertion by its *first* key
+    # (`next(iter(assertion))`). Under JSONB, `{"tool_called": "x", "with": …}`
+    # can come back with `with` first and be read as an unknown assertion type.
     script: Mapped[list[Any] | None] = mapped_column(JSON)
     assertions: Mapped[list[Any] | None] = mapped_column(JSON)
     llm_model: Mapped[str | None] = mapped_column(String(64))
