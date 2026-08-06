@@ -551,3 +551,58 @@ async def test_a_failed_config_load_ends_the_run_instead_of_stranding_it(client,
     ][0]
     assert run["status"] == "error"
     assert "connection reset" in run["result_explanation"]
+
+
+async def test_case_carries_a_script_and_assertions(client):
+    created = await _create_case(
+        client,
+        script=["Morning Clara.", "I took the Lipitor.", "No, that's all."],
+        assertions=[
+            {"tool_called": "log_medication_taken", "with": {"medication_name": "(?i)lipitor"}},
+            {"tool_not_called": "purchase_offer"},
+        ],
+    )
+    assert created["script"] == ["Morning Clara.", "I took the Lipitor.", "No, that's all."]
+    assert created["assertions"][1] == {"tool_not_called": "purchase_offer"}
+
+    case_id = created["test_case_definition_id"]
+    got = await client.get(f"/get-test-case-definition/{case_id}", headers=AUTH_HEADERS)
+    assert got.json()["script"] == created["script"]
+    assert got.json()["assertions"] == created["assertions"]
+
+
+async def test_a_case_without_them_reports_empty_lists(client):
+    created = await _create_case(client)
+    assert created["script"] == []
+    assert created["assertions"] == []
+
+
+async def test_script_and_assertions_are_updatable(client):
+    case_id = (await _create_case(client))["test_case_definition_id"]
+    res = await client.put(
+        f"/update-test-case-definition/{case_id}",
+        json={"script": ["hello"], "assertions": [{"ends_with": "end_call"}]},
+        headers=AUTH_HEADERS,
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["script"] == ["hello"]
+    assert res.json()["assertions"] == [{"ends_with": "end_call"}]
+
+    # Omitting them leaves them alone, the way every other optional field behaves.
+    res = await client.put(
+        f"/update-test-case-definition/{case_id}",
+        json={"name": "renamed"},
+        headers=AUTH_HEADERS,
+    )
+    assert res.json()["script"] == ["hello"]
+    assert res.json()["assertions"] == [{"ends_with": "end_call"}]
+
+
+async def test_they_can_be_cleared_with_an_empty_list(client):
+    case_id = (await _create_case(client, script=["hi"]))["test_case_definition_id"]
+    res = await client.put(
+        f"/update-test-case-definition/{case_id}",
+        json={"script": []},
+        headers=AUTH_HEADERS,
+    )
+    assert res.json()["script"] == []
