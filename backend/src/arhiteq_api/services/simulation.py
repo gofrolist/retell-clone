@@ -57,7 +57,7 @@ from ..models import (
     TestCaseJob,
     now_ms,
 )
-from . import knowledge, versions
+from . import assertions, knowledge, versions
 from .gemini import build_genai_client, genai_credentials_available, is_live_model
 from .template_variables import (
     DEFAULT_TIMEZONE,
@@ -585,6 +585,9 @@ class _Simulator:
         # How the call finished, in the judge's and the wrap-up prompt's words.
         # Set by run(); the default covers a transcript nothing ever ran.
         self.ending = "the call did not get started"
+        # How far through a scripted caller's lines this run has got. Unused by
+        # an improvising case.
+        self._script_position = 0
 
     async def _json_call(self, model: str, prompt: str, temperature: float) -> dict[str, Any]:
         resp = await self._client.aio.models.generate_content(
@@ -847,6 +850,21 @@ class _Simulator:
         is something the caller did, and only that one earns the agent a wrap-up
         turn.
         """
+        script = [str(line) for line in (self._definition.get("script") or [])]
+        if script:
+            # A scripted caller says exactly what the case wrote, in order. This
+            # is the half of determinism the assertions cannot supply: grading is
+            # only repeatable if the conversation being graded is the same one.
+            if self._script_position >= len(script):
+                # Out of lines. Hanging up rather than falling silent is what
+                # earns the agent its wrap-up turn (see `run`), so a prompt that
+                # logs its disposition while ending the call is still graded.
+                return "the caller hung up"
+            line = script[self._script_position]
+            self._script_position += 1
+            self.transcript.append({"role": "user", "content": line})
+            return None
+
         scenario = str(self._definition.get("user_prompt") or "").strip()
         action = await self._json_call(
             self._settings.analysis_model,
@@ -966,6 +984,32 @@ def _explain(status: str, results: list[dict[str, Any]]) -> str:
     return "\n".join([head, *(f"- {r['metric']}: {r['explanation']}" for r in failed)])
 
 
+def has_gradable_criteria(snapshot: Mapping[str, Any]) -> bool:
+    """Whether a case has anything to grade at all.
+
+    Assertions count. A scripted case commonly carries assertions and no judged
+    criteria — that is the point of it — and the pre-existing guard checked only
+    `metrics`, so without this every scripted case would error before it ran.
+    """
+    if [m for m in (snapshot.get("metrics") or []) if str(m).strip()]:
+        return True
+    return bool(snapshot.get("assertions"))
+
+
+def combine_results(
+    judged: list[dict[str, Any]], asserted: list[dict[str, Any]]
+) -> tuple[str, list[dict[str, Any]], str]:
+    """One verdict over judged criteria and mechanical assertions together.
+
+    Metrics first, then assertions, matching the order a case declares them, so
+    the run drawer reads top-to-bottom the way the case does. A run passes only
+    if everything passed — an assertion is not a softer kind of criterion.
+    """
+    results = list(judged) + list(asserted)
+    status = "pass" if all(r["passed"] for r in results) else "fail"
+    return status, results, _explain(status, results)
+
+
 def definition_snapshot(definition: TestCaseDefinition) -> dict[str, Any]:
     """The fields a run is executed from, frozen at run time."""
     return {
@@ -976,6 +1020,8 @@ def definition_snapshot(definition: TestCaseDefinition) -> dict[str, Any]:
         "dynamic_variables": dict(definition.dynamic_variables or {}),
         "tool_mocks": list(definition.tool_mocks or []),
         "llm_model": definition.llm_model,
+        "script": list(definition.script or []),
+        "assertions": list(definition.assertions or []),
     }
 
 
@@ -1086,9 +1132,9 @@ async def _run_one(factory: Any, job_id: str) -> str:
     simulator: _Simulator | None = None
     agent: Agent | None = None
     try:
-        # Checked before anything else: a case with nothing to grade can only
-        # ever end in `error`, so don't spend a whole simulated call finding out.
-        if not [m for m in (snapshot.get("metrics") or []) if str(m).strip()]:
+        # A case that grades nothing can only ever end in `error`, so don't
+        # spend a whole simulated call finding out.
+        if not has_gradable_criteria(snapshot):
             raise RuntimeError("This test case has no success criteria to grade.")
         if not genai_credentials_available(settings):
             raise RuntimeError(
@@ -1155,8 +1201,15 @@ async def _run_one(factory: Any, job_id: str) -> str:
             swap_destinations=swap_destinations,
         )
         await simulator.run()
-        status, results = await simulator.judge()
-        explanation = _explain(status, results)
+        # Assertions cost nothing, so grade them first — a case with no judged
+        # criteria then never reaches a model to be graded at all.
+        asserted = assertions.evaluate(
+            simulator.transcript, snapshot.get("assertions") or [], simulator.ending
+        )
+        judged: list[dict[str, Any]] = []
+        if [m for m in (snapshot.get("metrics") or []) if str(m).strip()]:
+            _, judged = await simulator.judge()
+        status, results, explanation = combine_results(judged, asserted)
     except Exception as exc:
         log.exception("simulation run %s failed", job_id)
         status, explanation = "error", f"{type(exc).__name__}: {exc}"

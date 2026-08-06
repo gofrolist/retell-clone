@@ -1728,3 +1728,143 @@ async def test_the_wrap_up_turn_runs_as_the_agent_that_holds_the_call(monkeypatc
     )
     await sim.run()
     assert "lookup_price" in model.prompts[-2]
+
+
+# ------------------------------------------------------- scripted caller
+
+
+async def test_a_scripted_caller_plays_its_lines_in_order(monkeypatch):
+    """The scripted branch never reaches the user-simulator model.
+
+    Only agent replies are queued — plus one for the wrap-up turn the hang-up
+    earns. If the harness asked a model for a caller line, FakeModel would raise
+    on the extra call, so the queue length is the assertion.
+    """
+    sim, model = make_simulator(
+        monkeypatch,
+        [
+            {"action": "speak", "content": "How are you feeling?"},
+            {"action": "speak", "content": "Glad to hear it."},
+            {"action": "done"},
+        ],
+        definition={
+            "user_prompt": "",
+            "metrics": [],
+            "script": ["Morning, Clara.", "All fine here."],
+        },
+    )
+    await sim.run()
+
+    said = [item["content"] for item in sim.transcript if item["role"] == "user"]
+    assert said == ["Morning, Clara.", "All fine here."]
+    assert sim.ending == "the caller hung up"
+    # The user-simulator prompt opens "You are role-playing a person…"; no
+    # prompt sent to any model may contain it.
+    assert not any("role-playing" in prompt for prompt in model.prompts)
+
+
+async def test_an_exhausted_script_earns_the_agent_a_wrap_up_turn(monkeypatch):
+    """A prompt that logs its disposition while hanging up is still graded."""
+    sim, _ = make_simulator(
+        monkeypatch,
+        [
+            {"action": "speak", "content": "Take care."},
+            {"action": "tool_call", "tool_name": "schedule_callback", "arguments": {}},
+            {"action": "done"},
+        ],
+        definition={
+            "user_prompt": "",
+            "metrics": [],
+            "script": ["That's everything, bye."],
+            # Mocked so the harness does not spend a model call inventing a result.
+            "tool_mocks": [
+                {
+                    "tool_name": "schedule_callback",
+                    "input_match_rule": {"type": "any"},
+                    "output": '{"ok": true}',
+                }
+            ],
+        },
+    )
+    await sim.run()
+
+    roles = [item["role"] for item in sim.transcript]
+    assert "tool_call_invocation" in roles
+    # The wrap-up work lands after the agent's last spoken line, exactly as it
+    # does on a live call.
+    last_spoken = max(i for i, role in enumerate(roles) if role == "agent")
+    first_wrap_up_call = roles.index("tool_call_invocation")
+    assert first_wrap_up_call > last_spoken
+
+
+async def test_an_unscripted_case_still_improvises(monkeypatch):
+    """The existing path is untouched: no script means the model plays the caller."""
+    sim, model = make_simulator(
+        monkeypatch,
+        [
+            {"action": "speak", "content": "Hello?"},
+            {"action": "speak", "content": "How are you?"},
+            {"action": "hangup", "reason": "done"},
+            {"action": "done"},
+        ],
+        definition={"user_prompt": "You want a callback.", "metrics": []},
+    )
+    await sim.run()
+
+    assert any("role-playing" in prompt for prompt in model.prompts)
+
+
+async def test_a_script_of_one_line_still_hangs_up_rather_than_stalling(monkeypatch):
+    sim, _ = make_simulator(
+        monkeypatch,
+        [{"action": "speak", "content": "Hello."}, {"action": "done"}],
+        definition={"user_prompt": "", "metrics": [], "script": ["Hi."]},
+    )
+    await sim.run()
+    assert sim.ending == "the caller hung up"
+
+
+# ------------------------------------------------------------- grading
+
+
+def test_combine_results_puts_metrics_before_assertions():
+    judged = [{"metric": "m", "passed": True, "explanation": "j"}]
+    asserted = [{"metric": "a", "passed": True, "explanation": "a"}]
+    status, results, explanation = simulation.combine_results(judged, asserted)
+    assert status == "pass"
+    assert [r["metric"] for r in results] == ["m", "a"]
+    assert "2 criteria passed" in explanation
+
+
+def test_combine_results_fails_when_any_entry_failed():
+    judged = [{"metric": "m", "passed": True, "explanation": "j"}]
+    asserted = [{"metric": "a", "passed": False, "explanation": "nope"}]
+    status, _results, explanation = simulation.combine_results(judged, asserted)
+    assert status == "fail"
+    assert "a" in explanation and "nope" in explanation
+
+
+def test_combine_results_handles_assertions_only():
+    status, results, _ = simulation.combine_results(
+        [], [{"metric": "a", "passed": True, "explanation": "ok"}]
+    )
+    assert status == "pass"
+    assert len(results) == 1
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "expected"),
+    [
+        ({"metrics": ["does the thing"]}, True),
+        ({"assertions": [{"tool_called": "log_mood"}]}, True),
+        ({"metrics": ["x"], "assertions": [{"tool_called": "y"}]}, True),
+        ({}, False),
+        ({"metrics": [], "assertions": []}, False),
+        # Whitespace-only criteria have never counted as gradable.
+        ({"metrics": ["   "]}, False),
+        # …but a whitespace-only metric alongside a real assertion does.
+        ({"metrics": ["  "], "assertions": [{"ends_with": "end_call"}]}, True),
+    ],
+)
+def test_has_gradable_criteria(snapshot, expected):
+    assert simulation.has_gradable_criteria(snapshot) is expected
