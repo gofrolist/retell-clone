@@ -32,17 +32,9 @@ import TestCaseModal from "./TestCaseModal";
 import { caseFileName, toCaseFile, whyNotExportable } from "./caseExport";
 import { RunStatusBadge } from "./runStatus";
 
-/** Today, as `{{today}}` expands to it: local, because a case pinning "08:15"
- *  means 08:15 where the listener is. */
-function localToday(): string {
-  const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-}
-
 /** Hand the case file to the browser as a download. */
 function downloadCaseFile(testCase: RawTestCase, agentName: string) {
-  const source = toCaseFile(testCase, { agentName, today: localToday() });
+  const source = toCaseFile(testCase, { agentName });
   const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
   const link = document.createElement("a");
   link.href = url;
