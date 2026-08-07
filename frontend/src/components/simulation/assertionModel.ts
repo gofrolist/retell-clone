@@ -145,6 +145,22 @@ export function argumentPatterns(assertion: Assertion): ArgumentPattern[] {
   return [];
 }
 
+/** Every key on an assertion this editor has no field for.
+ *
+ * Carried through both conversions untouched. The module's contract is that it
+ * never rewrites what it does not model — it anticipates types shipping
+ * server-side first (`swapped_to`, `no_reask` were specced once) — and a
+ * modifier added to a type it *does* model would otherwise vanish the moment
+ * somebody opened the case and pressed Save, with nothing to show it had.
+ */
+function unmodelledKeys(assertion: Assertion, known: readonly string[]): Assertion {
+  const rest: Assertion = {};
+  for (const [key, value] of Object.entries(assertion)) {
+    if (!known.includes(key)) rest[key] = value;
+  }
+  return rest;
+}
+
 /** Set (or clear, with undefined) one of `tool_called`'s two extras. */
 export function withExtra(
   assertion: Assertion,
@@ -170,7 +186,11 @@ function looksLikeSlashRegex(pattern: string): boolean {
 function patternProblem(pattern: string, where: string): string | null {
   if (!pattern.trim()) return `${where} needs a pattern.`;
   if (looksLikeSlashRegex(pattern)) {
-    return `${where}: write the pattern on its own, not as /pattern/flags — the slashes are matched literally. Case-insensitivity goes inline as (?i).`;
+    // Kept strict rather than narrowed to "has a metacharacter". The two
+    // mistakes are not symmetric: a false rejection is one confusing save, and
+    // the message below says how to get past it, while a false acceptance is an
+    // assertion that passes on every run forever without ever testing anything.
+    return `${where}: write the pattern on its own, not as /pattern/flags — the slashes would be matched literally and the assertion could never fail. Case-insensitivity goes inline as (?i). To match a literal slash at both ends, escape them: \\/like this\\/.`;
   }
   return null;
 }
@@ -257,7 +277,10 @@ export function normalizeAssertions(assertions: Assertion[]): Assertion[] {
     const value = assertion[kind];
 
     if (kind === "turn_count_max") {
-      out.push({ turn_count_max: Number(String(value ?? "").trim()) });
+      out.push({
+        turn_count_max: Number(String(value ?? "").trim()),
+        ...unmodelledKeys(assertion, [kind]),
+      });
       continue;
     }
 
@@ -265,7 +288,7 @@ export function normalizeAssertions(assertions: Assertion[]): Assertion[] {
       const steps = Array.isArray(value)
         ? value.map((v) => String(v ?? "").trim()).filter(Boolean)
         : [];
-      out.push({ tool_order: steps });
+      out.push({ tool_order: steps, ...unmodelledKeys(assertion, [kind]) });
       continue;
     }
 
@@ -282,11 +305,11 @@ export function normalizeAssertions(assertions: Assertion[]): Assertion[] {
       if (times !== undefined && String(times).trim() !== "") {
         next.times = Number(String(times).trim());
       }
-      out.push(next);
+      out.push({ ...next, ...unmodelledKeys(assertion, [kind, "with", "times"]) });
       continue;
     }
 
-    out.push({ [kind]: String(value ?? "").trim() });
+    out.push({ [kind]: String(value ?? "").trim(), ...unmodelledKeys(assertion, [kind]) });
   }
   return out;
 }
@@ -304,7 +327,10 @@ export function toEditableAssertions(assertions: Assertion[] | undefined): Asser
     const value = assertion[kind];
 
     if (kind === "tool_order") {
-      return { tool_order: Array.isArray(value) ? value.map((v) => String(v ?? "")) : [] };
+      return {
+        tool_order: Array.isArray(value) ? value.map((v) => String(v ?? "")) : [],
+        ...unmodelledKeys(assertion, [kind]),
+      };
     }
 
     if (kind === "tool_called") {
@@ -312,10 +338,10 @@ export function toEditableAssertions(assertions: Assertion[] | undefined): Asser
       const args = argumentPatterns(assertion);
       if (args.length) next.with = args;
       if (assertion.times !== undefined) next.times = String(assertion.times);
-      return next;
+      return { ...next, ...unmodelledKeys(assertion, [kind, "with", "times"]) };
     }
 
-    return { [kind]: String(value ?? "") };
+    return { [kind]: String(value ?? ""), ...unmodelledKeys(assertion, [kind]) };
   });
 }
 

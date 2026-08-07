@@ -57,6 +57,12 @@ export default function TestCaseModal({
   // so switching to Improvised does not have to destroy the lines to take
   // effect, and switching back finds them still there.
   const [scripted, setScripted] = useState(false);
+  // A caller turn the textarea cannot represent, noticed at load because that
+  // is the only moment the turn boundaries are still known. One turn per line
+  // is what makes pasting a transcript work; the cost is that a turn already
+  // containing a line break would be silently split in two, changing the
+  // conversation and shifting it against any `turn_count_max`.
+  const [splitTurn, setSplitTurn] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -67,6 +73,7 @@ export default function TestCaseModal({
     setVariables(toPairs(initial?.dynamic_variables));
     setScriptText(formatScript(initial?.script));
     setScripted((initial?.script?.length ?? 0) > 0);
+    setSplitTurn((initial?.script ?? []).some((line) => line.includes("\n")));
     setDraft(
       initial
         ? {
@@ -219,6 +226,14 @@ export default function TestCaseModal({
                 {" so far. Paste the caller's side of a real transcript to pin a bug you have"}
                 {" just seen."}
               </p>
+              {splitTurn && (
+                <p className="mt-1.5 text-xs text-amber-700">
+                  One of this case&apos;s caller turns contains a line break, which this editor
+                  cannot show — it reads one turn per line. Saving will split that turn in two,
+                  changing the conversation. Edit the case file instead, or re-word the turn onto
+                  one line.
+                </p>
+              )}
             </>
           ) : (
             <Textarea

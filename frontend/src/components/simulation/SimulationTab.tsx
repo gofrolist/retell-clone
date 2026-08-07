@@ -16,6 +16,7 @@ import {
 } from "@/lib/api";
 import { promptVariables } from "@/lib/promptVariables";
 import {
+  Download,
   FlaskConical,
   Loader2,
   Pencil,
@@ -28,7 +29,19 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import RunDrawer from "./RunDrawer";
 import TestCaseModal from "./TestCaseModal";
+import { caseFileName, toCaseFile, whyNotExportable } from "./caseExport";
 import { RunStatusBadge } from "./runStatus";
+
+/** Hand the case file to the browser as a download. */
+function downloadCaseFile(testCase: RawTestCase, agentName: string) {
+  const source = toCaseFile(testCase, { agentName });
+  const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = caseFileName(testCase.name);
+  link.click();
+  URL.revokeObjectURL(url);
+}
 
 /** How often a running batch is re-polled for verdicts. */
 const POLL_MS = 2500;
@@ -46,11 +59,14 @@ const HISTORY_BATCHES = 5;
 
 export default function SimulationTab({
   agentId,
+  agentName,
   agentVersion,
   llm,
   dirty,
 }: {
   agentId: string;
+  /** Only used to guess the `agent:` key in an exported case file. */
+  agentName: string;
   /** Version open in the editor; the voice test dials this one, not the
    *  published default, so a draft can be tried before publishing. */
   agentVersion: number;
@@ -491,6 +507,23 @@ export default function SimulationTab({
                               className="rounded-md p-1.5 text-sub hover:bg-app hover:text-ink cursor-pointer"
                             >
                               <Pencil className="size-3.5" />
+                            </button>
+                            {/* A draft written here is not a test until it is
+                                committed, so the export is the step that turns
+                                one into a reviewable file. Disabled — with the
+                                reason — rather than exporting something the
+                                file format would silently drop. */}
+                            <button
+                              onClick={() => downloadCaseFile(c, agentName)}
+                              disabled={whyNotExportable(c) !== null}
+                              aria-label={`Export ${c.name}`}
+                              title={
+                                whyNotExportable(c) ??
+                                "Download as a .case.js file to commit and review"
+                              }
+                              className="rounded-md p-1.5 text-sub enabled:hover:bg-app enabled:hover:text-ink enabled:cursor-pointer disabled:opacity-40"
+                            >
+                              <Download className="size-3.5" />
                             </button>
                             <button
                               onClick={() => setConfirmDelete(c)}

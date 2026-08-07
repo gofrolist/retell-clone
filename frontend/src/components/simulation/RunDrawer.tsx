@@ -55,13 +55,21 @@ export default function RunDrawer({ run, onClose }: { run: RawTestRun; onClose: 
   const snapshot = run.test_case_definition_snapshot ?? {};
   const pending = run.status === "pending" || run.status === "in_progress";
   const script = snapshot.script ?? [];
-  // `_verdict` builds this list as judged criteria first, then assertions, in
-  // the order the case declared them — so the counts split it back apart. Shown
-  // separately because a red criterion and a red assertion are not the same
-  // news: one is a model's opinion of the transcript, the other is not.
+  // `combine_results` builds this list as judged criteria first, then
+  // assertions, in the order the case declared them. Shown separately because a
+  // red criterion and a red assertion are not the same news: one is a model's
+  // opinion of the transcript, the other is not.
+  //
+  // Split from the TAIL, by the assertion count. `evaluate()` returns exactly
+  // one result per assertion, so that boundary is exact — whereas the judged
+  // count is not `metrics.length`: `_metrics()` drops blank criteria, and a
+  // blank row is what the criteria editor leaves behind. Counting from the
+  // front would pull an assertion's verdict under "graded by a model" and shift
+  // every label after it by one.
   const results = run.metric_results ?? [];
-  const judged = results.slice(0, snapshot.metrics?.length ?? 0);
-  const asserted = results.slice(snapshot.metrics?.length ?? 0);
+  const boundary = Math.max(0, results.length - (snapshot.assertions?.length ?? 0));
+  const judged = results.slice(0, boundary);
+  const asserted = results.slice(boundary);
 
   return (
     <div

@@ -331,3 +331,48 @@ describe("the script", () => {
     expect(formatScript(undefined)).toBe("");
   });
 });
+
+/**
+ * The module's contract is that it never rewrites what it does not model — it
+ * anticipates types shipping server-side before the editor knows them. An
+ * unmodelled *type* was already left alone; an unmodelled *key* on a type it
+ * does know was not, and vanished the moment somebody opened the case and
+ * pressed Save.
+ */
+describe("keys this editor has no field for", () => {
+  test("survive a modelled type's round trip", () => {
+    const stored: Assertion = { tool_called: "log_mood", with: { phone: "^1" }, in_turn: 3 };
+    expect(normalizeAssertions(toEditableAssertions([stored]))).toEqual([stored]);
+  });
+
+  test("survive on a type with no extras of its own", () => {
+    const stored: Assertion = { said_never: "\\{\\{", before: "end_call" };
+    expect(normalizeAssertions(toEditableAssertions([stored]))).toEqual([stored]);
+  });
+
+  test("survive on tool_order and turn_count_max", () => {
+    const stored: Assertion[] = [
+      { tool_order: ["a", "b"], within: 4 },
+      { turn_count_max: 8, counting: "agent" },
+    ];
+    expect(normalizeAssertions(toEditableAssertions(stored))).toEqual(stored);
+  });
+
+  test("do not displace the type key", () => {
+    // Still the property everything else rests on: the backend reads the type
+    // from the first key, so a carried-through extra must never lead.
+    const [normalized] = normalizeAssertions(
+      toEditableAssertions([{ tool_called: "log_mood", in_turn: 3 }]),
+    );
+    expect(Object.keys(normalized)[0]).toBe("tool_called");
+  });
+});
+
+describe("the slash-pattern refusal", () => {
+  test("names the escape, so the refusal is not a dead end", () => {
+    // It rejects `/portal/` — a literal path — as well as the mistake it is
+    // aimed at. Kept strict on purpose: a false rejection is one confusing
+    // save, a false acceptance is an assertion that can never fail.
+    expect(assertionProblem({ said_never: "/portal/" })).toMatch(/escape them/);
+  });
+});
