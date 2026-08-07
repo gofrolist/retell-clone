@@ -35,59 +35,135 @@ stand-in (`ARHITEQ_SIMULATION_AGENT_MODEL`, defaulting to `analysis_model`).
 **Every layer-1 and layer-2 number is about the stand-in, not about what
 production runs.** Only a real audio call reaches the real model.
 
+## How a case runs
+
+```
+    caseload.py ──► voice.synthesize ──► caller.py ──► LiveKit room ──► worker
+                     (cached PCM)            │
+                                             ▼
+                            pcm.Recording (one continuous timeline)
+                                             │
+                     pcm.speech_spans ───────┴──► voice.transcribe
+                                             │
+                                             ▼
+                            analysis.analyse ──► findings + artifacts
+```
+
+Everything expensive happens before the room is joined: the caller's lines are
+synthesized and cached first, so no provider latency lands inside a turn where
+the timing rules would blame it on the agent.
+
+Two clocks, deliberately different. **Turn-taking** uses a live fixed loudness
+floor, frame by frame, because the decision to speak has to be made before the
+recording exists. **The report** re-segments offline over the finished buffer
+with a threshold adapted to that recording, so the same audio always segments
+the same way — a harness whose boundaries move between runs cannot tell a
+prompt regression from its own noise.
+
 ## What is built
 
-`analysis.py` — the rules, pure and stdlib-only, with `test_analysis.py`
-covering them. Stdlib-only is a requirement, not a preference: the worker's CI
-job installs only the dev group (`uv sync --only-group dev`, no
-`livekit-agents`), so anything importing the heavy stack cannot run there. Split
-this way, the rules are covered by the existing job with no workflow change —
-the same split the prompt repo's runner uses.
+| file | what it does | in CI |
+|---|---|---|
+| `analysis.py` | the rules | yes |
+| `pcm.py` | recording timeline, WAV, energy VAD | yes |
+| `voice.py` | Cartesia synthesis (cached) and transcription | yes |
+| `client.py` | `create-web-call` / `get-call` | yes |
+| `caseload.py` | the case format and its refusals | yes |
+| `caller.py` | joins the room, says the lines, records | **no** |
+| `run_case.py` | the driver and the artifacts | **no** |
+
+CI coverage is split that way on purpose: the worker's CI job installs the dev
+group only (`uv sync --only-group dev`, no `livekit-agents`), so anything
+importing the heavy stack cannot run there. Everything that makes a *judgement*
+is stdlib-or-httpx and covered by the existing job with no workflow change.
+What is left uncovered is plumbing — connect, publish, subscribe, wait.
 
 Two rules so far, chosen because they map to bugs that actually shipped:
 
-- **`no_duplicate_utterance`** — two agent utterances ≥90% alike within 30s.
-  Only the agent's speech is compared (a case may repeat a caller line on
-  purpose), and utterances under four words are never compared at all: "Okay."
-  and "Okay." are 100% alike and a caller hears nothing wrong, so without that
-  guard the rule is a false-positive machine.
+- **`no_duplicate_utterance`** — the agent said the same substantial thing
+  twice, either as two segments ≥90% alike within 30s, or twice inside a single
+  utterance. Both are needed: whether a double arrives as one segment or two
+  depends on how long a pause the model left, which has nothing to do with
+  whether the caller heard it. Only the agent's speech is compared (a case may
+  repeat a caller line on purpose), and utterances under four words are never
+  compared: "Okay." and "Okay." are 100% alike and a caller hears nothing wrong.
 - **`max_silence`** — dead air from the caller stopping to the agent starting,
   over 4s. Silence after the *agent* stops is the caller thinking and is not
   measured. A caller turn the agent never answers is measured to the end of the
   call, because the agent freezing entirely must not read as a clean call.
 
-Both thresholds are **guesses until calibrated against known-good recordings**,
-exactly as the spec warns. Expect them to be the flakiest thing in the suite.
+## What the first real calls measured
+
+Two calls against a local single-prompt agent (`gemini-3.1-flash-lite`, Cartesia
+in and out, everything on localhost):
+
+- **Agent turnaround** — 1.46s and 1.73s from the caller stopping to the agent
+  starting. The shipped `max_silence` limit of 4s therefore has about 2.3s of
+  headroom **on this configuration**. Production runs a Live model on GKE; the
+  number will move and the limit will need re-checking there.
+- **Pause between sentences of one agent turn** — 0.78s, 0.80s, 0.84s on one
+  call, under 0.6s on the next. This is why `MIN_SILENCE_S` stays at 0.6 and
+  segments are sentences rather than turns: set high enough to keep a turn
+  whole, a doubled greeting merges into one segment and the rule that exists to
+  catch it finds nothing.
+- **Recording padding** — 1.4–1.8s per call, all of it before the agent's track
+  is subscribed. Anything much larger means frames went missing mid-call and is
+  reported as a warning, because a recording that is mostly synthesized silence
+  is a network problem wearing a prompt finding's clothes.
+
+These are three data points from one configuration. Treat every threshold in
+`pcm.py` and `analysis.py` as provisional until a week of real calls has moved
+them.
+
+### The negative control
+
+A green suite proves nothing on its own, so the rules were run against an agent
+built to fail: a prompt instructed to say every reply twice. It doubled both its
+greeting and its reply, and the harness caught both — the greeting as two
+segments 0.7s apart, the reply as one segment repeating itself. The clean call
+re-checked with the same rules stayed clean.
+
+That control also found a real hole. The doubled *reply* was invisible to the
+original rule, which only ever compared one segment with another; it took a real
+call to show that a double does not always arrive as two segments.
+
+## Running it
+
+```bash
+# the pure half, in the existing CI job
+cd worker && uv run --only-group dev pytest tests/audio/ -q
+
+# one real call (needs the local stack: docker compose up -d, make api, make worker)
+cd worker && PYTHONPATH=tests:src .venv/bin/python -m audio.run_case \
+    --case tests/audio/cases/smoke-greets-once.case.json \
+    --agent-id agent_... --api-base http://127.0.0.1:8080
+```
+
+`ARHITEQ_WORKSPACE_API_KEY` and `CARTESIA_API_KEY` come from the environment.
+Exit codes: `0` clean, `1` the rules found something, `2` the run was broken —
+nobody joined, no audio, a provider refused. Only `1` says anything about the
+prompt, and treating a `2` as a finding is how a suite loses its meaning.
+
+Artifacts land in `tests/audio/artifacts/<case>-<call_id>/`: the WAV, the
+segments with their times, the findings, and the platform's own record of the
+call. Both the WAV and the platform transcript are kept because the
+*disagreement* between them — heard twice, logged once — is a finding neither
+one can show alone.
 
 ## What is not built
 
-**No real audio call has been placed yet.** The rules above have been verified
-against constructed segment lists and mutation-tested — every one of the five
-load-bearing decisions breaks a test when inverted — but nothing has yet
-produced a `Segment` from an actual recording.
-
-What remains, in order:
-
-1. **`caller.py`** — a `livekit-agents` worker that joins the room as the
-   caller. Using the framework rather than hand-rolling is what makes this
-   tractable: VAD, end-of-turn detection and track subscription come free, and
-   the "LLM" is simply the script.
-2. **Call setup** — `POST /v2/create-web-call` with pinned variables returns a
-   `call_id` and a LiveKit `access_token` (`backend/src/arhiteq_api/api/calls.py`).
-3. **Capture** — record the agent's audio track to WAV alongside a timestamped
-   event log; the log is what becomes `Segment.start` / `.end`.
-4. **ASR** — transcribe the WAV for `Segment.text`. `GET /v2/get-call/{id}`
-   gives the platform transcript to compare against.
-5. **Artifacts** — on failure, keep the WAV and the event log. Listening to the
-   two seconds that broke is the entire advantage over placing another call and
-   hoping it reproduces.
-
-Then the remaining rules — `heard_placeholder`, `no_clipped_start`,
-`heard_matches_said` — and 8–12 cases. Anything gradeable from text belongs in
-layer 1, where it costs a hundredth as much.
-
-## Running what exists
-
-```bash
-cd worker && uv run --only-group dev pytest tests/audio/ -q
-```
+1. **The remaining rules** — `heard_placeholder` (a model reading
+   `{{first_name}}` aloud transcribes as the words "first name", which no text
+   layer can look for), `no_clipped_start`, and `heard_matches_said` (the
+   recording against `transcript_object`, which is already fetched and stored
+   beside it).
+2. **Clara cases.** The only case in the repo is `smoke-greets-once`, which
+   runs against a throwaway agent and proves the harness, not the prompt. The
+   8–12 real cases need a workspace seeded from `dist/` — and anything gradeable
+   from text belongs in layer 1, where it costs a hundredth as much.
+3. **Running against the real model.** Every measurement above is from a
+   text-pipeline agent. The gap this layer exists to close — production runs
+   speech-to-speech and no other layer ever touches it — is still open until a
+   case runs against a Live agent.
+4. **A schedule.** Nothing runs this automatically. It costs a real call per
+   case, so it belongs on a nightly beside layer 2, not in the commit path.

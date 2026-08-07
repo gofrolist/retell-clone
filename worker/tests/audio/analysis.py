@@ -138,6 +138,38 @@ def _in_time_order(segments: list[Segment]) -> list[Segment]:
     return sorted(segments, key=lambda s: (s.start, s.end))
 
 
+def repeats_itself(
+    text: str, *, threshold: float = DEFAULT_SIMILARITY, min_words: int = DEFAULT_MIN_WORDS
+) -> float:
+    """How much one utterance is just the same thing said twice, 0.0 to 1.0.
+
+    A duplicate does not always arrive as two segments. Whether it does depends
+    on how long a pause the model left between the two copies, and on the
+    silence threshold the segmenter happens to be using -- neither of which has
+    anything to do with whether the caller heard the same sentence twice.
+
+    A real control call showed both halves of this. The doubled *greeting* came
+    back as two segments and was caught; the doubled reply that followed it --
+    "I am glad to hear that you are doing well. I am glad to hear that you are
+    doing well." -- had a shorter pause, arrived as one segment, and sailed
+    through a rule that only ever compares one segment with another. Same bug,
+    same call, invisible.
+
+    So the text is also split down the middle and its halves compared. Both
+    halves must be substantial in their own right, which is what keeps ordinary
+    repetition out: "did you take your Lipitor / did you take your Metformin"
+    scores 0.8 against a 0.9 threshold, and short emphatic doubling like "yes,
+    yes" never has the words to qualify.
+    """
+    words = normalise(text).split()
+    half = len(words) // 2
+    if half < min_words:
+        return 0.0
+    front, back = words[:half], words[-half:]
+    ratio = SequenceMatcher(None, front, back).ratio()
+    return ratio if ratio >= threshold else 0.0
+
+
 def duplicate_utterances(
     segments: list[Segment],
     *,
@@ -146,6 +178,9 @@ def duplicate_utterances(
     min_words: int = DEFAULT_MIN_WORDS,
 ) -> list[Finding]:
     """The agent said the same substantial thing twice in quick succession.
+
+    Twice across two segments, or twice inside one -- see `repeats_itself` for
+    why both have to be checked.
 
     Only the agent's own speech is compared. The caller's lines are the
     harness's script, and a case that deliberately repeats a line -- to test
@@ -159,6 +194,20 @@ def duplicate_utterances(
     ]
     findings = []
     reported = set()
+    for segment in spoken:
+        doubled = repeats_itself(segment.text, threshold=threshold, min_words=min_words)
+        if doubled:
+            reported.add(id(segment))
+            findings.append(
+                Finding(
+                    rule="no_duplicate_utterance",
+                    detail=(
+                        f"the agent said the same thing twice within one utterance, "
+                        f"{doubled:.0%} alike: {segment.text!r}"
+                    ),
+                    at=segment.start,
+                )
+            )
     for index, earlier in enumerate(spoken):
         for later in spoken[index + 1 :]:
             # Segments are compared from the end of the first to the start of

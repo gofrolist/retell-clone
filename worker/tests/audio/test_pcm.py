@@ -19,8 +19,10 @@ from audio.pcm import (
     SAMPLE_RATE,
     Recording,
     as_wav_bytes,
+    chunk_pcm,
     duration_s,
     read_wav,
+    rms,
     slice_pcm,
     speech_spans,
     speech_threshold,
@@ -143,6 +145,32 @@ def test_duration_and_slicing_agree_with_each_other():
     assert duration_s(slice_pcm(pcm, 1.0, 2.0)) == pytest.approx(1.0)
 
 
+def test_chunking_never_splits_a_sample():
+    # A boundary that lands mid-sample shifts every following byte by one and
+    # turns the rest of the line into noise — which sounds like a broken
+    # microphone rather than like an off-by-one, and gets debugged from the
+    # wrong end.
+    chunks = chunk_pcm(tone(0.1), sample_rate=SAMPLE_RATE, chunk_s=0.02)
+    assert all(len(chunk) % 2 == 0 for chunk in chunks)
+    assert b"".join(chunks) == tone(0.1)
+
+
+def test_chunking_leaves_the_last_piece_short_rather_than_padding_it():
+    # Padding would add silence the caller did not say to the end of every line.
+    chunks = chunk_pcm(tone(0.05), sample_rate=SAMPLE_RATE, chunk_s=0.02)
+    assert len(chunks) == 3
+    assert len(chunks[-1]) < len(chunks[0])
+
+
+def test_chunking_drops_a_trailing_half_sample_rather_than_shipping_it():
+    chunks = chunk_pcm(b"\x01\x02\x03", sample_rate=SAMPLE_RATE, chunk_s=0.02)
+    assert b"".join(chunks) == b"\x01\x02"
+
+
+def test_chunking_nothing_is_no_chunks():
+    assert chunk_pcm(b"", sample_rate=SAMPLE_RATE, chunk_s=0.02) == []
+
+
 def test_slicing_past_the_end_clamps_instead_of_wrapping():
     pcm = tone(1.0)
     assert duration_s(slice_pcm(pcm, 0.5, 9.0)) == pytest.approx(0.5)
@@ -174,6 +202,25 @@ def test_the_threshold_lands_between_the_noise_and_the_speech():
     levels = [400.0] * 60 + [5000.0] * 40
     line = speech_threshold(levels)
     assert 400.0 < line < 5000.0
+
+
+def test_a_single_wire_frame_can_be_measured():
+    # LiveKit delivers 10ms frames. The windows are 20ms, so window_rms sees
+    # nothing in any of them and returns an empty list — no error, no levels.
+    # The first real call spent 25 seconds waiting on every turn because of
+    # exactly this: the caller concluded the agent had never spoken.
+    frame = tone(0.01, amplitude=10000)
+    assert window_rms(frame) == []
+    assert rms(frame) == pytest.approx(10000 / math.sqrt(2), rel=0.1)
+
+
+def test_measuring_nothing_is_silence_not_a_crash():
+    assert rms(b"") == 0.0
+    assert rms(b"\x01") == 0.0
+
+
+def test_a_frame_of_digital_silence_reads_as_silent():
+    assert rms(hush(0.01)) == 0.0
 
 
 def test_window_rms_measures_what_it_should():

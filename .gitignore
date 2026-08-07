@@ -21,3 +21,8 @@ dist/
 coverage.xml
 # Supabase CLI local scratch (supabase/.temp etc.) — not part of the deploy.
 supabase/
+
+# Layer 3 audio harness: recordings of real calls and the synthesis cache.
+# Both are reproducible and neither belongs in history.
+worker/tests/audio/artifacts/
+worker/tests/audio/.cache/

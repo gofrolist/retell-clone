@@ -60,11 +60,22 @@ MIN_SPEECH_S = 0.20
 
 # Silence shorter than this does not end a span.
 #
-# This is the value that decides whether one sentence stays one segment. TTS
-# leaves ~0.4s between sentences of the same turn, and splitting there would
-# chop a greeting into two segments that each fall under the duplicate rule's
-# four-word minimum — losing the bug the rule exists for. Longer than any pause
-# inside a turn, shorter than the gap between turns.
+# This one decides whether a segment is a sentence or a whole turn, and the
+# first real call settled the argument in favour of sentences. Cartesia leaves
+# 0.78-0.84s between sentences of one agent turn (measured over six sentences),
+# so at 0.6s a turn splits into its sentences.
+#
+# That is the right side to be on. The duplicate rule compares segments, and a
+# greeting spoken twice in a row -- PR #224, the bug this layer exists for --
+# is separated by well under a second. Set high enough to keep a turn whole,
+# the two copies merge into one segment and the rule finds nothing at all. A
+# report that reads as sentences is a small price; a rule that cannot see its
+# own bug is not.
+#
+# The cost is paid at the other end: sentences are shorter, so more of them
+# fall under the duplicate rule's four-word minimum and are never compared.
+# That is a miss, not a false alarm, and the four-word floor is the thing to
+# revisit if it starts costing findings.
 MIN_SILENCE_S = 0.6
 
 
@@ -117,6 +128,21 @@ def slice_pcm(pcm: bytes, start: float, end: float, *, sample_rate: int = SAMPLE
     first = max(0, int(start * sample_rate)) * SAMPLE_WIDTH
     last = min(len(pcm), max(0, int(end * sample_rate)) * SAMPLE_WIDTH)
     return pcm[first:last] if last > first else b""
+
+
+def chunk_pcm(pcm: bytes, *, sample_rate: int, chunk_s: float) -> list[bytes]:
+    """A buffer cut into equal pieces for publishing, whole samples only.
+
+    Each piece has to contain a whole number of samples. A boundary that lands
+    mid-sample shifts every following byte by one and turns the rest of the
+    line into noise — which sounds like a broken microphone, not like an
+    off-by-one, so it is the kind of thing that gets debugged from the wrong
+    end. The final piece is short rather than padded: padding would add silence
+    the caller did not say to the end of every line.
+    """
+    per_chunk = max(1, int(sample_rate * chunk_s)) * SAMPLE_WIDTH
+    whole = pcm[: len(pcm) - len(pcm) % SAMPLE_WIDTH]
+    return [whole[at : at + per_chunk] for at in range(0, len(whole), per_chunk)]
 
 
 class Recording:
@@ -179,10 +205,32 @@ class Recording:
         self.padded_s += deficit
 
 
+def rms(pcm: bytes) -> float:
+    """Loudness of one buffer, whatever length it happens to be.
+
+    Separate from `window_rms` because the two answer different questions.
+    `window_rms` measures a recording, which is always longer than a window.
+    This measures one frame off the wire, which is not: LiveKit delivers 10ms
+    frames and the windows are 20ms, so `window_rms` returns an empty list for
+    every single one of them. Reaching for it there fails in silence — no
+    error, no levels, and a caller that concludes the agent never spoke and
+    waits out its full timeout on every turn of every call.
+    """
+    samples = array.array("h")
+    samples.frombytes(pcm[: len(pcm) - len(pcm) % SAMPLE_WIDTH])
+    if not samples:
+        return 0.0
+    return math.sqrt(sum(s * s for s in samples) / len(samples))
+
+
 def window_rms(
     pcm: bytes, *, sample_rate: int = SAMPLE_RATE, window_s: float = WINDOW_S
 ) -> list[float]:
-    """Loudness per window, as plain RMS over the 16-bit samples."""
+    """Loudness per window, as plain RMS over the 16-bit samples.
+
+    A buffer shorter than one window measures nothing and returns nothing; use
+    `rms` for the frame-sized case.
+    """
     samples = array.array("h")
     samples.frombytes(pcm[: len(pcm) - len(pcm) % SAMPLE_WIDTH])
     size = max(1, int(window_s * sample_rate))
