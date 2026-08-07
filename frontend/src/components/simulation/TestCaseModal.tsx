@@ -6,10 +6,25 @@ import Button from "@/components/ui/Button";
 import { Field, TextInput, Textarea } from "@/components/ui/Field";
 import Modal from "@/components/ui/Modal";
 import type { RawTestCase, TestCaseDraft, ToolMock } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { Plus, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
+import AssertionRows from "./AssertionRows";
+import {
+  assertionsProblem,
+  formatScript,
+  normalizeAssertions,
+  parseScript,
+  toEditableAssertions,
+} from "./assertionModel";
 
-const EMPTY: TestCaseDraft = { name: "", user_prompt: "", metrics: [""], tool_mocks: [] };
+const EMPTY: TestCaseDraft = {
+  name: "",
+  user_prompt: "",
+  metrics: [""],
+  tool_mocks: [],
+  assertions: [],
+};
 
 /** Create/edit one simulation test case. `initial` null means "new case". */
 export default function TestCaseModal({
@@ -34,6 +49,14 @@ export default function TestCaseModal({
 }) {
   const [draft, setDraft] = useState<TestCaseDraft>(EMPTY);
   const [variables, setVariables] = useState<Pair[]>([]);
+  // Held as text, not as the parsed turns: re-splitting under the cursor would
+  // swallow the blank line you are in the middle of typing a turn onto.
+  const [scriptText, setScriptText] = useState("");
+  // Which caller the case uses. A case is scripted to the engine when its
+  // `script` is non-empty; this is that fact while it is still being typed,
+  // so switching to Improvised does not have to destroy the lines to take
+  // effect, and switching back finds them still there.
+  const [scripted, setScripted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -42,13 +65,19 @@ export default function TestCaseModal({
     if (!open) return;
     setError(null);
     setVariables(toPairs(initial?.dynamic_variables));
+    setScriptText(formatScript(initial?.script));
+    setScripted((initial?.script?.length ?? 0) > 0);
     setDraft(
       initial
         ? {
             name: initial.name,
             user_prompt: initial.user_prompt,
-            metrics: initial.metrics.length ? initial.metrics : [""],
+            // Verbatim, including none at all: a case graded entirely by its
+            // assertions would otherwise open with a blank criterion row, which
+            // reads as one somebody forgot to fill in.
+            metrics: initial.metrics,
             tool_mocks: initial.tool_mocks ?? [],
+            assertions: toEditableAssertions(initial.assertions),
             llm_model: initial.llm_model ?? null,
           }
         : EMPTY,
@@ -72,14 +101,33 @@ export default function TestCaseModal({
 
   const save = async () => {
     const metrics = draft.metrics.map((m) => m.trim()).filter(Boolean);
-    if (!draft.user_prompt.trim()) {
+    // Empty unless this case is scripted: an improvising case that kept a
+    // leftover script would still be played from it, because the engine decides
+    // by `script` alone.
+    const script = scripted ? parseScript(scriptText) : [];
+    const assertions = normalizeAssertions(draft.assertions ?? []);
+
+    if (scripted && script.length === 0) {
+      setError("Write the caller's turns, one per line — a scripted case needs at least one.");
+      return;
+    }
+    if (!scripted && !draft.user_prompt.trim()) {
       setError("Describe what the simulated caller should do.");
       return;
     }
-    if (metrics.length === 0) {
-      setError("Add at least one success criterion to grade the run against.");
+    const badAssertion = assertionsProblem(draft.assertions ?? []);
+    if (badAssertion) {
+      setError(badAssertion);
       return;
     }
+    // The same rule the engine grades by: criteria and assertions together, so
+    // either alone is enough and neither is not. A case with neither runs the
+    // whole conversation and then reports nothing about it.
+    if (metrics.length === 0 && assertions.length === 0) {
+      setError("Add a success criterion or an assertion — a case with neither is never graded.");
+      return;
+    }
+
     setSaving(true);
     setError(null);
     try {
@@ -87,6 +135,8 @@ export default function TestCaseModal({
         ...draft,
         name: draft.name.trim() || "Untitled test",
         metrics,
+        script,
+        assertions,
         // `?? {}` and not `undefined`: the form owns these now, so clearing
         // every row has to reach the server as "no variables" rather than
         // being omitted and leaving the old set in place.
@@ -129,20 +179,60 @@ export default function TestCaseModal({
         </Field>
 
         <Field
-          label="Scenario"
-          hint="Instructions for the simulated caller: who they are, what they want, and how they behave."
+          label="Caller"
+          hint={
+            scripted
+              ? "The caller says exactly these lines, in order, and hangs up at the end. Same words every run, so a red result means the prompt changed and nothing else."
+              : "The caller improvises from this description. Good at finding paths nobody wrote down, and a different conversation each run — so it cannot tell you whether an edit was safe."
+          }
+          right={
+            <div className="inline-flex rounded-lg border border-line p-0.5">
+              {[
+                { mode: false, label: "Improvised" },
+                { mode: true, label: "Scripted" },
+              ].map(({ mode, label }) => (
+                <button
+                  key={label}
+                  onClick={() => setScripted(mode)}
+                  className={cn(
+                    "cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                    scripted === mode ? "bg-app text-ink" : "text-sub hover:text-ink",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          }
         >
-          <Textarea
-            rows={5}
-            value={draft.user_prompt}
-            onChange={(e) => setDraft({ ...draft, user_prompt: e.target.value })}
-            placeholder="You are Dana, calling to move your Tuesday appointment to Friday. You don't remember the exact time and get impatient if the agent repeats itself."
-          />
+          {scripted ? (
+            <>
+              <Textarea
+                rows={6}
+                className="font-mono text-[12px]"
+                value={scriptText}
+                onChange={(e) => setScriptText(e.target.value)}
+                placeholder={"Morning Clara.\nI took the Lipitor.\nNo, that's everything."}
+              />
+              <p className="mt-1.5 text-xs text-sub">
+                One caller turn per line — {parseScript(scriptText).length}
+                {" so far. Paste the caller's side of a real transcript to pin a bug you have"}
+                {" just seen."}
+              </p>
+            </>
+          ) : (
+            <Textarea
+              rows={5}
+              value={draft.user_prompt}
+              onChange={(e) => setDraft({ ...draft, user_prompt: e.target.value })}
+              placeholder="You are Dana, calling to move your Tuesday appointment to Friday. You don't remember the exact time and get impatient if the agent repeats itself."
+            />
+          )}
         </Field>
 
         <Field
           label="Success criteria"
-          hint="Each is graded separately after the call. The run passes only if all of them pass."
+          hint="Graded by a model reading the finished transcript. Good for judgement calls no pattern can express, and a noisy sensor — two identical re-runs of the same suite scored 69 and 62. Prefer an assertion wherever one fits."
           right={
             <button
               onClick={() => setDraft({ ...draft, metrics: [...draft.metrics, ""] })}
@@ -160,20 +250,44 @@ export default function TestCaseModal({
                   onChange={(e) => setMetric(i, e.target.value)}
                   placeholder="The agent confirms the new date before ending the call"
                 />
-                {draft.metrics.length > 1 && (
-                  <button
-                    onClick={() =>
-                      setDraft({ ...draft, metrics: draft.metrics.filter((_, j) => j !== i) })
-                    }
-                    aria-label="Remove criterion"
-                    className="shrink-0 rounded-md p-1.5 text-sub hover:bg-app hover:text-bad cursor-pointer"
-                  >
-                    <Trash2 className="size-3.5" />
-                  </button>
-                )}
+                {/* Removable down to none: a case graded entirely by
+                    assertions wants no judged criteria at all, and leaving a
+                    blank row behind reads as one that was forgotten. */}
+                <button
+                  onClick={() =>
+                    setDraft({ ...draft, metrics: draft.metrics.filter((_, j) => j !== i) })
+                  }
+                  aria-label="Remove criterion"
+                  className="shrink-0 rounded-md p-1.5 text-sub hover:bg-app hover:text-bad cursor-pointer"
+                >
+                  <Trash2 className="size-3.5" />
+                </button>
               </div>
             ))}
+            {draft.metrics.length === 0 && (
+              <p className="text-xs text-sub">
+                None — this case is graded by its assertions alone, with no model involved.
+              </p>
+            )}
           </div>
+        </Field>
+
+        <Field
+          label="Assertions"
+          hint="Graded by code, not by a model, so every one of them decides the same way every run. This is the half of a case that can be a gate."
+        >
+          <AssertionRows
+            assertions={draft.assertions ?? []}
+            toolNames={toolNames}
+            onChange={(assertions) => setDraft({ ...draft, assertions })}
+          />
+          {!scripted && (draft.assertions?.length ?? 0) > 0 && (
+            <p className="mt-2 text-xs text-amber-700">
+              These grade the same way every run, but an improvising caller walks a different path
+              each time — so they are being applied to a different conversation each time. Switch
+              the caller to Scripted to get a repeatable result.
+            </p>
+          )}
         </Field>
 
         <Field

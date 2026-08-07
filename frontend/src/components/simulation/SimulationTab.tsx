@@ -393,8 +393,8 @@ export default function SimulationTab({
                       />
                     </th>
                     <th className="py-2 text-left font-medium">Name</th>
-                    <th className="py-2 text-left font-medium">Scenario</th>
-                    <th className="py-2 text-left font-medium">Criteria</th>
+                    <th className="py-2 text-left font-medium">Caller</th>
+                    <th className="py-2 text-left font-medium">Grading</th>
                     <th className="py-2 text-left font-medium">Last result</th>
                     <th className="w-20 py-2 pr-4" />
                   </tr>
@@ -402,6 +402,10 @@ export default function SimulationTab({
                 <tbody>
                   {cases.map((c) => {
                     const run = runs[c.test_case_definition_id];
+                    // The engine decides by the script alone: any line at all
+                    // and the caller stops improvising.
+                    const script = c.script ?? [];
+                    const assertions = c.assertions ?? [];
                     return (
                       <tr
                         key={c.test_case_definition_id}
@@ -425,16 +429,41 @@ export default function SimulationTab({
                           >
                             {c.name}
                           </button>
+                          {script.length > 0 && (
+                            <Badge tone="blue" className="ml-1.5">
+                              scripted
+                            </Badge>
+                          )}
                           {c.source === "generated" && (
                             <Badge tone="purple" className="ml-1.5">
                               auto
                             </Badge>
                           )}
                         </td>
-                        <td className="max-w-72 truncate py-2.5 pr-3 text-sub" title={c.user_prompt}>
-                          {c.user_prompt}
+                        <td
+                          className="max-w-72 truncate py-2.5 pr-3 text-sub"
+                          title={script.length > 0 ? script.join("\n") : c.user_prompt}
+                        >
+                          {script.length > 0 ? (
+                            <>
+                              <span className="text-faint">{script.length} turns · </span>
+                              {script[0]}
+                            </>
+                          ) : (
+                            c.user_prompt
+                          )}
                         </td>
-                        <td className="py-2.5 pr-3 text-sub">{c.metrics.length}</td>
+                        <td className="py-2.5 pr-3 whitespace-nowrap text-sub">
+                          {/* Counted apart because they are not the same kind of
+                              evidence: assertions decide the same way every run
+                              and criteria do not. */}
+                          {[
+                            c.metrics.length > 0 && `${c.metrics.length} judged`,
+                            assertions.length > 0 && `${assertions.length} asserted`,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ") || <span className="text-faint">—</span>}
+                        </td>
                         <td className="py-2.5 pr-3">
                           {run ? (
                             <RunStatusBadge status={run.status} />
