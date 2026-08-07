@@ -1,0 +1,60 @@
+"""What a run's exit code means, kept where it can be tested.
+
+The exit code is the only part of a run a scheduler reads, and it carries a
+distinction the whole layer depends on:
+
+    0  the call ran and sounded fine
+    1  the call ran and the rules found something
+    2  the run was broken
+
+Only 1 is a statement about the prompt. A 2 is a statement about the harness or
+the deployment — a missing key, an agent id that does not exist, a provider
+refusing, nobody joining the room. A nightly that treats those as findings
+reports a prompt regression every time someone rotates a credential, and a
+suite that cries wolf like that stops being read. That is why this lives in its
+own module rather than as a few `return` statements inside the driver: the
+driver imports `livekit` and cannot run in CI, and this is exactly the decision
+that should not go untested.
+"""
+
+from __future__ import annotations
+
+CLEAN = 0
+FINDINGS = 1
+BROKEN = 2
+
+# Ways a call can end that mean the run measured nothing worth grading.
+#
+# `max_call_s` is in here and is the easy one to miss: the call did happen and
+# produced findings, but the script never finished, so the findings cover half
+# the case. Reporting that as a prompt verdict grades a conversation that was
+# cut off, and the half that was never spoken is silently scored as fine.
+BROKEN_REASONS = frozenset(
+    {
+        "agent_never_joined",
+        "hard_timeout",
+        "error",
+        "cancelled",
+        "max_call_s",
+    }
+)
+
+
+def exit_code(*, stopped: str, segments: int, findings: int) -> int:
+    """The verdict for one run.
+
+    A run with no segments at all is broken however it ended: the recording
+    contains nothing that was said, so "no findings" is not an observation
+    about the prompt but an absence of any observation at all.
+    """
+    if stopped in BROKEN_REASONS or segments == 0:
+        return BROKEN
+    return FINDINGS if findings else CLEAN
+
+
+def describe(code: int) -> str:
+    return {
+        CLEAN: "the call ran and sounded fine",
+        FINDINGS: "the rules found something",
+        BROKEN: "the run was broken — this says nothing about the prompt",
+    }[code]

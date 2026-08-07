@@ -84,7 +84,10 @@ class CallerResult:
     caller_lines: list[SpokenLine]
     call_end: float
     stopped_because: str
-    padded_s: float = 0.0
+    # Silence synthesized to fill gaps AFTER the agent's track was subscribed,
+    # which is what "frames went missing" means. The wait for the track to
+    # appear at the start of every call is not in here; see `_AgentTrack`.
+    dropped_s: float = 0.0
     warnings: list[str] = field(default_factory=list)
 
 
@@ -101,6 +104,16 @@ class _AgentTrack:
         self.recording = Recording(sample_rate=SAMPLE_RATE)
         self.last_voice_at: float | None = None
         self.frames = 0
+        # Silence padded in before the first frame ever arrived.
+        #
+        # Tracked apart from the rest because it is a different thing. The gap
+        # between connecting and the agent's track being subscribed is
+        # structural -- the track does not exist yet -- and it measures 1.4-1.8s
+        # on a healthy local call. Padding AFTER that point means frames went
+        # missing mid-call, which is a real problem. Reported as one number the
+        # warning fires on every clean run, and a warning that is always on is
+        # one nobody reads.
+        self.lead_in_s = 0.0
 
     @property
     def elapsed(self) -> float:
@@ -110,6 +123,8 @@ class _AgentTrack:
         pcm = bytes(frame.data)
         at = self.elapsed
         self.recording.add(at - frame.duration, pcm)
+        if self.frames == 0:
+            self.lead_in_s = self.recording.padded_s
         self.frames += 1
         # Frame-level RMS, not windowed: LiveKit delivers 10ms frames and the
         # windows are 20ms, so a windowed measure sees nothing in any of them
@@ -246,8 +261,14 @@ class Caller:
             await asyncio.sleep(POLL_S)
         return "still_talking" if heard else "silent"
 
-    async def run(self, script: list[tuple[str, bytes]]) -> CallerResult:
-        """The whole call: greet, reply, reply, and listen to the last word."""
+    async def run(self, script: list[tuple[str, bytes]]) -> str:
+        """The whole call: greet, reply, reply, and listen to the last word.
+
+        Returns why it ended and does NOT clean up. Closing the room and
+        assembling the recording belongs to `place_call`, which is the only
+        place that sees every way this can end -- including the ways that
+        raise.
+        """
         await self.connect()
         stopped = "script_finished"
         if not await self.wait_for_agent():
@@ -274,14 +295,27 @@ class Caller:
                 # thing the harness does is listen.
                 await self.wait_for_turn()
 
-        return await self.finish(stopped)
+        return stopped
 
     async def finish(self, stopped: str) -> CallerResult:
+        """Close everything down and assemble what was recorded.
+
+        Safe to call after any failure, because that is the only reason it is
+        separate from `run`: whatever went wrong, the audio captured up to that
+        point is the most useful thing the run has, and losing it to a
+        secondary error would be the worst outcome of all.
+        """
         end = self.elapsed
         for reader in self._readers:
             reader.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await reader
+        # `return_exceptions` rather than a bare await: a reader that already
+        # died -- an AudioStream erroring on an abrupt disconnect, anything
+        # raised inside `feed` -- is finished, so `cancel()` is a no-op and
+        # awaiting it re-raises what killed it. That would propagate out of the
+        # cleanup and discard the recording over a dropped stream.
+        for outcome in await asyncio.gather(*self._readers, return_exceptions=True):
+            if isinstance(outcome, Exception):
+                self.warnings.append(f"the agent's audio stream failed: {outcome!r}")
         with contextlib.suppress(Exception):
             await self.room.disconnect()
         if self._source is not None:
@@ -289,6 +323,9 @@ class Caller:
                 await self._source.aclose()
 
         recording = self.agent.recording if self.agent else Recording(sample_rate=SAMPLE_RATE)
+        # Measured before the trailing pad, and net of the wait for the track
+        # to appear: what is left is silence where frames should have been.
+        dropped = max(0.0, recording.padded_s - (self.agent.lead_in_s if self.agent else 0.0))
         # Silence to the end of the call, so an agent that stopped answering
         # leaves a measurable gap rather than a short file.
         recording.pad_to(end)
@@ -301,7 +338,7 @@ class Caller:
             caller_lines=list(self.lines),
             call_end=end,
             stopped_because=stopped,
-            padded_s=recording.padded_s,
+            dropped_s=dropped,
             warnings=list(self.warnings),
         )
 
@@ -315,7 +352,15 @@ async def place_call(
     reply_timeout_s: float,
     max_call_s: float,
 ) -> CallerResult:
-    """One call, start to finish, with the room always closed behind it."""
+    """One call, start to finish, with the room always closed behind it.
+
+    "Always" is the point, and it has to cover every way this ends, not just
+    the timeout: a bad token failing `room.connect`, a publish that is refused,
+    an `rtc` error mid-call. Any of those escaping uncaught leaves a LiveKit
+    room connected, an `AudioSource` open, reader tasks running, and -- worst
+    of all -- throws away the audio recorded up to the failure, which is the
+    most useful thing a broken run produces.
+    """
     caller = Caller(
         url=url,
         token=token,
@@ -324,9 +369,19 @@ async def place_call(
         max_call_s=max_call_s,
     )
     try:
-        return await asyncio.wait_for(caller.run(script), timeout=max_call_s + JOIN_TIMEOUT_S + 30)
+        stopped = await asyncio.wait_for(
+            caller.run(script), timeout=max_call_s + JOIN_TIMEOUT_S + 30
+        )
     except TimeoutError:
-        # A wedged call must not hold a room and a Live session open, and must
-        # not lose the audio recorded up to the point it wedged.
         caller.warnings.append("the call was still running at the hard timeout")
-        return await caller.finish("hard_timeout")
+        stopped = "hard_timeout"
+    except asyncio.CancelledError:
+        # Ctrl-C and shutdown are not findings. Close the room, then let the
+        # cancellation continue on its way rather than swallowing it.
+        await caller.finish("cancelled")
+        raise
+    except Exception as err:
+        caller.warnings.append(f"the call ended in an error: {err!r}")
+        log.exception("call failed")
+        stopped = "error"
+    return await caller.finish(stopped)

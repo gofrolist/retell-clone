@@ -69,6 +69,7 @@ prompt regression from its own noise.
 | `voice.py` | Cartesia synthesis (cached) and transcription | yes |
 | `client.py` | `create-web-call` / `get-call` | yes |
 | `caseload.py` | the case format and its refusals | yes |
+| `verdict.py` | what a run's exit code means | yes |
 | `caller.py` | joins the room, says the lines, records | **no** |
 | `run_case.py` | the driver and the artifacts | **no** |
 
@@ -107,9 +108,10 @@ in and out, everything on localhost):
   whole, a doubled greeting merges into one segment and the rule that exists to
   catch it finds nothing.
 - **Recording padding** — 1.4–1.8s per call, all of it before the agent's track
-  is subscribed. Anything much larger means frames went missing mid-call and is
-  reported as a warning, because a recording that is mostly synthesized silence
-  is a network problem wearing a prompt finding's clothes.
+  is subscribed. That wait is structural (the track does not exist yet) and is
+  measured apart from the rest, so the "audio went missing mid-call" warning
+  stays quiet on a healthy run. Counted together it fired on every clean call,
+  and a warning that is always on is one nobody reads.
 
 These are three data points from one configuration. Treat every threshold in
 `pcm.py` and `analysis.py` as provisional until a week of real calls has moved
@@ -140,15 +142,27 @@ cd worker && PYTHONPATH=tests:src .venv/bin/python -m audio.run_case \
 ```
 
 `ARHITEQ_WORKSPACE_API_KEY` and `CARTESIA_API_KEY` come from the environment.
+
 Exit codes: `0` clean, `1` the rules found something, `2` the run was broken —
-nobody joined, no audio, a provider refused. Only `1` says anything about the
-prompt, and treating a `2` as a finding is how a suite loses its meaning.
+nobody joined, no audio, a provider refused, the call hit its own time limit
+before the script finished. Only `1` says anything about the prompt, and
+treating a `2` as a finding is how a suite loses its meaning: a rotated
+credential would be reported as the prompt getting worse. The rule lives in
+`verdict.py` rather than as `return` statements in the driver, because the
+driver imports `livekit` and cannot be tested, and this is the one decision a
+scheduler actually reads.
 
 Artifacts land in `tests/audio/artifacts/<case>-<call_id>/`: the WAV, the
 segments with their times, the findings, and the platform's own record of the
 call. Both the WAV and the platform transcript are kept because the
 *disagreement* between them — heard twice, logged once — is a finding neither
 one can show alone.
+
+The WAV is written the moment the call ends, before transcription or fetching
+the platform record. Everything after the call is network and any of it can
+fail; written last, a 429 from the speech provider throws away a recording that
+cost a minute of wall clock and real spend — exactly when the recording is
+worth most.
 
 ## What is not built
 

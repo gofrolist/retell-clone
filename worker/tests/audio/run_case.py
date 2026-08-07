@@ -7,14 +7,8 @@ Everything expensive happens before the room is joined: the caller's lines are
 synthesized (and cached) first, so the call itself contains no provider latency
 that the timing rules would then blame on the agent.
 
-Exit codes distinguish the two kinds of bad news, the same way layer 2 does:
-
-    0  the call ran and sounded fine
-    1  the call ran and the rules found something
-    2  the run was broken — nobody joined, no audio, a provider refused
-
-Only 1 is a statement about the prompt. A 2 is a statement about the harness or
-the deployment, and treating it as a finding is how a suite loses its meaning.
+Exit codes distinguish the two kinds of bad news, the same way layer 2 does;
+the rule itself lives in `verdict.py`, where it can be tested.
 """
 
 from __future__ import annotations
@@ -31,15 +25,25 @@ import httpx
 
 from audio.analysis import AGENT, CALLER, Segment, analyse, format_findings
 from audio.caller import place_call
-from audio.caseload import Case, load_case
-from audio.client import create_web_call, get_call, transcript_lines
+from audio.caseload import Case, CaseError, load_case
+from audio.client import ControlPlaneError, create_web_call, get_call, transcript_lines
 from audio.pcm import slice_pcm, speech_spans, write_wav
-from audio.voice import CALLER_SAMPLE_RATE, synthesize, transcribe
+from audio.verdict import BROKEN, describe, exit_code
+from audio.voice import CALLER_SAMPLE_RATE, VoiceError, synthesize, transcribe
 
 DEFAULT_CACHE = Path(__file__).parent / ".cache" / "caller-lines"
 DEFAULT_ARTIFACTS = Path(__file__).parent / "artifacts"
 
+# Padding past the wait for the agent's track that counts as frames going
+# missing. The wait itself is 1.4-1.8s on a healthy local call and is measured
+# separately, so this is only about gaps mid-recording.
+DROPPED_AUDIO_WARNING_S = 0.5
+
 log = logging.getLogger("audio-run")
+
+
+class HarnessError(RuntimeError):
+    """The run could not be set up. Never a statement about the prompt."""
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -52,7 +56,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--cartesia-key", default=os.getenv("CARTESIA_API_KEY", ""))
     parser.add_argument("--cache", type=Path, default=DEFAULT_CACHE)
     parser.add_argument("--artifacts", type=Path, default=DEFAULT_ARTIFACTS)
-    parser.add_argument("--keep", action="store_true", help="keep artifacts even when clean")
     return parser.parse_args(argv)
 
 
@@ -60,11 +63,11 @@ def resolve_agent_id(case: Case, args: argparse.Namespace) -> str:
     if args.agent_id:
         return args.agent_id
     if not args.agents:
-        raise SystemExit(f"--agent-id or --agents needed to resolve '{case.agent}'")
+        raise HarnessError(f"--agent-id or --agents needed to resolve '{case.agent}'")
     ids = json.loads(args.agents.read_text())
     agent_id = ids.get(case.agent)
     if not agent_id:
-        raise SystemExit(f"{args.agents} has no '{case.agent}'")
+        raise HarnessError(f"{args.agents} has no '{case.agent}'")
     return agent_id
 
 
@@ -108,10 +111,26 @@ def agent_segments(pcm: bytes, *, sample_rate: int, api_key: str) -> list[Segmen
     return segments
 
 
-def write_artifacts(directory: Path, *, result, segments, findings, call) -> None:
-    """Everything needed to understand the call without placing another one."""
+def write_recording(directory: Path, result) -> None:
+    """The audio, on disk, before anything else is attempted.
+
+    Written the moment the call ends rather than at the end of the run. What
+    follows it -- one transcription round trip per span, then fetching the
+    platform's record -- is all network, and any of it can fail: a 429 from the
+    speech provider, a 404 while the backend is still finalizing the call. If
+    the WAV is written last, that failure throws away a recording that cost a
+    minute of wall clock and real provider spend, and the promise this whole
+    layer makes -- that a failure hands you the two seconds that broke instead
+    of asking you to place another call -- is broken precisely when it is
+    needed.
+    """
     directory.mkdir(parents=True, exist_ok=True)
     write_wav(result.agent_pcm, directory / "agent.wav", sample_rate=result.agent_sample_rate)
+
+
+def write_report(directory: Path, *, segments, findings, call) -> None:
+    """Everything else needed to understand the call without placing another."""
+    directory.mkdir(parents=True, exist_ok=True)
     (directory / "segments.json").write_text(
         json.dumps(
             [
@@ -133,10 +152,13 @@ def report(case: Case, result, segments, findings, directory: Path) -> str:
         lines.append(f"  [{segment.start:6.2f}s] {who}: {segment.text}")
     for warning in result.warnings:
         lines.append(f"  ! {warning}")
-    if result.padded_s > 1.0:
-        # Worth saying out loud: a recording that is mostly synthesized silence
-        # is a network problem wearing a prompt finding's clothes.
-        lines.append(f"  ! {result.padded_s:.1f}s of the recording is padding for missing frames")
+    if result.dropped_s > DROPPED_AUDIO_WARNING_S:
+        # Worth saying out loud: a recording that is partly synthesized silence
+        # is a network problem wearing a prompt finding's clothes. Measured net
+        # of the wait for the agent's track, which is 1.4-1.8s on a healthy
+        # call — counted in, this warning fires on every clean run, and one
+        # that is always on is one nobody reads.
+        lines.append(f"  ! {result.dropped_s:.1f}s of audio went missing mid-call")
     lines.append("")
     lines.append(format_findings(findings))
     lines.append(f"\nArtifacts: {directory}")
@@ -146,9 +168,9 @@ def report(case: Case, result, segments, findings, directory: Path) -> str:
 async def run(args: argparse.Namespace) -> int:
     case = load_case(args.case)
     if not args.api_key:
-        raise SystemExit("no workspace API key (--api-key or ARHITEQ_WORKSPACE_API_KEY)")
+        raise HarnessError("no workspace API key (--api-key or ARHITEQ_WORKSPACE_API_KEY)")
     if not args.cartesia_key:
-        raise SystemExit("no Cartesia key (--cartesia-key or CARTESIA_API_KEY)")
+        raise HarnessError("no Cartesia key (--cartesia-key or CARTESIA_API_KEY)")
     agent_id = resolve_agent_id(case, args)
 
     script = render_script(case, api_key=args.cartesia_key, cache=args.cache)
@@ -171,6 +193,9 @@ async def run(args: argparse.Namespace) -> int:
         max_call_s=case.max_call_s,
     )
 
+    directory = args.artifacts / f"{case.name}-{call['call_id']}"
+    write_recording(directory, result)
+
     segments = agent_segments(
         result.agent_pcm, sample_rate=result.agent_sample_rate, api_key=args.cartesia_key
     )
@@ -187,18 +212,23 @@ async def run(args: argparse.Namespace) -> int:
     record = get_call(args.api_base, args.api_key, call["call_id"])
     record["transcript_lines"] = transcript_lines(record)
 
-    directory = args.artifacts / f"{case.name}-{call['call_id']}"
-    write_artifacts(directory, result=result, segments=segments, findings=findings, call=record)
+    write_report(directory, segments=segments, findings=findings, call=record)
     print(report(case, result, segments, findings, directory))
 
-    if result.stopped_because in {"agent_never_joined", "hard_timeout"} or not segments:
-        return 2
-    return 1 if findings else 0
+    return exit_code(stopped=result.stopped_because, segments=len(segments), findings=len(findings))
 
 
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    return asyncio.run(run(parse_args(argv if argv is not None else sys.argv[1:])))
+    try:
+        return asyncio.run(run(parse_args(argv if argv is not None else sys.argv[1:])))
+    except (HarnessError, CaseError, ControlPlaneError, VoiceError, OSError) as err:
+        # A misconfigured harness is not a prompt regression. Left to the
+        # default traceback these all exit 1, which a nightly reads as "the
+        # rules found something" — so rotating a credential would be reported
+        # as the prompt getting worse.
+        print(f"{describe(BROKEN)}: {err}", file=sys.stderr)
+        return BROKEN
 
 
 if __name__ == "__main__":

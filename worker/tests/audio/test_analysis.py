@@ -177,6 +177,21 @@ def test_a_double_said_inside_one_utterance_is_caught():
     assert findings[0].at == 13.9
 
 
+def test_a_double_whose_second_copy_is_longer_is_still_a_double():
+    # ASR adds a trailing word and a midpoint split stops aligning. Anchored
+    # only at the outer ends this scores 0.875 and slips under the bar — the
+    # same bug the rule was added for, defeated by one word.
+    assert repeats_itself(
+        "I'm glad to hear that you're doing well. I'm glad to hear that you're doing well today."
+    )
+
+
+def test_a_double_whose_second_copy_is_shorter_is_still_a_double():
+    assert repeats_itself(
+        "Is there anything else I can help you with. Is there anything else I can help with."
+    )
+
+
 def test_a_medication_run_through_in_one_breath_is_not_a_double():
     # Clara reads a list, and two consecutive questions differing only by the
     # drug are exactly what the halves of one segment look like. This is the

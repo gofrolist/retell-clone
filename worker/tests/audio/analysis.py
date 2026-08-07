@@ -42,6 +42,10 @@ DEFAULT_WINDOW_S = 30.0
 # a handful of words costs nothing and removes the noise entirely.
 DEFAULT_MIN_WORDS = 4
 
+# How far either side of the middle to look for the seam between two copies of
+# the same sentence. Narrow on purpose -- see `repeats_itself`.
+SEAM_SEARCH = 2
+
 # Dead air after the caller stops talking before the agent answers.
 #
 # A guess until there is a baseline, and stated as one: the spec expects the
@@ -165,9 +169,27 @@ def repeats_itself(
     half = len(words) // 2
     if half < min_words:
         return 0.0
-    front, back = words[:half], words[-half:]
-    ratio = SequenceMatcher(None, front, back).ratio()
-    return ratio if ratio >= threshold else 0.0
+    # The split point is searched, not assumed to be the middle, because the
+    # two copies are rarely the same length -- ASR adds or drops a word, or the
+    # model does. A single word is enough to defeat a fixed midpoint: "…doing
+    # well. …doing well today." and "…help you with. …help with." both score
+    # 0.875 split down the middle and slip under the bar, and both score 0.94
+    # when the split lands on the real seam.
+    #
+    # The search is deliberately narrow. Two copies of the same sentence differ
+    # by a word or two; anything wider starts finding "seams" in sentences that
+    # merely rhyme with themselves. At this width the medication run-through --
+    # "did you take your Lipitor / did you take your Metformin" -- still scores
+    # 0.8 at every split point, well under the threshold.
+    # Bounded so neither side of a split can fall below the minimum, rather
+    # than skipping such splits inside the loop: as a bound it is structural,
+    # as a conditional it was a branch no input could reach.
+    first = max(min_words, half - SEAM_SEARCH)
+    last = min(len(words) - min_words, half + SEAM_SEARCH)
+    best = 0.0
+    for split in range(first, last + 1):
+        best = max(best, SequenceMatcher(None, words[:split], words[split:]).ratio())
+    return best if best >= threshold else 0.0
 
 
 def duplicate_utterances(
