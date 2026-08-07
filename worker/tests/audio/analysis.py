@@ -106,13 +106,36 @@ def normalise(text: str) -> str:
 
 
 def similarity(a: str, b: str) -> float:
-    """How alike two utterances are, 0.0 to 1.0, after normalisation."""
-    return SequenceMatcher(None, normalise(a), normalise(b)).ratio()
+    """How alike two utterances are, 0.0 to 1.0, after normalisation.
+
+    Compared as sequences of WORDS, not of characters. Clara reads a medication
+    list, so her own script contains pairs like "Did you take your Lipitor this
+    morning?" and "Did you take your Metformin this morning?" -- a legitimate
+    run-through that a duplicate rule must not fire on. Character-wise those
+    score 0.872 against a 0.90 threshold; word-wise they score 0.857, while a
+    genuine repeat still scores 1.0 either way. The margin is what calibration
+    will eat into, and one shared word matters more than seven shared letters
+    inside a drug name.
+    """
+    return SequenceMatcher(None, normalise(a).split(), normalise(b).split()).ratio()
 
 
 def _word_count(text: str) -> int:
     normalised = normalise(text)
     return len(normalised.split()) if normalised else 0
+
+
+def _in_time_order(segments: list[Segment]) -> list[Segment]:
+    """Segments sorted by when they happened.
+
+    Both rules below walk the list assuming time order -- one of them `break`s
+    out of a scan on the first segment past its window. Nothing guarantees the
+    caller supplies them sorted: they are merged from two per-track event logs,
+    where interleaving is easy to get subtly wrong. Unsorted, a single late
+    segment ends the scan early and the duplicate right after it is never seen,
+    which is precisely the greeting-twice bug the rule exists for.
+    """
+    return sorted(segments, key=lambda s: (s.start, s.end))
 
 
 def duplicate_utterances(
@@ -129,8 +152,13 @@ def duplicate_utterances(
     what the agent does when asked twice -- must not be reported as a bug in the
     agent.
     """
-    spoken = [s for s in segments if s.speaker == AGENT and _word_count(s.text) >= min_words]
+    spoken = [
+        s
+        for s in _in_time_order(segments)
+        if s.speaker == AGENT and _word_count(s.text) >= min_words
+    ]
     findings = []
+    reported = set()
     for index, earlier in enumerate(spoken):
         for later in spoken[index + 1 :]:
             # Segments are compared from the end of the first to the start of
@@ -138,8 +166,15 @@ def duplicate_utterances(
             # boundary are not "in quick succession".
             if later.start - earlier.end > window_s:
                 break
+            # Each repeat is reported once, against the first thing it repeated.
+            # Reporting every pair means an agent stuck looping its greeting
+            # produces N*(N-1)/2 findings -- six for four repeats -- and one bug
+            # fills the whole report.
+            if id(later) in reported:
+                continue
             ratio = similarity(earlier.text, later.text)
             if ratio >= threshold:
+                reported.add(id(later))
                 findings.append(
                     Finding(
                         rule="no_duplicate_utterance",
@@ -166,17 +201,40 @@ def silences(
 
     A caller turn the agent never answers at all is the worst case of this, not
     an absence of one, so it is measured to the end of the call.
+
+    Two things this has to get right, both of which are the difference between a
+    rule people trust and a rule people mute:
+
+    **One turn, not one segment.** VAD and ASR routinely chop a single caller
+    turn into several segments. Measuring from each of them to the next agent
+    reply counts the caller's own later speech as dead air -- "Morning" at 0-2s,
+    "and I slept badly" at 2.3-10s, agent at 10.4s reads as 8.4s of silence when
+    the caller was talking for 7.7 of it. So a gap is only measured from the
+    LAST caller segment before the agent answers. The same collapse stops a
+    single freeze at the end of a call being reported once per trailing segment.
+
+    **An answer that overlaps is still an answer.** A strict "starts after the
+    caller finished" test misses barge-in and the early starts that are ordinary
+    on a speech-to-speech model, and then falls through to the never-answered
+    branch -- reporting the whole turn as dead air on a call the agent answered
+    *before* the caller stopped. An agent segment counts as the answer if it
+    ends after the caller's turn ends, and an overlap is zero silence, not
+    negative.
     """
+    ordered = _in_time_order(segments)
     gaps = []
-    for index, segment in enumerate(segments):
+    for index, segment in enumerate(ordered):
         if segment.speaker != CALLER:
             continue
-        following = next(
-            (s for s in segments[index + 1 :] if s.speaker == AGENT and s.start >= segment.end),
-            None,
-        )
+        rest = ordered[index + 1 :]
+        following = next((s for s in rest if s.speaker == AGENT and s.end > segment.end), None)
+        # Another caller segment before the agent answers means this one was not
+        # the end of the turn; the gap belongs to the last segment of the run.
+        boundary = following.start if following is not None else call_end
+        if boundary is not None and any(s.speaker == CALLER and s.start < boundary for s in rest):
+            continue
         if following is not None:
-            gaps.append((segment.end, following.start))
+            gaps.append((segment.end, max(segment.end, following.start)))
         elif call_end is not None and call_end > segment.end:
             gaps.append((segment.end, call_end))
     return gaps
@@ -185,10 +243,20 @@ def silences(
 def long_silences(
     segments: list[Segment],
     *,
+    call_end: float,
     limit_s: float = DEFAULT_MAX_SILENCE_S,
-    call_end: float | None = None,
 ) -> list[Finding]:
-    """Dead air past the limit, as findings."""
+    """Dead air past the limit, as findings.
+
+    `call_end` is REQUIRED, and that is the whole design of it. Without a
+    boundary, a caller turn the agent never answered has nothing to measure to
+    and produces no finding -- so the loudest failure in the layer, the agent
+    freezing outright, reads as a clean call. Defaulting it does not help
+    either: the obvious default, the end of the last segment, IS the caller's
+    own end in exactly that case, so the gap is zero and the freeze still
+    vanishes. The only version that cannot be forgotten is the one that will not
+    run without it, and the harness always knows how long the recording is.
+    """
     findings = []
     for start, end in silences(segments, call_end=call_end):
         gap = end - start
@@ -208,7 +276,7 @@ def long_silences(
 def analyse(
     segments: list[Segment],
     *,
-    call_end: float | None = None,
+    call_end: float,
     similarity_threshold: float = DEFAULT_SIMILARITY,
     window_s: float = DEFAULT_WINDOW_S,
     min_words: int = DEFAULT_MIN_WORDS,

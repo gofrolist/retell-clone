@@ -7,6 +7,8 @@ existing dev-group CI job.
 
 from __future__ import annotations
 
+import pytest
+
 from audio.analysis import (
     AGENT,
     CALLER,
@@ -104,6 +106,50 @@ def test_near_identical_counts_as_duplicate():
     assert len(findings) == 1
 
 
+def test_segments_out_of_time_order_still_find_the_duplicate():
+    # Segments are merged from two per-track event logs, so nothing guarantees
+    # they arrive sorted. Unsorted, the scan breaks out of its window on the
+    # late segment and never sees the duplicate right after it — losing exactly
+    # the greeting-twice bug the rule exists for.
+    findings = duplicate_utterances(
+        [
+            agent(0.0, 3.0, GREETING),
+            agent(100.0, 103.0, "Right, let me get that sorted out for you now."),
+            agent(3.2, 6.2, GREETING),
+        ]
+    )
+    assert len(findings) == 1
+
+
+def test_a_stuck_agent_is_not_reported_once_per_pair():
+    # Reporting every pair gives N*(N-1)/2 findings — six for four repeats — so
+    # one looping bug fills the whole report. Three greetings are two repeats.
+    findings = duplicate_utterances(
+        [agent(0.0, 3.0, GREETING), agent(3.2, 6.2, GREETING), agent(6.4, 9.4, GREETING)]
+    )
+    assert len(findings) == 2
+
+
+def test_a_medication_run_through_is_not_a_duplicate():
+    # Clara reads a medication list, so her own script contains near-identical
+    # sentences differing only by the drug. This is the pair most likely to be
+    # wrongly flagged once the threshold gets tuned down during calibration.
+    assert (
+        similarity(
+            "Did you take your Lipitor this morning?",
+            "Did you take your Metformin this morning?",
+        )
+        < 0.9
+    )
+    findings = duplicate_utterances(
+        [
+            agent(0.0, 3.0, "Did you take your Lipitor this morning?"),
+            agent(8.0, 11.0, "Did you take your Metformin this morning?"),
+        ]
+    )
+    assert findings == []
+
+
 def test_the_window_is_measured_between_utterances_not_from_their_starts():
     # A long utterance whose START is inside the window but which ended well
     # before it is not "in quick succession". Measuring start-to-start would
@@ -144,12 +190,12 @@ def test_a_caller_turn_the_agent_never_answers_is_the_worst_silence_not_none():
 def test_a_gap_under_the_limit_is_not_reported():
     # The ~850ms an agent_swap costs to rebuild its socket is known and fine.
     segments = [caller(0.0, 2.0, "How much is it?"), agent(2.9, 4.0, "Let me pull that up.")]
-    assert long_silences(segments) == []
+    assert long_silences(segments, call_end=20.0) == []
 
 
 def test_a_gap_over_the_limit_is_reported_with_where_to_listen():
     segments = [caller(0.0, 2.0, "How much is it?"), agent(9.0, 10.0, "Sorry.")]
-    findings = long_silences(segments)
+    findings = long_silences(segments, call_end=20.0)
     assert len(findings) == 1
     assert findings[0].rule == "max_silence"
     assert findings[0].at == 2.0
@@ -157,7 +203,54 @@ def test_a_gap_over_the_limit_is_reported_with_where_to_listen():
 
 def test_the_limit_is_exclusive_so_a_gap_exactly_at_it_passes():
     segments = [caller(0.0, 2.0, "Hello?"), agent(6.0, 7.0, "Hello.")]
-    assert long_silences(segments, limit_s=4.0) == []
+    assert long_silences(segments, call_end=20.0, limit_s=4.0) == []
+
+
+def test_a_caller_turn_split_into_segments_is_one_turn():
+    # VAD and ASR routinely chop one caller turn into several segments. Measuring
+    # from each of them counts the caller's OWN later speech as dead air: this
+    # call would report 8.4s of silence when the caller talked for 7.7 of it.
+    # Every multi-segment turn on a real call becomes a false positive, which is
+    # fatal for a rule whose whole job is to be believed.
+    segments = [
+        caller(0.0, 2.0, "Morning Clara."),
+        caller(2.3, 10.0, "and I slept badly, if I'm honest."),
+        agent(10.4, 12.0, "I'm sorry to hear that."),
+    ]
+    assert silences(segments) == [(10.0, 10.4)]
+    assert long_silences(segments, call_end=20.0) == []
+
+
+def test_an_answer_that_overlaps_the_callers_tail_is_still_an_answer():
+    # Barge-in and early starts are ordinary on a speech-to-speech model. A
+    # strict starts-after-the-caller-finished test misses them and falls through
+    # to the never-answered branch, reporting the whole turn as dead air on a
+    # call the agent answered before the caller stopped.
+    segments = [caller(0.0, 10.0, "It's been quite a week, honestly."), agent(9.6, 13.0, "I bet.")]
+    assert silences(segments, call_end=20.0) == [(10.0, 10.0)]
+    assert long_silences(segments, call_end=20.0) == []
+
+
+def test_one_freeze_is_reported_once_not_once_per_trailing_segment():
+    segments = [caller(0.0, 2.0, "Hello?"), caller(3.0, 5.0, "Are you there?")]
+    findings = long_silences(segments, call_end=30.0)
+    assert len(findings) == 1
+    assert findings[0].at == 5.0, "measured from the last thing the caller said"
+
+
+def test_call_end_cannot_be_forgotten():
+    # The loudest failure in the layer — the agent going silent and never coming
+    # back — needs a boundary to measure to, and has none if the caller's turn is
+    # the last segment. Defaulting it does not save this: the obvious default,
+    # the end of the last segment, IS the caller's own end in that exact case, so
+    # the gap is zero and the freeze still vanishes. Only refusing to run without
+    # it works.
+    segments = [agent(0.0, 3.0, GREETING), caller(5.0, 7.0, "Hello? Are you still there?")]
+    with pytest.raises(TypeError):
+        long_silences(segments)
+    with pytest.raises(TypeError):
+        analyse(segments)
+    assert len(long_silences(segments, call_end=40.0)) == 1
 
 
 # --- the whole pass ------------------------------------------------------
