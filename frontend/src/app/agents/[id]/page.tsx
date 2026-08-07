@@ -685,6 +685,7 @@ function AgentEditor({ id }: { id: string }) {
           ) : (
             <SimulationTab
               agentId={agent.agent_id}
+              agentName={agent.agent_name ?? ""}
               agentVersion={agent.version}
               llm={llm}
               dirty={dirty}
