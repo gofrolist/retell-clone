@@ -42,6 +42,10 @@ DEFAULT_WINDOW_S = 30.0
 # a handful of words costs nothing and removes the noise entirely.
 DEFAULT_MIN_WORDS = 4
 
+# How far either side of the middle to look for the seam between two copies of
+# the same sentence. Narrow on purpose -- see `repeats_itself`.
+SEAM_SEARCH = 2
+
 # Dead air after the caller stops talking before the agent answers.
 #
 # A guess until there is a baseline, and stated as one: the spec expects the
@@ -138,6 +142,56 @@ def _in_time_order(segments: list[Segment]) -> list[Segment]:
     return sorted(segments, key=lambda s: (s.start, s.end))
 
 
+def repeats_itself(
+    text: str, *, threshold: float = DEFAULT_SIMILARITY, min_words: int = DEFAULT_MIN_WORDS
+) -> float:
+    """How much one utterance is just the same thing said twice, 0.0 to 1.0.
+
+    A duplicate does not always arrive as two segments. Whether it does depends
+    on how long a pause the model left between the two copies, and on the
+    silence threshold the segmenter happens to be using -- neither of which has
+    anything to do with whether the caller heard the same sentence twice.
+
+    A real control call showed both halves of this. The doubled *greeting* came
+    back as two segments and was caught; the doubled reply that followed it --
+    "I am glad to hear that you are doing well. I am glad to hear that you are
+    doing well." -- had a shorter pause, arrived as one segment, and sailed
+    through a rule that only ever compares one segment with another. Same bug,
+    same call, invisible.
+
+    So the text is also split down the middle and its halves compared. Both
+    halves must be substantial in their own right, which is what keeps ordinary
+    repetition out: "did you take your Lipitor / did you take your Metformin"
+    scores 0.8 against a 0.9 threshold, and short emphatic doubling like "yes,
+    yes" never has the words to qualify.
+    """
+    words = normalise(text).split()
+    half = len(words) // 2
+    if half < min_words:
+        return 0.0
+    # The split point is searched, not assumed to be the middle, because the
+    # two copies are rarely the same length -- ASR adds or drops a word, or the
+    # model does. A single word is enough to defeat a fixed midpoint: "…doing
+    # well. …doing well today." and "…help you with. …help with." both score
+    # 0.875 split down the middle and slip under the bar, and both score 0.94
+    # when the split lands on the real seam.
+    #
+    # The search is deliberately narrow. Two copies of the same sentence differ
+    # by a word or two; anything wider starts finding "seams" in sentences that
+    # merely rhyme with themselves. At this width the medication run-through --
+    # "did you take your Lipitor / did you take your Metformin" -- still scores
+    # 0.8 at every split point, well under the threshold.
+    # Bounded so neither side of a split can fall below the minimum, rather
+    # than skipping such splits inside the loop: as a bound it is structural,
+    # as a conditional it was a branch no input could reach.
+    first = max(min_words, half - SEAM_SEARCH)
+    last = min(len(words) - min_words, half + SEAM_SEARCH)
+    best = 0.0
+    for split in range(first, last + 1):
+        best = max(best, SequenceMatcher(None, words[:split], words[split:]).ratio())
+    return best if best >= threshold else 0.0
+
+
 def duplicate_utterances(
     segments: list[Segment],
     *,
@@ -146,6 +200,9 @@ def duplicate_utterances(
     min_words: int = DEFAULT_MIN_WORDS,
 ) -> list[Finding]:
     """The agent said the same substantial thing twice in quick succession.
+
+    Twice across two segments, or twice inside one -- see `repeats_itself` for
+    why both have to be checked.
 
     Only the agent's own speech is compared. The caller's lines are the
     harness's script, and a case that deliberately repeats a line -- to test
@@ -159,6 +216,20 @@ def duplicate_utterances(
     ]
     findings = []
     reported = set()
+    for segment in spoken:
+        doubled = repeats_itself(segment.text, threshold=threshold, min_words=min_words)
+        if doubled:
+            reported.add(id(segment))
+            findings.append(
+                Finding(
+                    rule="no_duplicate_utterance",
+                    detail=(
+                        f"the agent said the same thing twice within one utterance, "
+                        f"{doubled:.0%} alike: {segment.text!r}"
+                    ),
+                    at=segment.start,
+                )
+            )
     for index, earlier in enumerate(spoken):
         for later in spoken[index + 1 :]:
             # Segments are compared from the end of the first to the start of

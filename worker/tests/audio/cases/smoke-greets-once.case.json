@@ -1,0 +1,15 @@
+{
+  "name": "smoke-greets-once",
+  "agent": "audio-smoke",
+  "notes": "The plumbing case. A two-line call against a plain single-prompt agent, used to prove the harness end to end before pointing it at a real prompt: the room joins, the caller is heard, the agent's track is recorded, the recording segments, and the rules run. It asserts nothing about any production prompt and should be the first thing run after touching the caller bot.",
+  "variables": {
+    "first_name": "Margaret"
+  },
+  "script": [
+    "I'm doing alright, thank you.",
+    "No, that's everything. Goodbye."
+  ],
+  "settle_s": 1.2,
+  "reply_timeout_s": 25,
+  "max_call_s": 90
+}

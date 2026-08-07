@@ -19,6 +19,7 @@ from audio.analysis import (
     format_findings,
     long_silences,
     normalise,
+    repeats_itself,
     silences,
     similarity,
 )
@@ -160,6 +161,61 @@ def test_the_window_is_measured_between_utterances_not_from_their_starts():
         window_s=30.0,
     )
     assert len(findings) == 1, "1s apart, however long each one took to say"
+
+
+def test_a_double_said_inside_one_utterance_is_caught():
+    # Verbatim from a control call: the same agent doubled its greeting AND its
+    # reply. The greeting came back as two segments and was caught; the reply
+    # had a shorter pause between the copies, arrived as one segment, and a rule
+    # that only compares segments with each other saw nothing wrong with it.
+    doubled = (
+        "I am glad to hear that you are doing well. I am glad to hear that you are doing well."
+    )
+    findings = duplicate_utterances([agent(13.9, 19.0, doubled)])
+    assert len(findings) == 1
+    assert "within one utterance" in findings[0].detail
+    assert findings[0].at == 13.9
+
+
+def test_a_double_whose_second_copy_is_longer_is_still_a_double():
+    # ASR adds a trailing word and a midpoint split stops aligning. Anchored
+    # only at the outer ends this scores 0.875 and slips under the bar — the
+    # same bug the rule was added for, defeated by one word.
+    assert repeats_itself(
+        "I'm glad to hear that you're doing well. I'm glad to hear that you're doing well today."
+    )
+
+
+def test_a_double_whose_second_copy_is_shorter_is_still_a_double():
+    assert repeats_itself(
+        "Is there anything else I can help you with. Is there anything else I can help with."
+    )
+
+
+def test_a_medication_run_through_in_one_breath_is_not_a_double():
+    # Clara reads a list, and two consecutive questions differing only by the
+    # drug are exactly what the halves of one segment look like. This is the
+    # false positive that would make the rule unusable on the real prompt.
+    assert not repeats_itself("Did you take your Lipitor? Did you take your Metformin?")
+
+
+def test_short_emphatic_doubling_is_not_a_double():
+    # "Yes, yes." and "Of course, of course." are speech, not a bug.
+    assert not repeats_itself("Yes, yes.")
+    assert not repeats_itself("Of course, of course.")
+
+
+def test_an_ordinary_sentence_does_not_repeat_itself():
+    assert not repeats_itself(GREETING)
+    assert not repeats_itself("Let me pull up the pricing on that for you right now.")
+
+
+def test_a_doubled_utterance_is_reported_once_not_also_as_a_pairwise_repeat():
+    # Two segments that each say the same thing twice are two bugs, not four.
+    doubled = "Is there anything else I can help with. Is there anything else I can help with."
+    findings = duplicate_utterances([agent(0.0, 4.0, doubled), agent(4.5, 8.5, doubled)])
+    assert len(findings) == 2
+    assert all("within one utterance" in f.detail for f in findings)
 
 
 # --- max_silence ---------------------------------------------------------
