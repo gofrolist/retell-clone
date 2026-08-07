@@ -651,6 +651,24 @@ class TestCaseDefinition(Base):
     dynamic_variables: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     # [{"tool_name", "input_match_rule": {...}, "output", "result"?}, ...]
     tool_mocks: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    # Arhiteq extras, both nullable so every existing case keeps its behaviour.
+    #
+    # `script` replaces the improvising user simulator with literal caller
+    # turns, played in order. That is what makes a run repeatable: the judge was
+    # never the only noise source — a caller that improvises walks a different
+    # path through the prompt every time, and grades a different conversation.
+    #
+    # `assertions` are graded mechanically (services/assertions.py) instead of
+    # by the judge. A case carrying only assertions never calls a model to be
+    # graded at all.
+    #
+    # `assertions` must stay JSON and must never be "optimized" to JSONB:
+    # Postgres stores JSONB as a parsed object and does not preserve key order,
+    # and the evaluator identifies an assertion by its *first* key
+    # (`next(iter(assertion))`). Under JSONB, `{"tool_called": "x", "with": …}`
+    # can come back with `with` first and be read as an unknown assertion type.
+    script: Mapped[list[Any] | None] = mapped_column(JSON)
+    assertions: Mapped[list[Any] | None] = mapped_column(JSON)
     llm_model: Mapped[str | None] = mapped_column(String(64))
     # Arhiteq extra: `manual` or `generated` (auto-written from the prompt +
     # tools), so the dashboard can badge self-generated cases.

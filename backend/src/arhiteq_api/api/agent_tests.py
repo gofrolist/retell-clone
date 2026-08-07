@@ -56,6 +56,8 @@ class TestCaseDefinitionRequest(CompatModel):
     dynamic_variables: dict[str, Any] | None = None
     tool_mocks: list[dict[str, Any]] = Field(default_factory=list)
     llm_model: str | None = None
+    script: list[str] = Field(default_factory=list)
+    assertions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class UpdateTestCaseDefinitionRequest(CompatModel):
@@ -66,6 +68,8 @@ class UpdateTestCaseDefinitionRequest(CompatModel):
     dynamic_variables: dict[str, Any] | None = None
     tool_mocks: list[dict[str, Any]] | None = None
     llm_model: str | None = None
+    script: list[str] | None = None
+    assertions: list[dict[str, Any]] | None = None
 
 
 class CreateBatchTestRequest(CompatModel):
@@ -94,6 +98,10 @@ def _definition_to_dict(row: TestCaseDefinition) -> dict[str, Any]:
         "metrics": list(row.metrics or []),
         "dynamic_variables": dict(row.dynamic_variables or {}),
         "tool_mocks": list(row.tool_mocks or []),
+        # Arhiteq extras. Empty rather than null so a reader never has to
+        # distinguish "no script" from "not supported by this version".
+        "script": list(row.script or []),
+        "assertions": list(row.assertions or []),
         "llm_model": row.llm_model,
         # Arhiteq extra: `manual` | `generated`.
         "source": row.source,
@@ -225,6 +233,8 @@ async def create_test_case_definition(
         dynamic_variables=coerce_dynamic_variables(body.dynamic_variables),
         tool_mocks=list(body.tool_mocks),
         llm_model=body.llm_model,
+        script=list(body.script),
+        assertions=list(body.assertions),
         **engine,
     )
     session.add(row)
@@ -277,6 +287,10 @@ async def update_test_case_definition(
         row.dynamic_variables = coerce_dynamic_variables(body.dynamic_variables)
     if body.tool_mocks is not None:
         row.tool_mocks = list(body.tool_mocks)
+    if body.script is not None:
+        row.script = list(body.script)
+    if body.assertions is not None:
+        row.assertions = list(body.assertions)
     # `null` is a value here, not an absence: it means "simulate this case on
     # the agent's own model", which is the only way back off a pinned one.
     # Keyed on what the request actually sent, so omitting the field still

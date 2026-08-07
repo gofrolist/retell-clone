@@ -83,6 +83,8 @@ _COLUMN_BACKFILLS: tuple[tuple[str, str, str], ...] = (
     ("qa_cohorts", "min_duration_s", "INTEGER"),
     ("qa_cohorts", "success_criteria", "TEXT"),
     ("qa_cohorts", "scoring_metric", "VARCHAR(32) DEFAULT 'call_successful'"),
+    ("test_case_definitions", "script", "JSON"),
+    ("test_case_definitions", "assertions", "JSON"),
 )
 
 # Indexes on backfilled columns. CREATE INDEX IF NOT EXISTS is idempotent on
