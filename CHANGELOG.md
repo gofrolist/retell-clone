@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.25.0](https://github.com/gofrolist/retell-clone/compare/v0.24.1...v0.25.0) (2026-08-07)
+
+
+### Features
+
+* **simulation:** play a scripted caller and grade cases with mechanical assertions ([#226](https://github.com/gofrolist/retell-clone/issues/226)) ([c5234f3](https://github.com/gofrolist/retell-clone/commit/c5234f348ec494461457e8de7d5e8cb993ce3c88))
+
+
+### Bug Fixes
+
+* speak the begin_message on Gemini Live and keep the analytics menu on screen ([#224](https://github.com/gofrolist/retell-clone/issues/224)) ([c54932b](https://github.com/gofrolist/retell-clone/commit/c54932b8217f3b64386217bf407d83b63cf3a2c5))
+
 ## [0.24.1](https://github.com/gofrolist/retell-clone/compare/v0.24.0...v0.24.1) (2026-08-04)
 
 
