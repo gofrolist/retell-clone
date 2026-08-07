@@ -396,6 +396,14 @@ export interface ToolMock {
   output: string;
 }
 
+/** One mechanical assertion over a finished run, graded without a model.
+ *
+ *  Its **first key** names the type — the backend reads it with
+ *  `next(iter(assertion))`. See `components/simulation/assertionModel.ts`,
+ *  which is the only thing that should be constructing these.
+ */
+export type Assertion = Record<string, unknown>;
+
 export interface RawTestCase {
   test_case_definition_id: string;
   type: string;
@@ -404,6 +412,11 @@ export interface RawTestCase {
   metrics: string[];
   dynamic_variables?: Record<string, string>;
   tool_mocks?: ToolMock[];
+  /** Arhiteq extra: literal caller turns. Non-empty means the caller does not
+   *  improvise, which is what makes a run repeatable. */
+  script?: string[];
+  /** Arhiteq extra: graded mechanically, alongside any judged `metrics`. */
+  assertions?: Assertion[];
   llm_model?: string | null;
   /** Arhiteq extra: `manual` when hand-written, `generated` when self-written. */
   source?: "manual" | "generated";
@@ -424,6 +437,8 @@ export interface TestCaseDraft {
   metrics: string[];
   tool_mocks?: ToolMock[];
   dynamic_variables?: Record<string, string>;
+  script?: string[];
+  assertions?: Assertion[];
   /** Model to simulate the agent on. Null means "the agent's own". */
   llm_model?: string | null;
 }
@@ -438,6 +453,12 @@ function testCaseBody(draft: TestCaseDraft) {
     // set means "this case sets no variables" and must overwrite, not be
     // skipped. Callers that don't edit them pass the current set straight back.
     dynamic_variables: draft.dynamic_variables ?? {},
+    // Always sent for the same reason as the variables above: emptying the
+    // script is how a case goes back to an improvising caller, and clearing
+    // the last assertion is how it goes back to being judged. Omitted, either
+    // edit would silently leave the old set running.
+    script: draft.script ?? [],
+    assertions: draft.assertions ?? [],
     // Null, never omitted: clearing the picker back to "the agent's own model"
     // has to overwrite a previously pinned one.
     llm_model: draft.llm_model ?? null,
