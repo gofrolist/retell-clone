@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.26.0](https://github.com/gofrolist/retell-clone/compare/v0.25.0...v0.26.0) (2026-08-07)
+
+
+### Features
+
+* **simulation:** author scripted, mechanically-graded cases in the dashboard ([#229](https://github.com/gofrolist/retell-clone/issues/229)) ([9b4c3d2](https://github.com/gofrolist/retell-clone/commit/9b4c3d2f974483607912e942adce10fa0f303d85))
+* **simulation:** export a drafted case to a reviewable .case.js file ([#232](https://github.com/gofrolist/retell-clone/issues/232)) ([e608956](https://github.com/gofrolist/retell-clone/commit/e608956168a2d488d60555f09d98bfcae674e23c))
+
 ## [0.25.0](https://github.com/gofrolist/retell-clone/compare/v0.24.1...v0.25.0) (2026-08-07)
 
 
