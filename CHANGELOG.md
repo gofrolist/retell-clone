@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.1](https://github.com/gofrolist/retell-clone/compare/v0.26.0...v0.26.1) (2026-08-09)
+
+
+### Bug Fixes
+
+* **worker:** don't count a not-yet-dialled SIP leg as answered ([#247](https://github.com/gofrolist/retell-clone/issues/247)) ([5ce0079](https://github.com/gofrolist/retell-clone/commit/5ce0079f6db0e06d4b29212a65fa5a3a822a1f7b))
+
 ## [0.26.0](https://github.com/gofrolist/retell-clone/compare/v0.25.0...v0.26.0) (2026-08-07)
 
 
