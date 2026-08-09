@@ -1070,9 +1070,15 @@ async def _wait_for_answer(
 
     Non-SIP participants (e.g. web test calls) count as answered immediately.
     Returns False on no-answer/hangup/timeout.
+
+    A SIP participant is published to the room *before* livekit-sip sends the
+    INVITE, so a missing sip.callStatus means "not dialled yet", not
+    "answered" — reading it as answered raced every failed dial into an
+    `ended`/`user_hangup` call with a ~1s duration instead of `not_connected`.
     """
-    status = participant.attributes.get("sip.callStatus")
-    if status is None or status in _SIP_ANSWERED_STATUSES:
+    if not _is_sip_participant(participant):
+        return True
+    if participant.attributes.get("sip.callStatus") in _SIP_ANSWERED_STATUSES:
         return True
 
     done = asyncio.Event()
@@ -1096,8 +1102,13 @@ async def _wait_for_answer(
     ctx.room.on("participant_attributes_changed", _on_attrs)
     ctx.room.on("participant_disconnected", _on_disconnected)
     try:
+        # Re-read after the listeners are live, so a status change (or a
+        # disconnect) landing between the checks above and here isn't missed
+        # and left to burn the full dial timeout.
         if participant.attributes.get("sip.callStatus") in _SIP_ANSWERED_STATUSES:
             return True
+        if participant.identity not in ctx.room.remote_participants:
+            return False
         try:
             await asyncio.wait_for(done.wait(), timeout)
         except TimeoutError:
