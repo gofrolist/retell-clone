@@ -39,6 +39,7 @@ from livekit.agents import Agent, AgentSession, CloseReason, JobContext, RoomInp
 
 from arhiteq_worker import amd, metrics
 from arhiteq_worker.config import CallConfig, ConversationFlowConfig, gemini_live_temperature
+from arhiteq_worker.dial import dial_verdict
 from arhiteq_worker.flow import (
     TOOL_EXTRACT,
     TOOL_FUNCTION,
@@ -209,8 +210,6 @@ GEMINI_LIVE_TEMPERATURE = gemini_live_temperature(os.getenv("ARHITEQ_GEMINI_LIVE
 # Note "flash-lite" does NOT match "flash-live", so the lite pipeline models
 # stay on the Cartesia path.
 _LIVE_MODEL_MARKERS = ("native-audio", "-live-", "flash-live", "live-2.5")
-
-_SIP_ANSWERED_STATUSES = {"active", "automation"}
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -1066,19 +1065,17 @@ async def _wait_for_web_participant(ctx: JobContext, timeout: float) -> rtc.Remo
 async def _wait_for_answer(
     ctx: JobContext, participant: rtc.RemoteParticipant, timeout: float
 ) -> bool:
-    """Wait until the SIP call is answered (sip.callStatus in active/automation).
+    """Wait until the SIP call is answered (see `dial.dial_verdict`).
 
     Non-SIP participants (e.g. web test calls) count as answered immediately.
     Returns False on no-answer/hangup/timeout.
 
-    A SIP participant is published to the room *before* livekit-sip sends the
-    INVITE, so a missing sip.callStatus means "not dialled yet", not
-    "answered" — reading it as answered raced every failed dial into an
-    `ended`/`user_hangup` call with a ~1s duration instead of `not_connected`.
+    Measured on a live outbound leg: `dialing` at +0.4s, `ringing` at +0.9s,
+    `active` at +5.1s — so the participant exists, attribute-less, for a
+    moment before any of that. Treating that gap as answered is what finalized
+    carrier-rejected dials as `ended`/`user_hangup` with a ~1s duration.
     """
     if not _is_sip_participant(participant):
-        return True
-    if participant.attributes.get("sip.callStatus") in _SIP_ANSWERED_STATUSES:
         return True
 
     done = asyncio.Event()
@@ -1088,11 +1085,9 @@ async def _wait_for_answer(
         nonlocal answered
         if p.identity != participant.identity:
             return
-        st = p.attributes.get("sip.callStatus")
-        if st in _SIP_ANSWERED_STATUSES:
-            answered = True
-            done.set()
-        elif st == "hangup":
+        verdict = dial_verdict(p.attributes.get("sip.callStatus"), present=True)
+        if verdict is not None:
+            answered = verdict
             done.set()
 
     def _on_disconnected(p: rtc.RemoteParticipant, *_: Any) -> None:
@@ -1102,13 +1097,16 @@ async def _wait_for_answer(
     ctx.room.on("participant_attributes_changed", _on_attrs)
     ctx.room.on("participant_disconnected", _on_disconnected)
     try:
-        # Re-read after the listeners are live, so a status change (or a
-        # disconnect) landing between the checks above and here isn't missed
-        # and left to burn the full dial timeout.
-        if participant.attributes.get("sip.callStatus") in _SIP_ANSWERED_STATUSES:
-            return True
-        if participant.identity not in ctx.room.remote_participants:
-            return False
+        # The dial can already be decided: we were suspended in
+        # _wait_for_participant while it progressed, and those transitions
+        # predate the listeners above. Waiting on the event stream alone would
+        # sit out the full dial timeout on a call that is long over.
+        verdict = dial_verdict(
+            participant.attributes.get("sip.callStatus"),
+            present=participant.identity in ctx.room.remote_participants,
+        )
+        if verdict is not None:
+            return verdict
         try:
             await asyncio.wait_for(done.wait(), timeout)
         except TimeoutError:

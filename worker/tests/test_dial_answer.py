@@ -84,6 +84,12 @@ class TestSipDial:
         room = _Room([])  # disconnected before the worker looked
         assert _run(asyncio.wait_for(_answer(room, p, timeout=30.0), 1.0)) is False
 
+    def test_already_hung_up_returns_without_burning_the_dial_timeout(self):
+        """Still in the room, but the leg is over — the event stream is silent."""
+        p = _sip_participant("hangup")
+        room = _Room([p])
+        assert _run(asyncio.wait_for(_answer(room, p, timeout=30.0), 1.0)) is False
+
     def test_ringing_then_active_is_an_answer(self):
         p = _sip_participant("ringing")
         room = _Room([p])
