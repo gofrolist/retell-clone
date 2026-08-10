@@ -102,6 +102,95 @@ def get_call(
     return _get(api_base, api_key, f"/v2/get-call/{call_id}", client)
 
 
+def _patch(
+    api_base: str, api_key: str, path: str, body: dict, client: httpx.Client | None
+) -> dict[str, Any]:
+    owned = client is None
+    http = client or httpx.Client(timeout=TIMEOUT_S)
+    try:
+        response = http.patch(
+            f"{api_base.rstrip('/')}{path}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    finally:
+        if owned:
+            http.close()
+    if response.status_code >= 400:
+        raise ControlPlaneError(f"PATCH {path} → HTTP {response.status_code} {response.text[:400]}")
+    return response.json()
+
+
+def get_agent(
+    api_base: str,
+    api_key: str,
+    agent_id: str,
+    *,
+    version: int | str | None = None,
+    client: httpx.Client | None = None,
+) -> dict[str, Any]:
+    """One agent, for the `response_engine` that says where its tools live.
+
+    `version` takes a number, `"latest"` or `"latest_published"`. It matters
+    which: the endpoint defaults to **latest**, the version the editor shows,
+    while a call runs **latest_published**. Reading the default and calling it
+    "what this call will do" is how a check passes on a draft nobody dials.
+    """
+    path = f"/get-agent/{agent_id}"
+    if version is not None:
+        path += f"?version={version}"
+    return _get(api_base, api_key, path, client)
+
+
+def get_agent_version(
+    api_base: str, api_key: str, agent_id: str, version: int, *, client: httpx.Client | None = None
+) -> dict[str, Any]:
+    """One version, with `response_engine_config` — the frozen prompt and tools.
+
+    A published version is an immutable snapshot: editing the live LLM row does
+    not touch it, and a call runs the snapshot. This is the only way to see
+    what a call would actually send.
+    """
+    return _get(api_base, api_key, f"/get-agent-version/{agent_id}/{version}", client)
+
+
+def get_llm(
+    api_base: str, api_key: str, llm_id: str, *, client: httpx.Client | None = None
+) -> dict[str, Any]:
+    """The response engine behind an agent, whose `general_tools` carry the URLs."""
+    return _get(api_base, api_key, f"/get-retell-llm/{llm_id}", client)
+
+
+def update_llm_tools(
+    api_base: str,
+    api_key: str,
+    llm_id: str,
+    tools: list[dict[str, Any]],
+    *,
+    client: httpx.Client | None = None,
+) -> dict[str, Any]:
+    """Replace an engine's tool list, and nothing else about it.
+
+    The only write this harness makes. It exists so `toolsink` can repoint tool
+    URLs at a local sink; the guard that keeps it away from anything but a
+    local stack lives there, with the reasoning.
+    """
+    return _patch(
+        api_base, api_key, f"/update-retell-llm/{llm_id}", {"general_tools": tools}, client
+    )
+
+
+def publish_agent(
+    api_base: str, api_key: str, agent_id: str, *, client: httpx.Client | None = None
+) -> dict[str, Any]:
+    """Publish the open draft, so calls run what was just edited.
+
+    Paired with `update_llm_tools`: that opens a draft, and a draft nobody
+    publishes is a config change no call ever sees.
+    """
+    return _post(api_base, api_key, f"/publish-agent/{agent_id}", {}, client)
+
+
 def transcript_lines(call: dict[str, Any]) -> list[tuple[str, str]]:
     """The platform transcript as `(role, content)`, tool calls dropped.
 

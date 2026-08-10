@@ -1,0 +1,24 @@
+{
+  "name": "A06-goodbye-heard-in-full",
+  "agent": "clara-checkin",
+  "variables_from": "_checkin.vars.json",
+  "notes": "The closing matters as much as the opening, and it fails differently: `end_call` firing while the last sentence is still being played cuts the goodbye off mid-word. The platform's transcript records the sentence in full — it was generated in full — so no layer that reads a transcript can see the truncation. Here the words have to be in the recording, which means they have to have been played. The wrap-up tools are asserted alongside it because a closing that sounds perfect while dropping `log_outcome` is the failure mode the whole closing gate exists to prevent, and the two are only worth grading together.\n\nThe pattern is the prompt's own two scripted closings — \"Have a beautiful day, {{first_name}}\" and \"Take care, {{first_name}}\" — and it requires the NAME on the end, which is what makes it a clipping check rather than a vocabulary check: those are the last words of the call, so they are the first thing an `end_call` racing the audio cuts off. An earlier version listed synonyms instead (goodbye, bye, take care, have a lovely day) and failed a run where the agent read the scripted line perfectly, because \"beautiful\" was not one of the guesses.",
+  "tools": {
+    "recall_lead_context": "{\"summary_text\": \"Margaret, CA, trial day 3 of 7. Mood last 3 days: 4,4,3. Today's meds: Lipitor at 08:00, Metformin at 19:00.\"}",
+    "log_mood": "{\"ok\": true}",
+    "log_medication_taken": "{\"ok\": true}",
+    "save_conversation_note": "{\"ok\": true}",
+    "log_outcome": "{\"ok\": true}"
+  },
+  "script": [
+    "I'm well, thank you.",
+    "Yes, took my Lipitor at eight.",
+    "No, nothing else today. Thank you Clara, goodbye.",
+    "Goodbye."
+  ],
+  "expect": [
+    { "tool_called": "log_outcome" },
+    { "heard": "(have a beautiful day|take care)\\s+margaret" },
+    { "tool_not_called": "purchase_offer" }
+  ]
+}

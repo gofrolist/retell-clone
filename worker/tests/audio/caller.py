@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from livekit import rtc
 
 from audio.pcm import SAMPLE_RATE, Recording, chunk_pcm, rms
+from audio.verdict import room_close_ended_the_call
 
 # The rate the caller's lines were synthesized at, taken from the module that
 # synthesizes them rather than restated here. Publishing at a rate the audio was
@@ -88,6 +89,12 @@ class CallerResult:
     # which is what "frames went missing" means. The wait for the track to
     # appear at the start of every call is not in here; see `_AgentTrack`.
     dropped_s: float = 0.0
+    # Script lines the call ended before the caller could say. Carried as a
+    # NUMBER rather than only inside a warning string because a reader
+    # downstream has to act on it: anything the case expected from those lines
+    # is unproven rather than failed, and only something machine-readable can
+    # make the report say which.
+    unspoken_lines: int = 0
     warnings: list[str] = field(default_factory=list)
 
 
@@ -138,6 +145,14 @@ async def _drain(stream: rtc.AudioStream, track: _AgentTrack) -> None:
         track.feed(event.frame)
 
 
+def _reason_name(reason: object) -> str:
+    """A `DisconnectReason` as something a person reading a report can use."""
+    try:
+        return rtc.DisconnectReason.Name(reason)  # type: ignore[arg-type]
+    except TypeError, ValueError:
+        return repr(reason)
+
+
 def _frames(pcm: bytes, *, rate: int = CALLER_RATE) -> list[rtc.AudioFrame]:
     """One synthesized line cut into frames LiveKit will accept."""
     return [
@@ -172,15 +187,44 @@ class Caller:
         self.room = rtc.Room()
         self.started_at = 0.0
         self.agent: _AgentTrack | None = None
+        self.agent_identity: str | None = None
         self.lines: list[SpokenLine] = []
         self.warnings: list[str] = []
+        self.unspoken_lines = 0
         self._source: rtc.AudioSource | None = None
         self._readers: list[asyncio.Task] = []
         self._subscribed = asyncio.Event()
+        # Set when there is nobody left to talk to. Without it the caller waits
+        # out its full reply timeout for an answer that can never come, then
+        # plays the rest of its script into an empty room -- and the recording
+        # gains a stretch of silence no listener was ever in, which
+        # `max_silence` then reports as dead air. Three of the first five Clara
+        # cases failed that way, on calls where the agent behaved correctly.
+        #
+        # `_over_because` says WHICH, and the two do not mean the same thing:
+        # `hung_up` is the agent ending the call, which is a fact about the
+        # prompt; `room_closed` is the harness losing the room, which is a fact
+        # about nothing. See `verdict.room_close_ended_the_call`.
+        self._over = asyncio.Event()
+        self._over_because = ""
+        self._over_detail = ""
 
     @property
     def elapsed(self) -> float:
         return time.monotonic() - self.started_at
+
+    def _end_call(self, why: str, detail: str = "") -> None:
+        """Record the FIRST reason the call ended, and stop waiting.
+
+        First rather than last: a hangup is followed by the room going away a
+        moment later, and the second event must not overwrite the reason that
+        explains the call.
+        """
+        if self._over.is_set():
+            return
+        self._over_because = why
+        self._over_detail = detail
+        self._over.set()
 
     async def connect(self) -> None:
         @self.room.on("track_subscribed")
@@ -189,9 +233,36 @@ class Caller:
                 return
             log.info("subscribed to %s", participant.identity)
             self.agent = _AgentTrack(self.started_at)
+            self.agent_identity = participant.identity
             stream = rtc.AudioStream(track, sample_rate=SAMPLE_RATE, num_channels=1)
             self._readers.append(asyncio.create_task(_drain(stream, self.agent)))
             self._subscribed.set()
+
+        @self.room.on("participant_disconnected")
+        def _on_left(participant: rtc.RemoteParticipant) -> None:
+            # Before the agent's track is subscribed there is nobody else it
+            # could be, so an unknown identity counts too rather than being
+            # ignored until the one case that matters.
+            if self.agent_identity in (None, participant.identity):
+                log.info("[%6.2fs] the agent hung up", self.elapsed)
+                self._end_call("hung_up", "the agent left the room")
+
+        @self.room.on("disconnected")
+        def _on_room_closed(reason=None, *_args) -> None:
+            # `reason` is a `DisconnectReason`, and reading it is the whole
+            # point: the room going away because the worker deleted it is the
+            # agent hanging up, and the room going away for any other reason is
+            # this harness falling over. Defaulted so a signature change in
+            # livekit-rtc degrades to the safe answer -- an unrecognised reason
+            # is a broken run, not a clean one. Which is which lives in
+            # `verdict.py`, where CI can reach it.
+            named = _reason_name(reason)
+            ended = room_close_ended_the_call(named)
+            log.info("[%6.2fs] the room disconnected: %s", self.elapsed, named)
+            self._end_call(
+                "hung_up" if ended else "room_closed",
+                f"the room ended by {named}" if ended else f"the room disconnected: {named}",
+            )
 
         # The clock starts before connecting, not after the agent is heard. A
         # timeline that begins at the agent's first frame cannot represent the
@@ -236,11 +307,19 @@ class Caller:
     async def wait_for_turn(self) -> str:
         """Wait until the agent has spoken and then gone quiet.
 
-        Returns why the wait ended, because the three reasons mean different
-        things: `settled` is an ordinary turn, `silent` is the agent never
-        answering, and `still_talking` is the agent running past the timeout.
-        Only the first is the harness working as intended; the other two go in
-        the report next to the recording that shows them.
+        Returns why the wait ended, because the reasons mean different things:
+        `settled` is an ordinary turn, `silent` is the agent never answering,
+        `still_talking` is the agent running past the timeout, `hung_up` is the
+        agent ending the call, and `room_closed` is this harness losing the
+        room under itself. Only the first is the harness working as intended;
+        the rest go in the report next to the recording that shows them, and
+        the last two are graded differently -- one is about the prompt and the
+        other is about nothing.
+
+        `hung_up` and `room_closed` return immediately rather than waiting out
+        the timeout. The difference is not just time: everything after the call
+        ends is silence nobody heard, and leaving it in the recording turns a
+        correct call into a dead-air finding.
         """
         assert self.agent is not None
         # The turn being waited for is anything the agent said since the caller
@@ -253,6 +332,8 @@ class Caller:
         deadline = self.elapsed + self.reply_timeout_s
         heard = False
         while self.elapsed < deadline:
+            if self._over.is_set():
+                return self._over_because
             voice = self.agent.last_voice_at
             if voice is not None and voice >= began:
                 heard = True
@@ -277,12 +358,27 @@ class Caller:
             for index, (text, pcm) in enumerate(script):
                 if self.elapsed >= self.max_call_s:
                     stopped = "max_call_s"
+                    self.unspoken_lines = len(script) - index
                     self.warnings.append(
                         f"stopped after {index} of {len(script)} lines: "
                         f"the call passed its {self.max_call_s:.0f}s limit"
                     )
                     break
                 why = await self.wait_for_turn()
+                if why in ("hung_up", "room_closed"):
+                    stopped = "agent_ended_call" if why == "hung_up" else "room_closed"
+                    self.unspoken_lines = len(script) - index
+                    # Named rather than silently dropped, and NOT an error when
+                    # it is a hangup: the agent deciding the call is over is a
+                    # fact about the prompt, and often the very thing a case is
+                    # grading. But the lines it cut off were never spoken, so
+                    # anything the case expected from them is unproven rather
+                    # than failed, and the report has to say which.
+                    self.warnings.append(
+                        f"{self._over_detail} with {self.unspoken_lines} of {len(script)} "
+                        f"caller line(s) unspoken"
+                    )
+                    break
                 if why != "settled":
                     self.warnings.append(
                         f"before line {index + 1} the agent was {why} for "
@@ -292,8 +388,14 @@ class Caller:
             else:
                 # The closing matters as much as the opening -- a doubled
                 # goodbye is the same bug as a doubled greeting -- so the last
-                # thing the harness does is listen.
-                await self.wait_for_turn()
+                # thing the harness does is listen. Nothing is unspoken here:
+                # the script finished, and only the trailing listen was cut.
+                why = await self.wait_for_turn()
+                if why == "hung_up":
+                    stopped = "agent_ended_call"
+                elif why == "room_closed":
+                    stopped = "room_closed"
+                    self.warnings.append(self._over_detail)
 
         return stopped
 
@@ -339,6 +441,7 @@ class Caller:
             call_end=end,
             stopped_because=stopped,
             dropped_s=dropped,
+            unspoken_lines=self.unspoken_lines,
             warnings=list(self.warnings),
         )
 

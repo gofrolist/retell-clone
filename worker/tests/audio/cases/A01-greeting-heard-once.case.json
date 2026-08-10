@@ -1,0 +1,25 @@
+{
+  "name": "A01-greeting-heard-once",
+  "agent": "clara-checkin",
+  "variables_from": "_checkin.vars.json",
+  "notes": "The bug this case exists for is PR #224: the begin message spoken twice, the second copy starting before the first had finished. It is invisible to every other layer — the platform logs one greeting, because it only ever generated one — and it is the first thing a real listener hears. The mood answer that follows keeps the call on the ordinary path so the greeting is graded in the context it ships in, not in isolation. `no_duplicate_utterance` is what catches the doubling; the expectations here only pin down that this was the right call at all. Line 2 answers the sleep question the mood phase asks BEFORE moving on to the medication: a scripted caller that ignores a question leaves the phase open, `log_mood` never fires, and the case fails on its own rigidity rather than on the prompt — which is what the first run of it did.\n\nThe two `times: 1` assertions are here because of what the Live model did on this exact case: it logged the mood, the dose and the outcome TWICE each, a turn having been abandoned after its tools ran and then regenerated. A bare `tool_called` reads that as a clean call, and downstream it is a duplicated row in somebody's record.",
+  "tools": {
+    "recall_lead_context": "{\"summary_text\": \"Margaret, CA, trial day 3 of 7. Mood last 3 days: 4,4,3. Today's meds: Lipitor at 08:00, Metformin at 19:00.\"}",
+    "log_mood": "{\"ok\": true}",
+    "log_medication_taken": "{\"ok\": true}",
+    "log_outcome": "{\"ok\": true}"
+  },
+  "script": [
+    "I'm doing alright, thank you Clara.",
+    "I slept well, thank you for asking. And yes, I took the Lipitor with my breakfast.",
+    "No, that's everything. You take care now."
+  ],
+  "expect": [
+    { "heard": "good morning" },
+    { "heard": "margaret" },
+    { "never_heard": "first name" },
+    { "never_heard": "bm greeting" },
+    { "tool_called": "log_mood", "times": 1 },
+    { "tool_called": "log_outcome", "times": 1 }
+  ]
+}
