@@ -90,6 +90,14 @@ Two rules so far, chosen because they map to bugs that actually shipped:
   whether the caller heard it. Only the agent's speech is compared (a case may
   repeat a caller line on purpose), and utterances under four words are never
   compared: "Okay." and "Okay." are 100% alike and a caller hears nothing wrong.
+- **`no_restarted_turn`** — the agent began a sentence, abandoned it, and
+  started again. The only rule that reads the **platform's** transcript rather
+  than the recording, because that is where the evidence is legible: the audio
+  has a stutter with no clean seam, the transcript has a fragment followed by
+  the same opening finished. Requires the two turns to be adjacent (a caller
+  turn between them makes a repeated opening ordinary) and the first to be
+  unfinished — no terminal punctuation — which is what keeps a legitimate
+  run-through out, since a model that finished its sentence did not abandon it.
 - **`max_silence`** — dead air from the caller stopping to the agent starting,
   over 6s (baselined; see below). Silence after the *agent* stops is the caller
   thinking and is not measured. A caller turn the agent never answers is
@@ -357,6 +365,52 @@ pulled in with `variables_from`, so what stays in a case file is the override �
 the sentence the case is actually making. It holds the same values as layer 1's
 `_fixtures.js` for the same reasons, which is what makes a run here comparable
 with a run there.
+
+## The Live model, and what it cost the rules
+
+The first run against `gemini-live-2.5-flash-native-audio` — a fresh workspace
+seeded from `dist/`, Vertex serving Live at `us-east1` and refusing it at
+`global` — is the reason this layer exists, and it arrived as a rebuke to the
+rules rather than to the prompt. Five of six cases reported **no findings** on
+calls that stutter audibly.
+
+What the model actually does is abandon turns and start them again. The
+platform's transcript and the microphone tell the two halves:
+
+| platform believes it said | microphone heard |
+|---|---|
+| "That's wonderful to" · "That's wonderful to hear. Did you sleep alright last night?" | "That's wonderful to hear. That's wonderful to hear. Did you sleep all right last night?" |
+| "Good for you. Is there anything" · "Good for you. Before I let you go, is there anything else…" | "Good for you. Is there any… Good for you. Before I let you go…" |
+
+Three gaps, all of them under-reporting, now closed:
+
+1. `repeats_itself` only knew how to see an utterance that is two copies of
+   itself. The Live stutter is a repeated **prefix** with the sentence carrying
+   on after it, and the midpoint seam search cannot reach a seam a quarter of
+   the way in. It now also scans for an exact repeated prefix — exact, not
+   approximate, because a scan over every prefix length would start finding
+   "repeats" in ordinary parallel phrasing.
+2. `tool_called` had no `times`. One Live call logged the mood, the dose and the
+   outcome **twice each** — a turn abandoned after its tools ran, then
+   regenerated — and every assertion that only asks whether a tool ran called
+   that clean. A01 now pins `times: 1`.
+3. Nothing compared the platform's transcript with the recording, though both
+   were already written to the artifacts. `no_restarted_turn` is that
+   comparison, narrowed to the shape that has no innocent explanation.
+
+Re-grading the six stored Live recordings with the rules as they now stand:
+A01 goes 0 → 3 findings, A06 1 → 4, and A03/A04/A05 stay at 0. Re-grading the
+13 text-model recordings introduces **zero** new findings, which is the check
+that matters — a rule that fires on the calls that were fine is worse than no
+rule.
+
+Two prompt-level findings from the same run, neither yet fixed: it called the
+listener **"Mark"** with `first_name=Margaret`, and it fabricated continuity
+("yesterday evening you mentioned wanting to read the new mystery book") with
+`prior_conversation` empty. The turn-restarting itself is a platform question
+rather than a prompt one — the worker log shows adaptive interruption failing
+and falling back to VAD, and a speech-to-speech model that barges in on itself
+would produce exactly this.
 
 ## What is not built
 

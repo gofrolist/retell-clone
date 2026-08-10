@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from itertools import pairwise
 
 # Two utterances counted as "the same thing said twice". Not 1.0: ASR of the
 # same synthesized line twice over is rarely character-identical.
@@ -45,6 +46,13 @@ DEFAULT_MIN_WORDS = 4
 # How far either side of the middle to look for the seam between two copies of
 # the same sentence. Narrow on purpose -- see `repeats_itself`.
 SEAM_SEARCH = 2
+
+# Words two adjacent agent turns must share at the start before a restart is
+# suspected. Three is enough to be a deliberate opening ("good for you",
+# "that's wonderful to") and short enough to catch a restart that diverges
+# immediately after it. It is only ever consulted together with the earlier
+# turn being unfinished -- see `restarted_turns`.
+MIN_SHARED_OPENING = 3
 
 # Dead air after the caller stops talking before the agent answers.
 #
@@ -207,6 +215,24 @@ def repeats_itself(
     best = 0.0
     for split in range(first, last + 1):
         best = max(best, SequenceMatcher(None, words[:split], words[split:]).ratio())
+
+    # And the doubling that is only the OPENING of the utterance, with the rest
+    # of the sentence carrying on after it. A Live model produced
+    # "That's wonderful to hear. That's wonderful to hear. Did you sleep all
+    # right last night?" -- eight words said twice, then seven new ones -- and
+    # the midpoint search above cannot see it, because the utterance is not two
+    # copies of anything. The seam is at a quarter of the way in.
+    #
+    # Only an exact repeat counts here, not a near one. The midpoint search can
+    # afford fuzziness because it has already committed to the whole utterance
+    # being a duplicate; a prefix scan looks at every length and would start
+    # finding "repeats" in ordinary parallel phrasing if it were allowed to
+    # approximate. "Did you take your Lipitor did you take your Metformin"
+    # shares four exact words and differs on the fifth, so it stays out.
+    for length in range(min_words, len(words) // 2 + 1):
+        if words[:length] == words[length : length * 2]:
+            best = max(best, 1.0)
+            break
     return best if best >= threshold else 0.0
 
 
@@ -362,10 +388,85 @@ def long_silences(
     return findings
 
 
+def restarted_turns(turns: list[dict], *, min_shared: int = MIN_SHARED_OPENING) -> list[Finding]:
+    """Turns the model began, abandoned, and started again.
+
+    The one rule here that reads the PLATFORM's transcript rather than the
+    recording, because that is the only place the evidence is legible. The
+    first Live-model run produced this, and the two halves say different
+    things:
+
+        platform:  "That's wonderful to"
+                   "That's wonderful to hear. Did you sleep alright last night?"
+        heard:     "That's wonderful to hear. That's wonderful to hear.
+                    Did you sleep all right last night?"
+
+    In the audio it is a stutter with no clean seam, which is why
+    `repeats_itself` walks past it: the repeat is a PREFIX followed by new
+    content, not one utterance that is two copies of itself. In the platform
+    transcript it is unmistakable — a fragment, then the same opening again
+    with the sentence finished. So the rule is written where the signal is.
+
+    Two shapes count, both requiring the turns to be ADJACENT with no caller
+    turn between them. A caller turn in between makes a repeated opening
+    ordinary — an agent re-asking a question it did not get an answer to is the
+    prompt working:
+
+    * the earlier turn is a strict prefix of the later one; or
+    * they share an opening of `min_shared` words and the earlier one ends
+      unfinished — no terminal punctuation.
+
+    The second condition is what keeps a legitimate run-through out. "Did you
+    take your Lipitor?" followed by "Did you take your Metformin?" shares a
+    four-word opening, but the first turn ENDS, with a question mark, and a
+    model that finished its sentence did not abandon it.
+    """
+    findings = []
+    agent_turns = [
+        (index, turn)
+        for index, turn in enumerate(turns)
+        if isinstance(turn, dict) and turn.get("role") == AGENT and turn.get("content")
+    ]
+    for (first_index, first), (second_index, second) in pairwise(agent_turns):
+        if second_index != first_index + 1:
+            continue  # somebody spoke in between
+        earlier, later = str(first["content"]), str(second["content"])
+        words, next_words = normalise(earlier).split(), normalise(later).split()
+        if not words or not next_words:
+            continue
+        shared = 0
+        for a, b in zip(words, next_words):
+            if a != b:
+                break
+            shared += 1
+        is_prefix = shared == len(words) and len(next_words) > len(words)
+        unfinished = not earlier.rstrip().endswith((".", "!", "?", "…"))
+        if not (is_prefix or (shared >= min_shared and unfinished)):
+            continue
+        findings.append(
+            Finding(
+                rule="no_restarted_turn",
+                detail=(
+                    f"the agent began {earlier!r} and started over with {later!r} — "
+                    f"a listener hears the opening twice"
+                ),
+                at=_turn_at(second, fallback=_turn_at(first)),
+            )
+        )
+    return findings
+
+
+def _turn_at(turn: dict, *, fallback: float = 0.0) -> float:
+    """When a platform turn happened, in seconds from the answer."""
+    ms = turn.get("time_ms")
+    return ms / 1000.0 if isinstance(ms, (int, float)) and not isinstance(ms, bool) else fallback
+
+
 def analyse(
     segments: list[Segment],
     *,
     call_end: float,
+    turns: list[dict] | None = None,
     similarity_threshold: float = DEFAULT_SIMILARITY,
     window_s: float = DEFAULT_WINDOW_S,
     min_words: int = DEFAULT_MIN_WORDS,
@@ -375,13 +476,22 @@ def analyse(
 
     Ordered by time rather than by rule so the report reads as a walk through
     the recording -- which is how someone listening to it will use it.
+
+    `turns` is the platform's own transcript, and it is optional only because a
+    caller can be graded without one. Pass it: `no_restarted_turn` is the rule
+    that caught the Live model abandoning turns mid-sentence, and it is blind
+    without it.
     """
-    findings = duplicate_utterances(
-        segments,
-        threshold=similarity_threshold,
-        window_s=window_s,
-        min_words=min_words,
-    ) + long_silences(segments, limit_s=max_silence_s, call_end=call_end)
+    findings = (
+        duplicate_utterances(
+            segments,
+            threshold=similarity_threshold,
+            window_s=window_s,
+            min_words=min_words,
+        )
+        + long_silences(segments, limit_s=max_silence_s, call_end=call_end)
+        + restarted_turns(turns or [])
+    )
     return sorted(findings, key=lambda f: f.at)
 
 

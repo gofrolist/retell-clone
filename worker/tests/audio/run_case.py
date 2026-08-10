@@ -275,7 +275,9 @@ async def run(args: argparse.Namespace) -> int:
     record = get_call(args.api_base, args.api_key, call["call_id"])
     record["transcript_lines"] = transcript_lines(record)
 
-    findings = analyse(segments, call_end=result.call_end) + check(
+    findings = analyse(
+        segments, call_end=result.call_end, turns=record.get("transcript_object") or []
+    ) + check(
         list(case.expect),
         segments=segments,
         calls=tool_calls(record),

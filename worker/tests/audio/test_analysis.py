@@ -13,6 +13,7 @@ from audio.analysis import (
     AGENT,
     CALLER,
     DEFAULT_MAX_SILENCE_S,
+    DEFAULT_SIMILARITY,
     Finding,
     Segment,
     analyse,
@@ -21,6 +22,7 @@ from audio.analysis import (
     long_silences,
     normalise,
     repeats_itself,
+    restarted_turns,
     silences,
     similarity,
 )
@@ -333,6 +335,103 @@ def test_a_clean_call_produces_nothing():
     ]
     assert analyse(segments, call_end=9.0) == []
     assert format_findings([]) == "No audio findings."
+
+
+# --- restarted turns -----------------------------------------------------
+#
+# Every transcript below is copied from the first Live-model run, where the
+# model abandoned turns mid-sentence and started them again. The audio rules
+# reported a clean call on all of it.
+
+
+def turn(role, content, time_ms=1000):
+    return {"role": role, "content": content, "time_ms": time_ms}
+
+
+def test_a_fragment_followed_by_the_finished_sentence_is_a_restart():
+    turns = [
+        turn(AGENT, "That's wonderful to", 8000),
+        turn(AGENT, "That's wonderful to hear. Did you sleep alright last night?", 9040),
+    ]
+    findings = restarted_turns(turns)
+    assert [f.rule for f in findings] == ["no_restarted_turn"]
+    assert findings[0].at == 9.04
+
+
+def test_a_restart_that_diverges_after_the_opening_still_counts():
+    # The listener hears "Good for you. Is there any... Good for you. Before I
+    # let you go" — the second attempt is not a continuation of the first.
+    turns = [
+        turn(AGENT, "Good for you. Is there anything"),
+        turn(
+            AGENT, "Good for you. Before I let you go, is there anything else I can help you with?"
+        ),
+    ]
+    assert len(restarted_turns(turns)) == 1
+
+
+def test_a_caller_turn_in_between_makes_a_repeated_opening_ordinary():
+    # An agent re-asking a question it never got an answer to is the prompt
+    # working, not a restart.
+    turns = [
+        turn(AGENT, "Did you take your Lipitor"),
+        turn(CALLER, "Sorry, what was that?"),
+        turn(AGENT, "Did you take your Lipitor this morning?"),
+    ]
+    assert restarted_turns(turns) == []
+
+
+def test_a_finished_sentence_is_never_a_restart():
+    # The medication run-through: same four-word opening, but the first turn
+    # ENDS. A model that finished its sentence did not abandon it.
+    turns = [
+        turn(AGENT, "Did you take your Lipitor?"),
+        turn(AGENT, "Did you take your Metformin?"),
+    ]
+    assert restarted_turns(turns) == []
+
+
+def test_two_unrelated_turns_in_a_row_are_left_alone():
+    turns = [
+        turn(AGENT, "Good morning Margaret, it's Clara"),
+        turn(AGENT, "How are you feeling today?"),
+    ]
+    assert restarted_turns(turns) == []
+
+
+def test_restarts_ride_along_with_the_audio_rules():
+    segments = [
+        agent(0.0, 3.0, GREETING),
+        caller(3.5, 5.0, "I'm well."),
+        agent(5.4, 9.0, "That's wonderful to hear. That's wonderful to hear. Did you sleep?"),
+    ]
+    turns = [
+        turn(AGENT, "That's wonderful to", 5400),
+        turn(AGENT, "That's wonderful to hear. Did you sleep?", 6000),
+    ]
+    rules = {f.rule for f in analyse(segments, call_end=10.0, turns=turns)}
+    # Both halves of the same event: the platform's fragment and the stutter a
+    # listener actually heard.
+    assert rules == {"no_restarted_turn", "no_duplicate_utterance"}
+
+
+# --- the doubling that is only the opening -------------------------------
+
+
+def test_an_utterance_that_repeats_its_opening_then_carries_on_is_caught():
+    # Eight words said twice, then seven new ones. The midpoint search cannot
+    # see this: the utterance is not two copies of anything, and the seam is a
+    # quarter of the way in.
+    doubled = (
+        "That's wonderful to hear. That's wonderful to hear. Did you sleep all right last night?"
+    )
+    assert repeats_itself(doubled) >= DEFAULT_SIMILARITY
+
+
+def test_a_parallel_run_through_is_still_not_a_repeat():
+    # Four exact words shared, then a different drug. The prefix scan only
+    # accepts an exact repeat, so this stays out.
+    assert repeats_itself("Did you take your Lipitor did you take your Metformin") == 0.0
 
 
 def test_the_silence_limit_clears_every_turnaround_ever_measured():

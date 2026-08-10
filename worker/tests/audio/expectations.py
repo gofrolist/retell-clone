@@ -201,6 +201,21 @@ def _tool_called(
     if not invoked:
         return [Finding(rule="tool_called", detail=f"{name} was never called", at=call_end)]
 
+    # Exactly, not at least. Calling a tool twice is its own bug and a quiet
+    # one: a Live-model call logged the same mood, the same dose and the same
+    # outcome twice each, and every assertion that only asks whether the tool
+    # ran read it as a clean call. Downstream it is a duplicated row in
+    # somebody's record.
+    times = expectation.get("times")
+    if times is not None and len(invoked) != times:
+        return [
+            Finding(
+                rule="tool_called",
+                detail=f"{name} was called {len(invoked)}x, expected exactly {times}",
+                at=call_end,
+            )
+        ]
+
     wanted = expectation.get("with")
     if not wanted:
         return []

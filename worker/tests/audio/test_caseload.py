@@ -179,6 +179,28 @@ def test_a_with_pattern_is_checked_like_any_other():
         )
 
 
+def test_times_parses_on_a_tool_expectation():
+    case = parse_case({**GOOD, "expect": [{"tool_called": "log_mood", "times": 1}]})
+    assert case.expect == ({"tool_called": "log_mood", "times": 1},)
+
+
+def test_times_must_be_a_positive_whole_number():
+    for bad in (0, -1, 1.5, True, "1"):
+        with pytest.raises(CaseError, match="times must be a positive whole number"):
+            parse_case({**GOOD, "expect": [{"tool_called": "log_mood", "times": bad}]})
+
+
+def test_times_on_a_speech_expectation_is_refused():
+    with pytest.raises(CaseError, match="belongs to tool_called"):
+        parse_case({**GOOD, "expect": [{"heard": "morning", "times": 2}]})
+
+
+def test_times_on_tool_not_called_is_refused():
+    # "not called twice" is not what it means, and it would be ignored.
+    with pytest.raises(CaseError, match="takes no 'with' or 'times'"):
+        parse_case({**GOOD, "expect": [{"tool_not_called": "purchase_offer", "times": 2}]})
+
+
 def test_an_empty_with_is_refused():
     # An empty map matches every invocation, so the assertion silently weakens
     # to "the tool was called at all".

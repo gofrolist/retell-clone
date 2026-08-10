@@ -148,6 +148,28 @@ def test_tool_called_with_fails_on_a_missing_argument_rather_than_crashing():
     assert len(findings) == 1
 
 
+def test_tool_called_times_is_exact():
+    # The Live-model bug: a turn aborted after its tools ran, then regenerated,
+    # logging the same mood and the same outcome twice each. Every assertion
+    # that only asks whether the tool ran called that a clean call.
+    twice = [ToolCall("log_mood", {}), ToolCall("log_mood", {})]
+    assert not only({"tool_called": "log_mood", "times": 2}, calls=twice)
+    findings = only({"tool_called": "log_mood", "times": 1}, calls=twice)
+    assert len(findings) == 1
+    assert "2x" in findings[0].detail
+
+
+def test_tool_called_times_still_fails_when_never_called():
+    findings = only({"tool_called": "log_mood", "times": 1}, calls=[])
+    assert len(findings) == 1
+    assert "never called" in findings[0].detail
+
+
+def test_tool_called_times_and_with_are_both_checked():
+    calls = [ToolCall("log_mood", {"mood_score": 4}), ToolCall("log_mood", {"mood_score": 4})]
+    assert only({"tool_called": "log_mood", "times": 1, "with": {"mood_score": "^4$"}}, calls=calls)
+
+
 # --- tool_not_called -----------------------------------------------------
 
 

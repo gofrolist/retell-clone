@@ -173,27 +173,38 @@ def _expectation(raw: object, *, source: str, index: int) -> dict:
             f"got {sorted(raw) or 'nothing'}"
         )
     key = named[0]
-    extra = sorted(set(raw) - {key, "with"})
+    extra = sorted(set(raw) - {key, "with", "times"})
     if extra:
         raise CaseError(f"{source} {where} has unrecognised key(s): {', '.join(extra)}")
 
     if key in ("heard", "never_heard"):
-        if "with" in raw:
-            raise CaseError(f"{source} {where}: 'with' belongs to tool_called, not {key}")
+        for qualifier in ("with", "times"):
+            if qualifier in raw:
+                raise CaseError(
+                    f"{source} {where}: {qualifier!r} belongs to tool_called, not {key}"
+                )
         return {key: _pattern(raw[key], source=source, where=f"{where}.{key}")}
 
     name = raw[key]
     if not isinstance(name, str) or not name.strip():
         raise CaseError(f"{source} {where}.{key} must be a tool name")
-    if key == "tool_not_called" and "with" in raw:
-        # `tool_not_called` with a `with` reads as "not called with these
-        # arguments" and means nothing of the sort — it would be ignored, and
-        # the case would assert something weaker than its author wrote.
+    if key == "tool_not_called" and ("with" in raw or "times" in raw):
+        # A qualifier here reads as "not called with these arguments" or "not
+        # called this many times" and means nothing of the sort — it would be
+        # ignored, and the case would assert something weaker than its author
+        # wrote.
         raise CaseError(
-            f"{source} {where}: tool_not_called takes no 'with'. To allow a tool but "
-            "forbid one shape of it, assert tool_called with the shape you do want."
+            f"{source} {where}: tool_not_called takes no 'with' or 'times'. To allow a "
+            "tool but forbid one shape of it, assert tool_called with the shape you want."
         )
     expectation: dict = {key: name.strip()}
+
+    times = raw.get("times")
+    if times is not None:
+        # Bools are ints in Python and `times: true` would sail through as one.
+        if not isinstance(times, int) or isinstance(times, bool) or times < 1:
+            raise CaseError(f"{source} {where}.times must be a positive whole number")
+        expectation["times"] = times
 
     wanted = raw.get("with")
     if wanted is not None:
