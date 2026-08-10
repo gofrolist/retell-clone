@@ -48,11 +48,29 @@ SEAM_SEARCH = 2
 
 # Dead air after the caller stops talking before the agent answers.
 #
-# A guess until there is a baseline, and stated as one: the spec expects the
-# first week of real calls to move it. An `agent_swap` costs a ~850ms socket
-# rebuild that is known and tolerable; a tool call that lost its filler line is
-# not.
-DEFAULT_MAX_SILENCE_S = 4.0
+# Baselined, no longer guessed. Across 13 Clara calls on
+# `gemini-3.1-flash-lite` (35 answered gaps) the distribution splits cleanly by
+# whether a tool ran inside the gap:
+#
+#     no tool in the gap   n=16   median 1.95s   p90 3.29s   max 5.11s
+#     a tool ran           n=19   median 3.41s   p90 4.71s   max 4.99s
+#
+# Nothing exceeded 5.11s. The previous limit of 4.0s — taken from 1.46s/1.73s
+# measurements against a two-line smoke agent — therefore flagged 6 of 35
+# ORDINARY turns, which is how a rule stops being read.
+#
+# 6.0s clears every gap observed by ~0.9s and still catches the thing worth
+# catching: at six seconds a listener has concluded the line is dead. One limit
+# rather than two, even though the tool split is real, because the honest
+# reading of a tool gap is not "allow more silence" — it is "the prompt
+# requires a filler line before a lookup", and that is a per-case `heard`
+# expectation (see A03), not a threshold.
+#
+# This number is a property of ONE configuration. Production runs a
+# speech-to-speech Live model against the same 63k-character prompt; it should
+# be faster, 6.0s may be far too generous there, and the measurement has to be
+# redone before any of it is believed.
+DEFAULT_MAX_SILENCE_S = 6.0
 
 AGENT = "agent"
 CALLER = "caller"

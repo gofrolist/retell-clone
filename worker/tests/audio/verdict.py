@@ -39,6 +39,15 @@ BROKEN_REASONS = frozenset(
     }
 )
 
+# `agent_ended_call` is deliberately NOT in there, and it is the one that looks
+# like it should be. It shares a symptom with `max_call_s` — the script did not
+# finish — but not a cause: the harness giving up says nothing about anything,
+# while the agent deciding the call is over is a fact about the prompt, and
+# frequently the exact fact a case is grading (an agent that hangs up before
+# saying goodbye is the bug, not a broken run). The unspoken lines are named in
+# a warning instead, so a reader can tell an expectation that failed from one
+# the call never reached.
+
 
 def exit_code(*, stopped: str, segments: int, findings: int) -> int:
     """The verdict for one run.

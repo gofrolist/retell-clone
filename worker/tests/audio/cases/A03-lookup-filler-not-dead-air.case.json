@@ -1,0 +1,23 @@
+{
+  "name": "A03-lookup-filler-not-dead-air",
+  "agent": "clara-checkin",
+  "variables_from": "_checkin.vars.json",
+  "notes": "The prompt's rule for web_lookup is a rule about sound: 'ALWAYS say a short, warm filler out loud RIGHT BEFORE you call it so you're not silent while it loads (it takes a couple seconds)'. Whether the filler was SAID is not in the transcript in any usable form — a transcript shows the line and shows the tool call, but not whether the listener sat in silence between them, which is the thing the rule was written to prevent. `max_silence` measures it. The filler pattern is loose on purpose: the prompt offers two examples and does not fix the wording, so pinning an exact sentence would grade the model's phrasing rather than its behaviour.\n\n`settle_s` is raised well above the default because this case's subject IS a silence. The caller decides the agent is finished when it has been quiet for that long, so at 1.2s a short backchannel — \"I'm glad to hear that\" — reads as a completed turn, the caller talks over the lookup it was waiting for, and the dead air ends up bracketed by caller speech where `max_silence` cannot see it. Five seconds is longer than any turn this prompt takes and shorter than the lookup being measured.",
+  "tools": {
+    "recall_lead_context": "{\"summary_text\": \"Margaret, CA, trial day 3 of 7. Mood last 3 days: 4,4,3. Today's meds: Lipitor at 08:00, Metformin at 19:00.\"}",
+    "log_mood": "{\"ok\": true}",
+    "web_lookup": "{\"ok\": true, \"clara_summary\": \"It's going to be sunny in Santa Monica today, with a high of seventy-four degrees and a light breeze this afternoon.\"}",
+    "log_outcome": "{\"ok\": true}"
+  },
+  "script": [
+    "Not bad at all.",
+    "Clara, is it going to be warm enough for a walk today?",
+    "Lovely, I'll go after breakfast then. Goodbye."
+  ],
+  "settle_s": 5.0,
+  "expect": [
+    { "tool_called": "web_lookup", "with": { "kind": "weather" } },
+    { "heard": "(one moment|just a second|let me (look|check)|give me)" },
+    { "heard": "(seventy.four|74)" }
+  ]
+}

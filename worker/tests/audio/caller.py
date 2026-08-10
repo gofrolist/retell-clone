@@ -172,11 +172,19 @@ class Caller:
         self.room = rtc.Room()
         self.started_at = 0.0
         self.agent: _AgentTrack | None = None
+        self.agent_identity: str | None = None
         self.lines: list[SpokenLine] = []
         self.warnings: list[str] = []
         self._source: rtc.AudioSource | None = None
         self._readers: list[asyncio.Task] = []
         self._subscribed = asyncio.Event()
+        # Set when the agent hangs up. Without it the caller waits out its full
+        # reply timeout for an answer that can never come, then plays the rest
+        # of its script into an empty room -- and the recording gains a stretch
+        # of silence no listener was ever in, which `max_silence` then reports
+        # as dead air. Three of the first five Clara cases failed that way, on
+        # calls where the agent behaved correctly.
+        self._agent_left = asyncio.Event()
 
     @property
     def elapsed(self) -> float:
@@ -189,9 +197,23 @@ class Caller:
                 return
             log.info("subscribed to %s", participant.identity)
             self.agent = _AgentTrack(self.started_at)
+            self.agent_identity = participant.identity
             stream = rtc.AudioStream(track, sample_rate=SAMPLE_RATE, num_channels=1)
             self._readers.append(asyncio.create_task(_drain(stream, self.agent)))
             self._subscribed.set()
+
+        @self.room.on("participant_disconnected")
+        def _on_left(participant: rtc.RemoteParticipant) -> None:
+            # Before the agent's track is subscribed there is nobody else it
+            # could be, so an unknown identity counts too rather than being
+            # ignored until the one case that matters.
+            if self.agent_identity in (None, participant.identity):
+                log.info("[%6.2fs] the agent hung up", self.elapsed)
+                self._agent_left.set()
+
+        @self.room.on("disconnected")
+        def _on_room_closed(*_args) -> None:
+            self._agent_left.set()
 
         # The clock starts before connecting, not after the agent is heard. A
         # timeline that begins at the agent's first frame cannot represent the
@@ -236,11 +258,17 @@ class Caller:
     async def wait_for_turn(self) -> str:
         """Wait until the agent has spoken and then gone quiet.
 
-        Returns why the wait ended, because the three reasons mean different
-        things: `settled` is an ordinary turn, `silent` is the agent never
-        answering, and `still_talking` is the agent running past the timeout.
-        Only the first is the harness working as intended; the other two go in
-        the report next to the recording that shows them.
+        Returns why the wait ended, because the reasons mean different things:
+        `settled` is an ordinary turn, `silent` is the agent never answering,
+        `still_talking` is the agent running past the timeout, and `hung_up` is
+        the agent ending the call. Only the first is the harness working as
+        intended; the rest go in the report next to the recording that shows
+        them.
+
+        `hung_up` returns immediately rather than waiting out the timeout. The
+        difference is not just time: everything after a hangup is silence
+        nobody heard, and leaving it in the recording turns a correct call into
+        a dead-air finding.
         """
         assert self.agent is not None
         # The turn being waited for is anything the agent said since the caller
@@ -253,6 +281,8 @@ class Caller:
         deadline = self.elapsed + self.reply_timeout_s
         heard = False
         while self.elapsed < deadline:
+            if self._agent_left.is_set():
+                return "hung_up"
             voice = self.agent.last_voice_at
             if voice is not None and voice >= began:
                 heard = True
@@ -283,6 +313,20 @@ class Caller:
                     )
                     break
                 why = await self.wait_for_turn()
+                if why == "hung_up":
+                    stopped = "agent_ended_call"
+                    remaining = len(script) - index
+                    # Named rather than silently dropped, and NOT an error: the
+                    # agent deciding the call is over is a fact about the
+                    # prompt, and often the very thing a case is grading. But
+                    # the lines it cut off were never spoken, so anything the
+                    # case expected from them is unproven rather than failed,
+                    # and the report has to say which.
+                    self.warnings.append(
+                        f"the agent ended the call with {remaining} of {len(script)} "
+                        f"caller line(s) unspoken"
+                    )
+                    break
                 if why != "settled":
                     self.warnings.append(
                         f"before line {index + 1} the agent was {why} for "
@@ -293,7 +337,8 @@ class Caller:
                 # The closing matters as much as the opening -- a doubled
                 # goodbye is the same bug as a doubled greeting -- so the last
                 # thing the harness does is listen.
-                await self.wait_for_turn()
+                if await self.wait_for_turn() == "hung_up":
+                    stopped = "agent_ended_call"
 
         return stopped
 

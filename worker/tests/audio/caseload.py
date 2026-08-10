@@ -11,13 +11,22 @@ Every field is therefore checked before the first request goes out, and an
 unrecognised key is an error rather than a shrug — `varibles` silently dropping
 sixteen dynamic variables is the exact shape of a bug that has already reached
 production once.
+
+The same standard is what `expect` is held to. An expectation that cannot fail
+is not a weaker version of one that can: it is a case that reports coverage of
+something it never checked, and it survives exactly as long as nobody looks. So
+a pattern is compiled here, and refused here if ASR could never produce the
+text it looks for.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from audio.expectations import KNOWN_EXPECTATIONS
 
 # Sarah — the voice the platform launched with. The caller's voice does not
 # have to match anything; it only has to stay the same, because it is part of
@@ -45,12 +54,33 @@ KNOWN_KEYS = {
     "agent_version",
     "voice",
     "variables",
+    "variables_from",
     "script",
+    "expect",
+    "tools",
     "settle_s",
     "reply_timeout_s",
     "max_call_s",
     "notes",
 }
+
+# Characters that mean a pattern was written for a transcript rather than for
+# speech, and would therefore match nothing however the call went.
+#
+# `expectations.matches` searches NORMALISED text — apostrophes deleted, every
+# other punctuation mark blanked — so a pattern carrying punctuation is a
+# green run that graded nothing. Only marks that cannot be regex syntax are
+# listed: a comma is a quantifier bound, a colon is `(?:`, a brace is `{2}`,
+# and refusing those would refuse valid patterns.
+UNMATCHABLE_CHARS = "'’\"!;"
+
+# The one that has to be called out by name. Layer 1 asserts `said_never:
+# '\{\{'` to catch an unrendered placeholder reaching the listener, and
+# translating that pattern to this layer produces an assertion that can never
+# fire: ASR of a model reading `{{first_name}}` aloud returns the words "first
+# name", never the braces. The audio spelling of the same check is
+# `{"never_heard": "first name"}`.
+BRACES = ("{{", "}}")
 
 
 class CaseError(ValueError):
@@ -63,6 +93,16 @@ class Case:
     agent: str
     script: tuple[str, ...]
     variables: dict[str, str] = field(default_factory=dict)
+    # What this call in particular should have sounded like and done. The
+    # global rules in `analysis.py` run on every case regardless; these are the
+    # ones only this case can state. Empty is allowed — a smoke case that only
+    # proves the plumbing has nothing of its own to say.
+    expect: tuple[dict, ...] = ()
+    # Tool name → the JSON body the local sink answers with, mirroring layer
+    # 1's `tools:`. What makes this SAFETY rather than fidelity: Clara's tools
+    # are real Supabase functions, so an unsunk call logs a real dose and texts
+    # a real family member. See `toolsink.py`.
+    tools: dict[str, str] = field(default_factory=dict)
     voice: str = DEFAULT_CALLER_VOICE
     agent_version: int | str | None = None
     settle_s: float = DEFAULT_SETTLE_S
@@ -80,7 +120,165 @@ def _positive(raw: dict, key: str, fallback: float) -> float:
     return float(value)
 
 
-def parse_case(raw: object, *, source: str = "case") -> Case:
+def _pattern(value: object, *, source: str, where: str) -> str:
+    """One regex from a case, checked for the ways it could never match.
+
+    A pattern that cannot fire is the worst thing in a suite: the case runs,
+    costs a call, reports clean, and is counted as coverage of the thing it
+    never checked. All three refusals below have a green run as their symptom.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise CaseError(f"{source} {where} must be a non-empty pattern")
+    # Escapes are dropped before looking, because the pattern this refusal
+    # exists for is the escaped one: layer 1 writes `\{\{`, and searching for
+    # the bare `{{` would miss the exact string a person translating a case by
+    # hand would paste in.
+    unescaped = value.replace("\\", "")
+    for brace in BRACES:
+        if brace in unescaped:
+            raise CaseError(
+                f"{source} {where} looks for {brace!r}, which no transcript of speech "
+                "contains: a model reading '{{first_name}}' aloud is heard as the words "
+                "'first name'. Match those instead."
+            )
+    bad = sorted({c for c in value if c in UNMATCHABLE_CHARS})
+    if bad:
+        raise CaseError(
+            f"{source} {where} contains {''.join(bad)!r}, which is removed before matching "
+            "— write the pattern without punctuation"
+        )
+    try:
+        re.compile(value)
+    except re.error as err:
+        raise CaseError(f"{source} {where} is not a valid regex: {err}") from err
+    return value
+
+
+def _expectation(raw: object, *, source: str, index: int) -> dict:
+    """One entry of a case's `expect` list.
+
+    The shape is layer 1's `assert` shape — a dict whose single expectation key
+    names the check — so the same case reads the same way in both places and
+    one can be translated to the other by hand without learning a second
+    syntax.
+    """
+    where = f"expect[{index}]"
+    if not isinstance(raw, dict):
+        raise CaseError(f"{source} {where} must be an object, got {type(raw).__name__}")
+
+    named = [key for key in raw if key in KNOWN_EXPECTATIONS]
+    if len(named) != 1:
+        raise CaseError(
+            f"{source} {where} must name exactly one of {', '.join(KNOWN_EXPECTATIONS)}, "
+            f"got {sorted(raw) or 'nothing'}"
+        )
+    key = named[0]
+    extra = sorted(set(raw) - {key, "with"})
+    if extra:
+        raise CaseError(f"{source} {where} has unrecognised key(s): {', '.join(extra)}")
+
+    if key in ("heard", "never_heard"):
+        if "with" in raw:
+            raise CaseError(f"{source} {where}: 'with' belongs to tool_called, not {key}")
+        return {key: _pattern(raw[key], source=source, where=f"{where}.{key}")}
+
+    name = raw[key]
+    if not isinstance(name, str) or not name.strip():
+        raise CaseError(f"{source} {where}.{key} must be a tool name")
+    if key == "tool_not_called" and "with" in raw:
+        # `tool_not_called` with a `with` reads as "not called with these
+        # arguments" and means nothing of the sort — it would be ignored, and
+        # the case would assert something weaker than its author wrote.
+        raise CaseError(
+            f"{source} {where}: tool_not_called takes no 'with'. To allow a tool but "
+            "forbid one shape of it, assert tool_called with the shape you do want."
+        )
+    expectation: dict = {key: name.strip()}
+
+    wanted = raw.get("with")
+    if wanted is not None:
+        if not isinstance(wanted, dict) or not wanted:
+            raise CaseError(f"{source} {where}.with must be a non-empty object")
+        expectation["with"] = {
+            str(arg): _pattern(pattern, source=source, where=f"{where}.with.{arg}")
+            for arg, pattern in wanted.items()
+        }
+    return expectation
+
+
+def _tools(raw: object, *, source: str) -> dict[str, str]:
+    """The canned tool results, checked for the ones that would derail a call.
+
+    A result that is not JSON reaches the model as a broken payload and steers
+    every turn after it, which grades the harness rather than the prompt.
+    """
+    if not isinstance(raw, dict):
+        raise CaseError(f"{source} 'tools' must be an object of tool name → JSON result")
+    checked = {}
+    for name, result in raw.items():
+        if not isinstance(result, str):
+            raise CaseError(
+                f"{source} tools.{name} must be a JSON STRING, the way the tool would "
+                f"return one, got {type(result).__name__}"
+            )
+        try:
+            json.loads(result)
+        except json.JSONDecodeError as err:
+            raise CaseError(f"{source} tools.{name} is not valid JSON: {err}") from err
+        checked[name] = result
+    return checked
+
+
+def _variables(raw: dict, *, source: str, base_dir: Path | None) -> dict[str, str]:
+    """A case's variables, with any it inherits underneath its own.
+
+    `variables_from` exists because the check-in prompt reads sixteen dynamic
+    variables and an omitted one does not fail — it reaches the model as
+    literal braces and can be read to the listener. Repeating sixteen lines in
+    every case buries the one or two a case is actually about, and copies are
+    what drift. So the shared set is a file, and a case names it; what stays in
+    the case file is the override, which is the sentence the case is making.
+    """
+    own = raw.get("variables", {})
+    if not isinstance(own, dict):
+        raise CaseError(f"{source} 'variables' must be an object")
+
+    inherited: dict = {}
+    shared = raw.get("variables_from")
+    if shared is not None:
+        if not isinstance(shared, str) or not shared.strip():
+            raise CaseError(f"{source} 'variables_from' must be a filename")
+        if base_dir is None:
+            raise CaseError(
+                f"{source} uses 'variables_from', which only a case loaded from a file can resolve"
+            )
+        path = base_dir / shared
+        try:
+            inherited = json.loads(path.read_text())
+        except FileNotFoundError as err:
+            raise CaseError(f"{source} inherits from {path}, which does not exist") from err
+        except json.JSONDecodeError as err:
+            raise CaseError(f"{path} is not valid JSON: {err}") from err
+        if not isinstance(inherited, dict):
+            raise CaseError(f"{path} must be an object of variable name → value")
+        # `$`-prefixed keys are the shared file's own notes, the spelling
+        # `manifest.json` and the prompt repo already use. A shared file is
+        # where the reasoning behind a value belongs, and JSON has nowhere else
+        # to put it.
+        inherited = {k: v for k, v in inherited.items() if not k.startswith("$")}
+
+    merged = {**inherited, **own}
+    for key, value in merged.items():
+        # The prompt interpolates these into text. A list or a dict renders as
+        # its Python repr mid-sentence, which the model then reads aloud.
+        if not isinstance(value, str):
+            raise CaseError(
+                f"{source} variable '{key}' must be a string, got {type(value).__name__}"
+            )
+    return merged
+
+
+def parse_case(raw: object, *, source: str = "case", base_dir: Path | None = None) -> Case:
     """A loaded JSON object as a `Case`, or an error naming what is wrong."""
     if not isinstance(raw, dict):
         raise CaseError(f"{source} must be a JSON object, got {type(raw).__name__}")
@@ -106,16 +304,14 @@ def parse_case(raw: object, *, source: str = "case") -> Case:
         if not isinstance(line, str) or not line.strip():
             raise CaseError(f"{source} script line {index + 1} is not a non-empty string")
 
-    variables = raw.get("variables", {})
-    if not isinstance(variables, dict):
-        raise CaseError(f"{source} 'variables' must be an object")
-    for key, value in variables.items():
-        # The prompt interpolates these into text. A list or a dict renders as
-        # its Python repr mid-sentence, which the model then reads aloud.
-        if not isinstance(value, str):
-            raise CaseError(
-                f"{source} variable '{key}' must be a string, got {type(value).__name__}"
-            )
+    variables = _variables(raw, source=source, base_dir=base_dir)
+
+    expect = raw.get("expect", [])
+    if not isinstance(expect, list):
+        raise CaseError(f"{source} 'expect' must be a list of expectations")
+    expectations = tuple(
+        _expectation(item, source=source, index=index) for index, item in enumerate(expect)
+    )
 
     voice = raw.get("voice", DEFAULT_CALLER_VOICE)
     if not isinstance(voice, str) or not voice.strip():
@@ -126,6 +322,8 @@ def parse_case(raw: object, *, source: str = "case") -> Case:
         agent=raw["agent"].strip(),
         script=tuple(line.strip() for line in script),
         variables=dict(variables),
+        expect=expectations,
+        tools=_tools(raw.get("tools", {}), source=source),
         voice=voice,
         agent_version=raw.get("agent_version"),
         settle_s=_positive(raw, "settle_s", DEFAULT_SETTLE_S),
@@ -143,7 +341,7 @@ def load_case(path: Path | str) -> Case:
         raise CaseError(f"{file} does not exist") from err
     except json.JSONDecodeError as err:
         raise CaseError(f"{file} is not valid JSON: {err}") from err
-    return parse_case(raw, source=str(file))
+    return parse_case(raw, source=str(file), base_dir=file.parent)
 
 
 def discover(directory: Path | str) -> list[Case]:

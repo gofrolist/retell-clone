@@ -29,6 +29,14 @@ def test_a_call_cut_off_by_its_own_time_limit_is_broken():
     assert exit_code(stopped="max_call_s", segments=8, findings=1) == BROKEN
 
 
+def test_the_agent_hanging_up_is_a_verdict_not_a_broken_run():
+    # It shares a symptom with `max_call_s` — an unfinished script — and not a
+    # cause. An agent that hangs up before saying goodbye is the bug a case is
+    # looking for, and grading that run as "broken" throws the finding away.
+    assert exit_code(stopped="agent_ended_call", segments=8, findings=1) == FINDINGS
+    assert exit_code(stopped="agent_ended_call", segments=8, findings=0) == CLEAN
+
+
 def test_a_crash_mid_call_is_broken_even_with_findings():
     assert exit_code(stopped="error", segments=4, findings=3) == BROKEN
 

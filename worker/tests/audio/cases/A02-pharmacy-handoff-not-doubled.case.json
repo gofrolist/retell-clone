@@ -1,0 +1,24 @@
+{
+  "name": "A02-pharmacy-handoff-not-doubled",
+  "agent": "clara-checkin",
+  "variables_from": "_checkin.vars.json",
+  "notes": "The case no other layer can run. A Live socket carries its tools in the setup message, so `agent_swap` answers `update_tools` by tearing the WebSocket down and rebuilding it — measured at ~850ms — and before PR #216 the swap returned before the reconnect landed and the reply was spoken twice, the first copy clipped mid-word. Layers 1 and 2 re-point the prompt in-process with no socket involved, so the whole failure mode is structurally invisible to them. Two rules do the grading here: `no_duplicate_utterance` for the doubled reply, `max_silence` for the rebuild taking longer than a listener will sit through. The swap itself is asserted so a run where the agent simply answered the price question without handing over is not read as a clean handoff.",
+  "tools": {
+    "recall_lead_context": "{\"summary_text\": \"Margaret, CA, trial day 3 of 7. Mood last 3 days: 4,4,3. Today's meds: Lipitor at 08:00, Metformin at 19:00.\"}",
+    "log_mood": "{\"ok\": true}",
+    "medication_price_lookup": "{\"ok\": true, \"drug\": \"Lipitor 20mg\", \"pharmacy\": \"CVS on Wilshire\", \"cash_price\": \"41.20\", \"discount_price\": \"9.80\"}",
+    "log_outcome": "{\"ok\": true}"
+  },
+  "script": [
+    "I'm alright, thanks.",
+    "Clara, can I ask you something? What does my Lipitor cost these days?",
+    "That's better than I expected. Thank you.",
+    "No, that's all. Goodbye."
+  ],
+  "expect": [
+    { "tool_called": "to_pharmacy" },
+    { "tool_called": "medication_price_lookup" },
+    { "heard": "lipitor" }
+  ],
+  "max_call_s": 210
+}

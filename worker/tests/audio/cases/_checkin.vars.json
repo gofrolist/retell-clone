@@ -1,0 +1,48 @@
+{
+  "$comment": [
+    "The dispatcher's half of a Clara morning call, shared by every check-in",
+    "case via `variables_from`. Not a case file — `discover` only picks up",
+    "*.case.json — and deliberately not named like one.",
+    "",
+    "This is the audio twin of `prompts/clara/tests/cases/_fixtures.js` in",
+    "usan-retirement-backend, and it holds the same values for the same",
+    "reasons: nothing backfills a dynamic variable here, the check-in prompt",
+    "reads sixteen of them, and an omitted one reaches the model as literal",
+    "braces that can be read to the listener.",
+    "",
+    "A listener consistent with herself: the state, the timezone, the clock",
+    "and the medication list all agree, so no branch of the prompt is reading",
+    "one thing while another says something else.",
+    "",
+    "`current_time` is pinned even though a real call would compute it. A",
+    "stored variable wins over the platform's system default (worker",
+    "`variables.py`, ResolutionVariables.__missing__), so pinning it is what",
+    "stops a suite run at 9pm from grading the morning script against an",
+    "evening clock. The date is deliberately a Saturday morning in the",
+    "phrasing the platform itself uses."
+  ],
+
+  "first_name": "Margaret",
+  "phone": "+15555550123",
+  "state": "CA",
+  "user_timezone": "America/Los_Angeles",
+
+  "bm_greeting": "Good morning Margaret, it's Clara.",
+  "call_direction": "outbound",
+  "current_time": "Saturday, August 8, 2026 at 8:30 AM PDT",
+  "time_of_day": "morning",
+
+  "trial_status": "active",
+  "is_last_day_of_trial": "false",
+  "is_day_1": "false",
+  "needs_evening_setup": "false",
+
+  "medications_today": "Lipitor at 08:00, Metformin at 19:00",
+
+  "prior_conversation": "",
+  "prior_evening_mood": "",
+  "prior_evening_plan": "",
+  "prior_morning_mood": "",
+
+  "consecutive_missed_calls": "0"
+}

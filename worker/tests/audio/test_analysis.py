@@ -12,6 +12,7 @@ import pytest
 from audio.analysis import (
     AGENT,
     CALLER,
+    DEFAULT_MAX_SILENCE_S,
     Finding,
     Segment,
     analyse,
@@ -332,6 +333,20 @@ def test_a_clean_call_produces_nothing():
     ]
     assert analyse(segments, call_end=9.0) == []
     assert format_findings([]) == "No audio findings."
+
+
+def test_the_silence_limit_clears_every_turnaround_ever_measured():
+    # The baseline behind `DEFAULT_MAX_SILENCE_S`, as a test rather than only as
+    # a comment: 13 Clara calls produced 35 answered gaps and the longest was
+    # 5.11s. A limit at or under that flags ordinary turns — the previous 4.0s
+    # flagged 6 of the 35 — and a rule that cries wolf is a rule people mute.
+    # If a future measurement genuinely moves this, move it deliberately and
+    # bring the numbers with you.
+    slowest_observed = 5.11
+    assert DEFAULT_MAX_SILENCE_S > slowest_observed
+    segments = [caller(0.0, 2.0, "Is it warm enough for a walk?")]
+    answered_slowly = segments + [agent(2.0 + slowest_observed, 12.0, "It's seventy-four.")]
+    assert long_silences(answered_slowly, call_end=12.0) == []
 
 
 def test_format_findings_says_where_to_listen():

@@ -7,6 +7,13 @@ Everything expensive happens before the room is joined: the caller's lines are
 synthesized (and cached) first, so the call itself contains no provider latency
 that the timing rules would then blame on the agent.
 
+Before any of that, the agent's tools are checked for where they point. A real
+call runs real tools, so a case against an agent still wired to production's
+endpoints would log a real dose and text a real family member; the run is
+refused until those are repointed at the local sink (`toolsink.py`), which also
+answers them from the case's `tools` map. The refusal reads the deployment, not
+the case, because a case that mocks nothing is not a case that calls nothing.
+
 Exit codes distinguish the two kinds of bad news, the same way layer 2 does;
 the rule itself lives in `verdict.py`, where it can be tested.
 """
@@ -27,7 +34,9 @@ from audio.analysis import AGENT, CALLER, Segment, analyse, format_findings
 from audio.caller import place_call
 from audio.caseload import Case, CaseError, load_case
 from audio.client import ControlPlaneError, create_web_call, get_call, transcript_lines
+from audio.expectations import check, tool_calls
 from audio.pcm import slice_pcm, speech_spans, write_wav
+from audio.toolsink import DEFAULT_PORT, SinkError, ToolSink, as_dialled, base_url, require_sunk
 from audio.verdict import BROKEN, describe, exit_code
 from audio.voice import CALLER_SAMPLE_RATE, VoiceError, synthesize, transcribe
 
@@ -56,6 +65,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--cartesia-key", default=os.getenv("CARTESIA_API_KEY", ""))
     parser.add_argument("--cache", type=Path, default=DEFAULT_CACHE)
     parser.add_argument("--artifacts", type=Path, default=DEFAULT_ARTIFACTS)
+    parser.add_argument("--sink-port", type=int, default=DEFAULT_PORT)
+    parser.add_argument(
+        "--sink-host",
+        default="127.0.0.1",
+        help="how the WORKER reaches this machine — host.docker.internal from a container",
+    )
+    parser.add_argument(
+        "--allow-live-tools",
+        action="store_true",
+        help="place the call even though its tools reach real endpoints (they will fire)",
+    )
     return parser.parse_args(argv)
 
 
@@ -69,6 +89,27 @@ def resolve_agent_id(case: Case, args: argparse.Namespace) -> str:
     if not agent_id:
         raise HarnessError(f"{args.agents} has no '{case.agent}'")
     return agent_id
+
+
+def check_tools_are_sunk(
+    args: argparse.Namespace, case: Case, agent_id: str, *, sink_base: str
+) -> None:
+    """Refuse the call unless every agent it could reach is safe to run.
+
+    Read from the deployment rather than from the case, because where a tool
+    call lands is not something a case can promise; read transitively, because
+    a call that starts at the check-in can finish inside the pharmacy
+    specialist running the pharmacy's tools; and read at the version this call
+    will be pinned to, because the live rows a rewrite edits are a draft and
+    calls run the published snapshot.
+    """
+    for config in as_dialled(
+        args.api_base,
+        args.api_key,
+        agent_id,
+        version=case.agent_version if case.agent_version is not None else "latest_published",
+    ):
+        require_sunk(config.tools, agent=config.agent_id, sink_base=sink_base)
 
 
 def render_script(case: Case, *, api_key: str, cache: Path) -> list[tuple[str, bytes]]:
@@ -145,11 +186,18 @@ def write_report(directory: Path, *, segments, findings, call) -> None:
     (directory / "call.json").write_text(json.dumps(call, indent=2, default=str) + "\n")
 
 
-def report(case: Case, result, segments, findings, directory: Path) -> str:
+def report(case: Case, result, segments, findings, directory: Path, *, sink: ToolSink) -> str:
     lines = [f"\n{case.name}  ({result.call_end:.1f}s, stopped: {result.stopped_because})"]
     for segment in segments:
         who = "agent " if segment.speaker == AGENT else "caller"
         lines.append(f"  [{segment.start:6.2f}s] {who}: {segment.text}")
+    if sink.invocations:
+        lines.append("  tools: " + ", ".join(i.name for i in sink.invocations))
+    if sink.unmocked:
+        # The payload those calls got back was invented by the sink, and an
+        # invented payload steers every turn after it. Worth reading before
+        # blaming the prompt for what the agent said next.
+        lines.append(f"  ! no mock for {', '.join(sink.unmocked)} — the sink answered ok")
     for warning in result.warnings:
         lines.append(f"  ! {warning}")
     if result.dropped_s > DROPPED_AUDIO_WARNING_S:
@@ -173,6 +221,12 @@ async def run(args: argparse.Namespace) -> int:
         raise HarnessError("no Cartesia key (--cartesia-key or CARTESIA_API_KEY)")
     agent_id = resolve_agent_id(case, args)
 
+    sink_base = base_url(args.sink_port, host=args.sink_host)
+    if args.allow_live_tools:
+        log.warning("--allow-live-tools: this call's tools will reach their real endpoints")
+    else:
+        check_tools_are_sunk(args, case, agent_id, sink_base=sink_base)
+
     script = render_script(case, api_key=args.cartesia_key, cache=args.cache)
     call = create_web_call(
         args.api_base,
@@ -184,14 +238,22 @@ async def run(args: argparse.Namespace) -> int:
     )
     log.info("call %s in room via %s", call["call_id"], call["livekit_server_url"])
 
-    result = await place_call(
-        url=call["livekit_server_url"],
-        token=call["access_token"],
-        script=script,
-        settle_s=case.settle_s,
-        reply_timeout_s=case.reply_timeout_s,
-        max_call_s=case.max_call_s,
-    )
+    # Started around the call alone: the sink is only useful while the worker
+    # is making requests, and a thread left listening on a fixed port is the
+    # reason the next run fails to bind.
+    sink = ToolSink(results=dict(case.tools), port=args.sink_port)
+    sink.start()
+    try:
+        result = await place_call(
+            url=call["livekit_server_url"],
+            token=call["access_token"],
+            script=script,
+            settle_s=case.settle_s,
+            reply_timeout_s=case.reply_timeout_s,
+            max_call_s=case.max_call_s,
+        )
+    finally:
+        sink.stop()
 
     directory = args.artifacts / f"{case.name}-{call['call_id']}"
     write_recording(directory, result)
@@ -204,16 +266,25 @@ async def run(args: argparse.Namespace) -> int:
         for line in result.caller_lines
     ]
     segments.sort(key=lambda s: s.start)
-    findings = analyse(segments, call_end=result.call_end)
 
     # Fetched after the call so the platform has written its transcript. Kept
     # beside the recording because the disagreement between the two — heard
-    # twice, logged once — is itself a finding no single source can show.
+    # twice, logged once — is itself a finding no single source can show. It is
+    # also where the tool calls are: they make no sound, so the recording
+    # cannot answer a question about them.
     record = get_call(args.api_base, args.api_key, call["call_id"])
     record["transcript_lines"] = transcript_lines(record)
 
+    findings = analyse(segments, call_end=result.call_end) + check(
+        list(case.expect),
+        segments=segments,
+        calls=tool_calls(record),
+        call_end=result.call_end,
+    )
+    findings.sort(key=lambda f: f.at)
+
     write_report(directory, segments=segments, findings=findings, call=record)
-    print(report(case, result, segments, findings, directory))
+    print(report(case, result, segments, findings, directory, sink=sink))
 
     return exit_code(stopped=result.stopped_because, segments=len(segments), findings=len(findings))
 
@@ -222,7 +293,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     try:
         return asyncio.run(run(parse_args(argv if argv is not None else sys.argv[1:])))
-    except (HarnessError, CaseError, ControlPlaneError, VoiceError, OSError) as err:
+    except (HarnessError, CaseError, ControlPlaneError, SinkError, VoiceError, OSError) as err:
         # A misconfigured harness is not a prompt regression. Left to the
         # default traceback these all exit 1, which a nightly reads as "the
         # rules found something" — so rotating a credential would be reported

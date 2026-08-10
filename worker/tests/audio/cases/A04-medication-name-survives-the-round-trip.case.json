@@ -1,0 +1,23 @@
+{
+  "name": "A04-medication-name-survives-the-round-trip",
+  "agent": "clara-checkin",
+  "variables_from": "_checkin.vars.json",
+  "notes": "A drug name has to survive a round trip no other layer performs: synthesized into audio, heard by the model's own ASR, written into a tool argument, and said back out loud. Layers 1 and 2 hand the model the string 'Metformin' as text and can only ever prove it copied a string. Here the caller says it, and the case fails if what gets logged is a different medication or a mishearing of one — which is the failure that matters, because the log is what a family member reads. The evening dose is the one asked about deliberately: it is on the list for 19:00, so the correct behaviour is to record the morning Lipitor and NOT to log an evening dose as taken. The round trip that is graded ends at the tool argument, not at the agent's mouth: an early draft also asserted the agent SAYS \"Lipitor\" back, which failed on a run that logged it perfectly and answered \"good for you\" — the prompt asks for a warm acknowledgement and nowhere requires the name to be repeated, so the assertion was measuring a preference of the case author's.",
+  "tools": {
+    "recall_lead_context": "{\"summary_text\": \"Margaret, CA, trial day 3 of 7. Mood last 3 days: 4,4,3. Today's meds: Lipitor at 08:00, Metformin at 19:00.\"}",
+    "log_mood": "{\"ok\": true}",
+    "log_medication_taken": "{\"ok\": true}",
+    "schedule_med_followup": "{\"ok\": true}",
+    "log_outcome": "{\"ok\": true}"
+  },
+  "script": [
+    "I slept well, thank you.",
+    "I've had the Lipitor already, yes.",
+    "The Metformin is the one I take with my supper.",
+    "That's right. Bye now."
+  ],
+  "expect": [
+    { "tool_called": "log_medication_taken", "with": { "medication_name": "lipitor" } },
+    { "never_heard": "medications today" }
+  ]
+}
