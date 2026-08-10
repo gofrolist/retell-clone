@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from audio.analysis import AGENT, Finding, Segment, normalise
@@ -123,6 +123,7 @@ def check(
     segments: list[Segment],
     calls: list[ToolCall],
     call_end: float,
+    unspoken_lines: int = 0,
 ) -> list[Finding]:
     """Every expectation of one case, as findings for the ones it missed.
 
@@ -135,11 +136,44 @@ def check(
     never called — are placed at `call_end` so they sort after the moment-in-
     time findings in a report that reads as a walk through the recording. A
     `never_heard` violation has a real moment and is placed there instead.
+
+    `unspoken_lines` is how many of the case's script lines the call ended
+    before the caller could say, and it changes what a missed expectation
+    MEANS. An agent that hangs up early is graded on that hangup — the call
+    happened and the ending is a fact about the prompt — but "the agent never
+    said the crisis number" on a call that ended three lines early is not a
+    finding about the prompt at all; the call never reached the line that would
+    have prompted it. It stays in the report, because an unproven expectation
+    is still not a satisfied one, and it says so in its own text rather than in
+    a warning somewhere else that nobody reads next to it.
+
+    Only the positive expectations are affected. `never_heard` and
+    `tool_not_called` are about something that DID happen in the part of the
+    call that ran, and a short call cannot make them true by accident.
     """
     findings: list[Finding] = []
     for expectation in expectations:
         findings.extend(_check_one(expectation, segments=segments, calls=calls, call_end=call_end))
+    if unspoken_lines > 0:
+        findings = [_mark_unproven(finding, unspoken_lines) for finding in findings]
     return sorted(findings, key=lambda f: f.at)
+
+
+# The expectations that a call ending early can leave untested rather than
+# failed: both assert that something SHOULD have happened.
+POSITIVE_RULES = ("heard", "tool_called")
+
+
+def _mark_unproven(finding: Finding, unspoken_lines: int) -> Finding:
+    if finding.rule not in POSITIVE_RULES:
+        return finding
+    return replace(
+        finding,
+        detail=(
+            f"{finding.detail} — but the call ended with {unspoken_lines} caller line(s) "
+            f"unspoken, so this is unproven rather than failed"
+        ),
+    )
 
 
 def _check_one(

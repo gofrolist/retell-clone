@@ -95,6 +95,11 @@ _APOSTROPHES = re.compile(r"['’ʼ]")
 _PUNCTUATION = re.compile(r"[^\w\s]+")
 _WHITESPACE = re.compile(r"\s+")
 
+# Where one sentence of an utterance ends and the next begins. Used only by the
+# repeated-sentence scan in `repeats_itself`, which is the one place a full stop
+# carries meaning rather than being ASR's guess at formatting.
+_SENTENCE_END = re.compile(r"[.!?…]+")
+
 
 @dataclass(frozen=True)
 class Segment:
@@ -153,6 +158,16 @@ def similarity(a: str, b: str) -> float:
 def _word_count(text: str) -> int:
     normalised = normalise(text)
     return len(normalised.split()) if normalised else 0
+
+
+def _sentences(text: str) -> list[list[str]]:
+    """One utterance as its sentences, each normalised into words.
+
+    Empty pieces are dropped, so "hear. That's" and "hear.  That's" split the
+    same way and a trailing full stop does not produce a sentence with nothing
+    in it.
+    """
+    return [words for piece in _SENTENCE_END.split(text) if (words := normalise(piece).split())]
 
 
 def _in_time_order(segments: list[Segment]) -> list[Segment]:
@@ -216,21 +231,34 @@ def repeats_itself(
     for split in range(first, last + 1):
         best = max(best, SequenceMatcher(None, words[:split], words[split:]).ratio())
 
-    # And the doubling that is only the OPENING of the utterance, with the rest
-    # of the sentence carrying on after it. A Live model produced
-    # "That's wonderful to hear. That's wonderful to hear. Did you sleep all
-    # right last night?" -- eight words said twice, then seven new ones -- and
-    # the midpoint search above cannot see it, because the utterance is not two
-    # copies of anything. The seam is at a quarter of the way in.
+    # And the doubling that is only PART of the utterance, with the rest of it
+    # carrying on afterwards. A Live model produced "That's wonderful to hear.
+    # That's wonderful to hear. Did you sleep all right last night?" -- one
+    # sentence said twice, then a new one -- and the midpoint search above
+    # cannot see it, because the utterance is not two copies of anything. The
+    # seam is a quarter of the way in.
     #
-    # Only an exact repeat counts here, not a near one. The midpoint search can
+    # Scanned as SENTENCES rather than as a repeated prefix of any length, and
+    # that is the whole calibration. A flat prefix scan cannot tell a stutter
+    # from deliberate anaphora: "I'm here for you, I'm here for you, Margaret."
+    # repeats four exact words and is ordinary phrasing for a warm-companion
+    # prompt, and no rule about how much of the utterance the repeat covers
+    # separates the two -- the anaphora covers MORE of it (8 words of 9) than
+    # the real stutter does (8 of 15). What separates them is that the model
+    # ENDED the sentence and then said it again, which is the same reasoning
+    # `restarted_turns` uses on the platform's transcript: a model that
+    # finished its sentence and started it over abandoned it, and one that ran
+    # on through a comma did not.
+    #
+    # Only an exact repeat counts, not a near one. The midpoint search can
     # afford fuzziness because it has already committed to the whole utterance
-    # being a duplicate; a prefix scan looks at every length and would start
-    # finding "repeats" in ordinary parallel phrasing if it were allowed to
-    # approximate. "Did you take your Lipitor did you take your Metformin"
-    # shares four exact words and differs on the fifth, so it stays out.
-    for length in range(min_words, len(words) // 2 + 1):
-        if words[:length] == words[length : length * 2]:
+    # being a duplicate; this scan looks inside an utterance that is mostly not
+    # a duplicate, and approximation there starts finding "repeats" in ordinary
+    # parallel phrasing -- "Did you take your Lipitor? Did you take your
+    # Metformin?" is two sentences that share four words and must stay out.
+    sentences = _sentences(text)
+    for earlier, later in pairwise(sentences):
+        if earlier == later and len(earlier) >= min_words:
             best = max(best, 1.0)
             break
     return best if best >= threshold else 0.0
@@ -388,7 +416,45 @@ def long_silences(
     return findings
 
 
-def restarted_turns(turns: list[dict], *, min_shared: int = MIN_SHARED_OPENING) -> list[Finding]:
+def clock_offset(segments: list[Segment], turns: list[dict]) -> float:
+    """Seconds to add to a platform timestamp to land on the recording's clock.
+
+    The two clocks do not start together and nothing in either of them says by
+    how much. The recording starts at `Caller.started_at`, which is set before
+    `room.connect`; the platform's `time_ms` counts from `answered_at_ms`,
+    which the worker sets when it sees the remote participant. Between them sit
+    the caller's connect and the worker's dispatch, measured at 1.4-1.8s of
+    lead-in on a healthy local call. Printed side by side in one report -- which
+    is exactly what `analyse` does -- an unadjusted platform timestamp sends a
+    listener to the wrong place in the WAV.
+
+    So the offset is MEASURED rather than assumed, from the one event both
+    clocks recorded: the agent starting to speak for the first time. Aligning
+    the first agent segment with the first agent turn leaves only the gap
+    between the platform committing a turn and its audio reaching the caller --
+    tens of milliseconds against a lead-in of over a second.
+
+    Zero when either side is missing, which is the honest answer: with nothing
+    to align against, an unshifted timestamp is at least a timestamp somebody
+    can compare with the platform's own record.
+    """
+    first_segment = next((s for s in _in_time_order(segments) if s.speaker == AGENT), None)
+    first_turn = next(
+        (
+            t
+            for t in turns
+            if isinstance(t, dict) and t.get("role") == AGENT and t.get("time_ms") is not None
+        ),
+        None,
+    )
+    if first_segment is None or first_turn is None:
+        return 0.0
+    return first_segment.start - _turn_at(first_turn)
+
+
+def restarted_turns(
+    turns: list[dict], *, min_shared: int = MIN_SHARED_OPENING, offset_s: float = 0.0
+) -> list[Finding]:
     """Turns the model began, abandoned, and started again.
 
     The one rule here that reads the PLATFORM's transcript rather than the
@@ -420,6 +486,10 @@ def restarted_turns(turns: list[dict], *, min_shared: int = MIN_SHARED_OPENING) 
     take your Lipitor?" followed by "Did you take your Metformin?" shares a
     four-word opening, but the first turn ENDS, with a question mark, and a
     model that finished its sentence did not abandon it.
+
+    `offset_s` moves the finding onto the recording's clock, which every other
+    rule here already reports on -- see `clock_offset` for why it cannot be
+    left at zero when the report is read next to a WAV.
     """
     findings = []
     agent_turns = [
@@ -450,7 +520,7 @@ def restarted_turns(turns: list[dict], *, min_shared: int = MIN_SHARED_OPENING) 
                     f"the agent began {earlier!r} and started over with {later!r} — "
                     f"a listener hears the opening twice"
                 ),
-                at=_turn_at(second, fallback=_turn_at(first)),
+                at=_turn_at(second, fallback=_turn_at(first)) + offset_s,
             )
         )
     return findings
@@ -480,8 +550,11 @@ def analyse(
     `turns` is the platform's own transcript, and it is optional only because a
     caller can be graded without one. Pass it: `no_restarted_turn` is the rule
     that caught the Live model abandoning turns mid-sentence, and it is blind
-    without it.
+    without it. Its timestamps come from a different clock and are moved onto
+    the recording's before they are mixed in -- a "where to listen" offset that
+    points somewhere else in the file is worse than no offset at all.
     """
+    turns = turns or []
     findings = (
         duplicate_utterances(
             segments,
@@ -490,7 +563,7 @@ def analyse(
             min_words=min_words,
         )
         + long_silences(segments, limit_s=max_silence_s, call_end=call_end)
-        + restarted_turns(turns or [])
+        + restarted_turns(turns, offset_s=clock_offset(segments, turns))
     )
     return sorted(findings, key=lambda f: f.at)
 

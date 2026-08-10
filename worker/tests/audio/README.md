@@ -81,7 +81,7 @@ importing the heavy stack cannot run there. Everything that makes a *judgement*
 is stdlib-or-httpx and covered by the existing job with no workflow change.
 What is left uncovered is plumbing — connect, publish, subscribe, wait.
 
-Two rules so far, chosen because they map to bugs that actually shipped:
+Three rules so far, chosen because they map to bugs that actually shipped:
 
 - **`no_duplicate_utterance`** — the agent said the same substantial thing
   twice, either as two segments ≥90% alike within 30s, or twice inside a single
@@ -98,6 +98,12 @@ Two rules so far, chosen because they map to bugs that actually shipped:
   turn between them makes a repeated opening ordinary) and the first to be
   unfinished — no terminal punctuation — which is what keeps a legitimate
   run-through out, since a model that finished its sentence did not abandon it.
+  Its timestamps come from a third clock — the platform counts from
+  `answered_at_ms`, the recording from before `room.connect` — so they are
+  shifted onto the recording's before being mixed into the report, by aligning
+  the first agent turn with the first agent segment. Unshifted, a "where to
+  listen" offset points over a second early in the WAV, which is worse than no
+  offset at all.
 - **`max_silence`** — dead air from the caller stopping to the agent starting,
   over 6s (baselined; see below). Silence after the *agent* stops is the caller
   thinking and is not measured. A caller turn the agent never answers is
@@ -184,6 +190,23 @@ talks its way past a tool error. The local worker needs
 `ARHITEQ_ALLOW_PRIVATE_WEBHOOKS=1`, or its SSRF guard rejects the sink's address
 and every case that grades a tool call fails for a reason that is not the
 prompt.
+
+Two built-ins are refused outright rather than repointed, because they carry no
+URL and the platform runs them itself against a real Cal.com account:
+`book_appointment_cal` (which **writes** — a case that talks its way to a
+booking creates one) and `check_availability_cal`. Take them off the agent under
+test or pass `--allow-live-tools` and mean it. The other built-ins are safe here
+for reasons worth writing down rather than rediscovering: `send_sms` fails
+closed because a web call has no E.164 numbers on either end, and
+`transfer_call` answers "transfer not supported on this call" with no SIP
+participant.
+
+The sink listens on loopback when the worker is on this machine, and on every
+interface when `--sink-host` says it is not — a worker in a container reaches
+`host.docker.internal`, which on Linux is the bridge gateway, and a
+loopback-only listener refuses it. That failure is silent: every rewritten tool
+URL times out and the agent talks its way past the errors, so the case grades
+the harness.
 
 A tool with no mock still gets `{"ok": true}` and is named in the report. It is
 not an error — a case cannot anticipate every tool — but the payload was
@@ -325,12 +348,29 @@ sink is reachable.
 
 Exit codes: `0` clean, `1` the rules found something, `2` the run was broken —
 nobody joined, no audio, a provider refused, the call hit its own time limit
-before the script finished. Only `1` says anything about the prompt, and
-treating a `2` as a finding is how a suite loses its meaning: a rotated
-credential would be reported as the prompt getting worse. The rule lives in
-`verdict.py` rather than as `return` statements in the driver, because the
-driver imports `livekit` and cannot be tested, and this is the one decision a
-scheduler actually reads.
+before the script finished, the caller lost the room under itself. Only `1` says
+anything about the prompt, and treating a `2` as a finding is how a suite loses
+its meaning: a rotated credential would be reported as the prompt getting worse.
+The rule lives in `verdict.py` rather than as `return` statements in the driver,
+because the driver imports `livekit` and cannot be tested, and this is the one
+decision a scheduler actually reads.
+
+The sharpest edge in that rule is the **agent hanging up**, which is a `1` and
+not a `2`: the agent deciding the call is over is a fact about the prompt, often
+the exact fact a case is grading. What makes that exemption safe is telling it
+apart from the harness losing its connection, and both arrive as the same event
+— the room going away. A hangup is the worker's `delete_room`, so only
+`ROOM_DELETED` / `ROOM_CLOSED` count; a dropped network, an expired token or a
+closed signal socket is `room_closed`, which is broken. Counting every
+disconnect as a hangup made a truncated harness run exit `0`, "the call ran and
+sounded fine".
+
+An early hangup also leaves script lines unspoken, and anything the case
+expected from them is **unproven rather than failed**. Those findings still
+appear — an unproven expectation is not a satisfied one — but each says so in
+its own text, and `findings.txt` opens with how much of the case actually ran.
+Only `heard` and `tool_called` are affected; `never_heard` and `tool_not_called`
+are about something that did happen in the part of the call that ran.
 
 Artifacts land in `tests/audio/artifacts/<case>-<call_id>/`: the WAV, the
 segments with their times, the findings, and the platform's own record of the
@@ -385,11 +425,16 @@ platform's transcript and the microphone tell the two halves:
 Three gaps, all of them under-reporting, now closed:
 
 1. `repeats_itself` only knew how to see an utterance that is two copies of
-   itself. The Live stutter is a repeated **prefix** with the sentence carrying
-   on after it, and the midpoint seam search cannot reach a seam a quarter of
-   the way in. It now also scans for an exact repeated prefix — exact, not
-   approximate, because a scan over every prefix length would start finding
-   "repeats" in ordinary parallel phrasing.
+   itself. The Live stutter is a repeated **sentence** with the utterance
+   carrying on after it, and the midpoint seam search cannot reach a seam a
+   quarter of the way in. It now also scans adjacent sentences for an exact
+   repeat — sentences rather than a prefix of any length, because a flat prefix
+   scan cannot tell a stutter from deliberate anaphora ("I'm here for you, I'm
+   here for you, Margaret."), and no measure of how *much* of the utterance the
+   repeat covers separates them either: the anaphora covers 8 words of 9 where
+   the real stutter covers 8 of 15. What separates them is that the model ended
+   its sentence and then said it again, which is the same reasoning
+   `no_restarted_turn` uses one level up.
 2. `tool_called` had no `times`. One Live call logged the mood, the dose and the
    outcome **twice each** — a turn abandoned after its tools ran, then
    regenerated — and every assertion that only asks whether a tool ran called
@@ -427,9 +472,11 @@ would produce exactly this.
    talking.
 3. **A suite runner.** `caseload.discover` reads a whole directory and nothing
    calls it: `run_case` still runs one case per invocation.
-4. **Running against the real model.** Every measurement above is from a
-   text-pipeline agent. The gap this layer exists to close — production runs
-   speech-to-speech and no other layer ever touches it — is still open until a
-   case runs against a Live agent.
+4. **Running against the real model routinely.** Six cases have now run against
+   `gemini-live-2.5-flash-native-audio` (above), and that one run rewrote three
+   rules — so the gap this layer exists to close is reachable, but it has been
+   crossed once. Every threshold in `pcm.py` and `analysis.py` is still
+   baselined on the text pipeline, `max_silence` included, and re-baselining
+   them on Live needs more calls than one afternoon's worth.
 5. **A schedule.** Nothing runs this automatically. It costs a real call per
    case, so it belongs on a nightly beside layer 2, not in the commit path.

@@ -20,6 +20,7 @@ from audio.toolsink import (
     ToolSink,
     as_dialled,
     base_url,
+    bind_host_for,
     is_sunk,
     live_tools,
     reachable,
@@ -27,6 +28,7 @@ from audio.toolsink import (
     rewrite,
     sink_tools,
     tool_url,
+    unsinkable_tools,
 )
 
 SINK = base_url(DEFAULT_PORT)
@@ -414,3 +416,67 @@ def _local_api(request: httpx.Request) -> httpx.Response:
     if request.url.path == "/publish-agent/agent_1":
         return httpx.Response(200, json={"agent_id": "agent_1"})
     return httpx.Response(404)
+
+
+# --- built-ins that still reach the world ---------------------------------
+
+
+def test_require_sunk_refuses_a_calendar_tool_that_cannot_be_repointed():
+    # `book_appointment_cal` carries no URL, so nothing in the rewrite touches
+    # it and `live_tools` cannot see it — and the platform runs it against a
+    # real Cal.com account. The module's promise is that nothing a case does
+    # leaves this machine.
+    with pytest.raises(SinkError, match="book_appointment_cal"):
+        require_sunk(
+            [built_in("book_appointment_cal", "book_appointment_cal")],
+            agent="clara-scheduler",
+            sink_base=SINK,
+        )
+
+
+def test_the_refusal_says_repointing_will_not_help():
+    with pytest.raises(SinkError, match="cannot be repointed"):
+        require_sunk(
+            [built_in("check_slots", "check_availability_cal")],
+            agent="clara-scheduler",
+            sink_base=SINK,
+        )
+
+
+def test_the_built_ins_that_fail_closed_on_a_web_call_are_still_allowed():
+    # `send_sms` has no E.164 numbers on a web call and `transfer_call` has no
+    # SIP participant, so both refuse themselves. Refusing them here would make
+    # every Clara agent unrunnable for no safety gained.
+    require_sunk(
+        [built_in("send_family_sms", "send_sms"), built_in("to_nurse", "transfer_call")],
+        agent="clara-checkin",
+        sink_base=SINK,
+    )
+
+
+def test_unsinkable_tools_names_the_tool_and_its_type():
+    assert unsinkable_tools([built_in("book", "book_appointment_cal"), custom("log_mood")]) == [
+        ("book", "book_appointment_cal")
+    ]
+
+
+# --- which interface the sink listens on ----------------------------------
+
+
+def test_a_loopback_sink_host_keeps_the_socket_on_loopback():
+    assert bind_host_for("127.0.0.1") == "127.0.0.1"
+    assert bind_host_for("localhost") == "127.0.0.1"
+
+
+def test_a_containerised_worker_needs_a_socket_it_can_reach():
+    # `host.docker.internal` is the bridge gateway on Linux, not loopback. A
+    # loopback-only listener refuses that connection, every rewritten tool URL
+    # times out, and the agent talks its way past the errors while the case
+    # grades the harness.
+    assert bind_host_for("host.docker.internal") == "0.0.0.0"
+    assert bind_host_for("192.168.1.20") == "0.0.0.0"
+
+
+def test_the_sink_binds_where_it_is_told():
+    sink = ToolSink(bind_host=bind_host_for("127.0.0.1"))
+    assert sink.bind_host == "127.0.0.1"

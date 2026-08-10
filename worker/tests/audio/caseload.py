@@ -48,6 +48,12 @@ DEFAULT_REPLY_TIMEOUT_S = 25.0
 # A stop so a wedged call cannot hold a room and a Live session open forever.
 DEFAULT_MAX_CALL_S = 180.0
 
+# The version references the control plane understands, beside a version NUMBER
+# (`services/versions.py`). They are not interchangeable and a case should say
+# which it means: `latest` is the draft the editor shows, `latest_published` is
+# what a live call runs.
+VERSION_REFS = ("latest", "latest_published")
+
 KNOWN_KEYS = {
     "name",
     "agent",
@@ -118,6 +124,33 @@ def _positive(raw: dict, key: str, fallback: float) -> float:
     if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
         raise CaseError(f"{key} must be a positive number, got {value!r}")
     return float(value)
+
+
+def _agent_version(raw: dict, *, source: str) -> int | str | None:
+    """Which version of the agent to dial, checked here rather than by the API.
+
+    Unchecked, this is the one field in a case that reaches the wire as written:
+    it becomes a `?version=` query parameter, and `lates_published` or `2.5`
+    comes back as a 422 that surfaces as a broken run with the control plane's
+    wording, several seconds and one synthesis pass later. A case that names a
+    field wrong should be told so by the loader, with the field's name in the
+    message, before anything is spent on it.
+    """
+    if "agent_version" not in raw:
+        return None
+    value = raw["agent_version"]
+    if value is None:
+        return None
+    if isinstance(value, int) and not isinstance(value, bool):
+        if value < 1:
+            raise CaseError(f"{source} 'agent_version' must be 1 or more, got {value}")
+        return value
+    if isinstance(value, str) and value.strip() in VERSION_REFS:
+        return value.strip()
+    raise CaseError(
+        f"{source} 'agent_version' must be a version number or one of "
+        f"{', '.join(VERSION_REFS)}, got {value!r}"
+    )
 
 
 def _pattern(value: object, *, source: str, where: str) -> str:
@@ -336,7 +369,7 @@ def parse_case(raw: object, *, source: str = "case", base_dir: Path | None = Non
         expect=expectations,
         tools=_tools(raw.get("tools", {}), source=source),
         voice=voice,
-        agent_version=raw.get("agent_version"),
+        agent_version=_agent_version(raw, source=source),
         settle_s=_positive(raw, "settle_s", DEFAULT_SETTLE_S),
         reply_timeout_s=_positive(raw, "reply_timeout_s", DEFAULT_REPLY_TIMEOUT_S),
         max_call_s=_positive(raw, "max_call_s", DEFAULT_MAX_CALL_S),

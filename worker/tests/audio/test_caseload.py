@@ -339,3 +339,33 @@ def test_discovery_is_ordered_so_a_suite_runs_the_same_way_everywhere(tmp_path):
         (tmp_path / f"{name}.case.json").write_text(json.dumps({**GOOD, "name": name}))
     (tmp_path / "notes.md").write_text("not a case")
     assert [case.name for case in discover(tmp_path)] == ["a-first", "b-second", "c-third"]
+
+
+# --- which version of the agent a case dials ------------------------------
+
+
+def test_a_version_reference_the_api_does_not_know_is_refused_at_load():
+    # Unchecked, this reaches the wire as `?version=lates_published`, comes
+    # back a 422, and surfaces as a broken run in the control plane's words —
+    # after a synthesis pass and a room have already been paid for.
+    with pytest.raises(CaseError, match="agent_version"):
+        parse_case({**GOOD, "agent_version": "lates_published"})
+
+
+def test_a_version_that_is_not_a_whole_number_is_refused():
+    with pytest.raises(CaseError, match="agent_version"):
+        parse_case({**GOOD, "agent_version": 2.5})
+    with pytest.raises(CaseError, match="agent_version"):
+        parse_case({**GOOD, "agent_version": True})
+    with pytest.raises(CaseError, match="1 or more"):
+        parse_case({**GOOD, "agent_version": 0})
+
+
+def test_the_two_references_a_case_may_name_are_kept():
+    assert (
+        parse_case({**GOOD, "agent_version": "latest_published"}).agent_version
+        == "latest_published"
+    )
+    assert parse_case({**GOOD, "agent_version": "latest"}).agent_version == "latest"
+    assert parse_case({**GOOD, "agent_version": 3}).agent_version == 3
+    assert parse_case(GOOD).agent_version is None

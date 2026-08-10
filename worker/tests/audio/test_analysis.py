@@ -17,6 +17,7 @@ from audio.analysis import (
     Finding,
     Segment,
     analyse,
+    clock_offset,
     duplicate_utterances,
     format_findings,
     long_silences,
@@ -452,3 +453,58 @@ def test_format_findings_says_where_to_listen():
     text = format_findings([Finding(rule="max_silence", detail="7.0s of silence", at=12.5)])
     assert "12.50s" in text
     assert "max_silence" in text
+
+
+def test_deliberate_anaphora_inside_one_sentence_is_not_a_duplicate():
+    # "I'm here for you, I'm here for you, Margaret." is ordinary phrasing for
+    # a warm-companion prompt, and it defeats every measure of how MUCH of the
+    # utterance the repeat covers: 8 words of 9, where the real Live stutter
+    # above covers 8 of 15. What separates them is that the stutter ended its
+    # sentence and said it again, and this one ran on through a comma.
+    assert repeats_itself("I'm here for you, I'm here for you, Margaret.") == 0.0
+    assert duplicate_utterances([agent(0.0, 3.0, "I'm here for you, I'm here for you.")]) != []
+
+
+def test_a_sentence_said_twice_in_a_row_is_still_a_duplicate_with_a_tail():
+    # The shape the sentence scan exists for, with only a short tail after it —
+    # nothing about the tail's length decides this.
+    assert repeats_itself("That's wonderful to hear. That's wonderful to hear. Did you?") == 1.0
+
+
+def test_a_repeated_sentence_under_the_word_floor_is_left_alone():
+    # "Take your time. Take your time." is three words, the same reason "Okay."
+    # twice is not a finding.
+    assert repeats_itself("Take your time. Take your time. What did the doctor say?") == 0.0
+
+
+# --- the two clocks ------------------------------------------------------
+
+
+def test_a_restart_finding_lands_on_the_recordings_clock():
+    # The platform counts from `answered_at_ms`; the recording counts from
+    # before `room.connect`. Printed together as "where to listen", an
+    # unadjusted platform timestamp sends a listener to the wrong place in the
+    # WAV — here, 1.6s early.
+    segments = [
+        agent(1.6, 4.0, GREETING),
+        caller(4.5, 6.0, "I'm well."),
+        agent(7.0, 9.0, "That's wonderful to hear. Did you sleep?"),
+    ]
+    turns = [
+        turn(AGENT, GREETING, 0),
+        turn(CALLER, "I'm well.", 2900),
+        turn(AGENT, "That's wonderful to", 5400),
+        turn(AGENT, "That's wonderful to hear. Did you sleep?", 5400),
+    ]
+    assert clock_offset(segments, turns) == 1.6
+    (finding,) = [
+        f for f in analyse(segments, call_end=10.0, turns=turns) if f.rule == "no_restarted_turn"
+    ]
+    assert finding.at == 7.0
+
+
+def test_the_offset_is_zero_when_there_is_nothing_to_align():
+    # No agent audio, or no platform transcript: an unshifted timestamp is at
+    # least one that can be compared with the platform's own record.
+    assert clock_offset([caller(0.0, 1.0, "Hello?")], [turn(AGENT, "Hi", 500)]) == 0.0
+    assert clock_offset([agent(1.0, 2.0, GREETING)], []) == 0.0

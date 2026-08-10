@@ -80,7 +80,7 @@ PREFIX = "/tool/"
 DEFAULT_RESULT = '{"ok": true}'
 
 # Tool types the platform executes itself. They have no URL, never reach this
-# server, and are not what `require_sunk` is checking.
+# server, and are not what the URL half of `require_sunk` is checking.
 BUILT_IN_TYPES = frozenset(
     {
         "end_call",
@@ -92,6 +92,29 @@ BUILT_IN_TYPES = frozenset(
         "book_appointment_cal",
         "extract_dynamic_variable",
         "send_sms",
+    }
+)
+
+# The built-ins that still reach the outside world, with nothing on a web call
+# to stop them.
+#
+# Being built-in is not the same as being safe, and the module's promise is that
+# nothing a case does escapes this machine. These two run against a real Cal.com
+# account (`arhiteq_worker/tools.py`, `_make_cal_tool`), and `book_appointment_cal`
+# WRITES: a case that talks its way to a booking creates one, on a real calendar,
+# for a real event type. They carry no URL, so there is nowhere to repoint them —
+# the only answers are to take them off the agent under test or to say
+# `--allow-live-tools` and mean it.
+#
+# The rest of the list is genuinely harmless here, and it is worth writing down
+# why rather than rediscovering it: `send_sms` fails closed because a web call
+# has no E.164 numbers on either end (`tools.py`, `sms_numbers`), and
+# `transfer_call` answers "transfer not supported on this call" with no SIP
+# participant to transfer (`main.py`).
+UNSINKABLE_TYPES = frozenset(
+    {
+        "check_availability_cal",
+        "book_appointment_cal",
     }
 )
 
@@ -123,6 +146,14 @@ class ToolSink:
 
     results: dict[str, str] = field(default_factory=dict)
     port: int = DEFAULT_PORT
+    # The interface to listen on, which is NOT the same question as the address
+    # the agents were rewritten to. A worker in a container reaches this machine
+    # at `host.docker.internal`, which on Linux is the bridge gateway address —
+    # a loopback-only socket refuses that connection, every rewritten tool URL
+    # times out, and the agent talks its way past the errors while the case
+    # quietly grades the harness. `bind_host_for` derives this from the address
+    # the agents were given, so the two cannot drift apart.
+    bind_host: str = "127.0.0.1"
     invocations: list[Invocation] = field(default_factory=list)
     _server: ThreadingHTTPServer | None = None
     _thread: threading.Thread | None = None
@@ -145,10 +176,10 @@ class ToolSink:
     def start(self) -> None:
         if self._server is not None:
             return
-        self._server = ThreadingHTTPServer(("127.0.0.1", self.port), _handler_for(self))
+        self._server = ThreadingHTTPServer((self.bind_host, self.port), _handler_for(self))
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
-        log.info("tool sink listening on %s", base_url(self.port))
+        log.info("tool sink listening on %s", base_url(self.port, host=self.bind_host))
 
     def stop(self) -> None:
         if self._server is None:
@@ -200,6 +231,26 @@ def tool_url(name: str, *, port: int = DEFAULT_PORT, host: str = "127.0.0.1") ->
     return f"{base_url(port, host=host)}{PREFIX}{name}"
 
 
+def bind_host_for(sink_host: str) -> str:
+    """The interface to listen on, given the address the agents were sent to.
+
+    Loopback stays loopback: when the worker runs on this machine there is no
+    reason to accept a connection from anywhere else. Anything else has to be
+    reachable from off the loopback interface — `host.docker.internal` resolves
+    to the bridge gateway on Linux, and a container's request arrives there —
+    so the socket opens on every interface. Widening it is the point at which
+    the sink becomes reachable from the network, which is why it happens only
+    when the operator has already said the worker is somewhere else.
+    """
+    host = sink_host.strip()
+    if host in ("localhost", ""):
+        return "127.0.0.1"
+    try:
+        return "127.0.0.1" if ip_address(host).is_loopback else "0.0.0.0"
+    except ValueError:
+        return "0.0.0.0"
+
+
 def is_sunk(url: object, *, sink_base: str) -> bool:
     """Whether a tool's URL points at the sink rather than at the world."""
     return isinstance(url, str) and url.startswith(f"{sink_base.rstrip('/')}{PREFIX}")
@@ -220,6 +271,20 @@ def live_tools(tools: list[dict], *, sink_base: str) -> list[tuple[str, str]]:
         if url and not is_sunk(url, sink_base=sink_base):
             out.append((str(tool.get("name") or "?"), str(url)))
     return out
+
+
+def unsinkable_tools(tools: list[dict]) -> list[tuple[str, str]]:
+    """Every built-in tool that would still reach the world, as (name, type).
+
+    Separate from `live_tools` because the answer is different: a custom tool
+    with a URL can be repointed, and one of these cannot. See `UNSINKABLE_TYPES`
+    for which ones and why.
+    """
+    return [
+        (str(tool.get("name") or tool.get("type")), str(tool.get("type")))
+        for tool in tools
+        if isinstance(tool, dict) and tool.get("type") in UNSINKABLE_TYPES
+    ]
 
 
 def sink_tools(tools: list[dict], *, sink_base: str) -> tuple[list[dict], list[str]]:
@@ -253,7 +318,21 @@ def require_sunk(tools: list[dict], *, agent: str, sink_base: str) -> None:
     is not a case that makes no tool calls, and "I didn't think this one would
     log anything" is exactly how a test suite texts somebody's daughter at
     seven in the morning.
+
+    Two kinds of escape, refused with different advice, because the fix is
+    different: a custom tool pointed at a real URL can be repointed, and a
+    built-in that runs against a third party cannot.
     """
+    unsinkable = unsinkable_tools(tools)
+    if unsinkable:
+        listed = ", ".join(f"{name} ({kind})" for name, kind in unsinkable)
+        raise SinkError(
+            f"{agent} carries {len(unsinkable)} built-in tool(s) that reach a real service "
+            f"and cannot be repointed at the sink: {listed}. A call could write to the real "
+            f"calendar. Take them off the agent under test, or pass --allow-live-tools if "
+            f"you mean it."
+        )
+
     live = live_tools(tools, sink_base=sink_base)
     if not live:
         return
@@ -425,7 +504,7 @@ def rewrite(
     agent_ids: dict[str, str],
     sink_base: str,
     client: httpx.Client | None = None,
-) -> dict[str, list[str]]:
+) -> dict[str, Rewritten]:
     """Repoint every agent's custom tools at the sink. Loopback APIs only.
 
     The refusal is not paranoia about a hypothetical. These agents are seeded
@@ -509,7 +588,10 @@ def main(argv: list[str] | None = None) -> int:
             f"{name}: {len(result.repointed)} tool(s) repointed, {state}"
             + (f" — {', '.join(result.repointed)}" if result.repointed else "")
         )
-    print(f"\nThe worker needs ARHITEQ_ALLOW_PRIVATE_WEBHOOKS=1 to call {base_url(args.port)}.")
+    print(
+        "\nThe worker needs ARHITEQ_ALLOW_PRIVATE_WEBHOOKS=1 to call "
+        f"{base_url(args.port, host=args.sink_host)}."
+    )
     return 0
 
 

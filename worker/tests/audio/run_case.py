@@ -36,7 +36,15 @@ from audio.caseload import Case, CaseError, load_case
 from audio.client import ControlPlaneError, create_web_call, get_call, transcript_lines
 from audio.expectations import check, tool_calls
 from audio.pcm import slice_pcm, speech_spans, write_wav
-from audio.toolsink import DEFAULT_PORT, SinkError, ToolSink, as_dialled, base_url, require_sunk
+from audio.toolsink import (
+    DEFAULT_PORT,
+    SinkError,
+    ToolSink,
+    as_dialled,
+    base_url,
+    bind_host_for,
+    require_sunk,
+)
 from audio.verdict import BROKEN, describe, exit_code
 from audio.voice import CALLER_SAMPLE_RATE, VoiceError, synthesize, transcribe
 
@@ -169,7 +177,20 @@ def write_recording(directory: Path, result) -> None:
     write_wav(result.agent_pcm, directory / "agent.wav", sample_rate=result.agent_sample_rate)
 
 
-def write_report(directory: Path, *, segments, findings, call) -> None:
+def how_it_ended(result) -> str:
+    """One line saying how much of the case actually ran.
+
+    In the findings file rather than only in stdout, because the findings file
+    is what somebody opens a week later, and "the crisis number was never said"
+    means something very different on a call that ended four lines early.
+    """
+    ending = f"stopped: {result.stopped_because}"
+    if result.unspoken_lines:
+        ending += f" — {result.unspoken_lines} caller line(s) were never spoken"
+    return ending
+
+
+def write_report(directory: Path, *, segments, findings, call, result) -> None:
     """Everything else needed to understand the call without placing another."""
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "segments.json").write_text(
@@ -182,7 +203,9 @@ def write_report(directory: Path, *, segments, findings, call) -> None:
         )
         + "\n"
     )
-    (directory / "findings.txt").write_text(format_findings(findings) + "\n")
+    (directory / "findings.txt").write_text(
+        f"{how_it_ended(result)}\n\n{format_findings(findings)}\n"
+    )
     (directory / "call.json").write_text(json.dumps(call, indent=2, default=str) + "\n")
 
 
@@ -241,7 +264,11 @@ async def run(args: argparse.Namespace) -> int:
     # Started around the call alone: the sink is only useful while the worker
     # is making requests, and a thread left listening on a fixed port is the
     # reason the next run fails to bind.
-    sink = ToolSink(results=dict(case.tools), port=args.sink_port)
+    sink = ToolSink(
+        results=dict(case.tools),
+        port=args.sink_port,
+        bind_host=bind_host_for(args.sink_host),
+    )
     sink.start()
     try:
         result = await place_call(
@@ -282,10 +309,15 @@ async def run(args: argparse.Namespace) -> int:
         segments=segments,
         calls=tool_calls(record),
         call_end=result.call_end,
+        # An agent that hangs up early is still graded on the hangup, but the
+        # lines it cut off were never spoken — so an expectation that depended
+        # on them is unproven, and it has to say so in the finding itself. A
+        # warning in stdout does not reach whoever reads the findings file.
+        unspoken_lines=result.unspoken_lines,
     )
     findings.sort(key=lambda f: f.at)
 
-    write_report(directory, segments=segments, findings=findings, call=record)
+    write_report(directory, segments=segments, findings=findings, call=record, result=result)
     print(report(case, result, segments, findings, directory, sink=sink))
 
     return exit_code(stopped=result.stopped_because, segments=len(segments), findings=len(findings))

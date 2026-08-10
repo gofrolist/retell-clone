@@ -248,3 +248,55 @@ def test_an_expectation_nothing_understands_fails_rather_than_passes():
 def test_matches_is_the_shared_definition_of_a_pattern_being_present():
     assert matches("its clara", "It's Clara.")
     assert not matches("its clara", "This is Clara.")
+
+
+# --- a call that ended before the script did ------------------------------
+
+
+def test_a_positive_expectation_on_a_truncated_call_says_it_is_unproven():
+    # The agent hung up two lines early. "The crisis number was never said" is
+    # not a finding about the prompt when the call never reached the line that
+    # would have prompted it — and the finding itself has to say so, because
+    # the warning that used to say it only ever reached stdout.
+    (finding,) = check(
+        [{"heard": "988"}],
+        segments=[agent("Good morning.")],
+        calls=[],
+        call_end=4.0,
+        unspoken_lines=2,
+    )
+    assert finding.rule == "heard"
+    assert "unproven" in finding.detail
+    assert "2 caller line(s)" in finding.detail
+
+
+def test_a_negative_expectation_is_never_unproven():
+    # `never_heard` and `tool_not_called` are about something that DID happen
+    # in the part of the call that ran, and a short call cannot make them true
+    # by accident.
+    (heard,) = check(
+        [{"never_heard": "first name"}],
+        segments=[agent("Good morning first name.")],
+        calls=[],
+        call_end=4.0,
+        unspoken_lines=2,
+    )
+    (called,) = check(
+        [{"tool_not_called": "purchase_offer"}],
+        segments=[],
+        calls=[ToolCall(name="purchase_offer", arguments={})],
+        call_end=4.0,
+        unspoken_lines=2,
+    )
+    assert "unproven" not in heard.detail
+    assert "unproven" not in called.detail
+
+
+def test_a_call_that_ran_to_the_end_says_nothing_about_unproven():
+    (finding,) = check(
+        [{"heard": "988"}],
+        segments=[agent("Good morning.")],
+        calls=[],
+        call_end=4.0,
+    )
+    assert "unproven" not in finding.detail

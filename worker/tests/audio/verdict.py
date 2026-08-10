@@ -36,6 +36,7 @@ BROKEN_REASONS = frozenset(
         "error",
         "cancelled",
         "max_call_s",
+        "room_closed",
     }
 )
 
@@ -44,9 +45,50 @@ BROKEN_REASONS = frozenset(
 # finish — but not a cause: the harness giving up says nothing about anything,
 # while the agent deciding the call is over is a fact about the prompt, and
 # frequently the exact fact a case is grading (an agent that hangs up before
-# saying goodbye is the bug, not a broken run). The unspoken lines are named in
-# a warning instead, so a reader can tell an expectation that failed from one
-# the call never reached.
+# saying goodbye is the bug, not a broken run). The lines the hangup cut off are
+# counted instead and handed to `expectations.check`, which marks what depended
+# on them unproven — so a reader can tell an expectation that failed from one the
+# call never reached, in the finding itself rather than in a warning elsewhere.
+#
+# `room_closed` is its neighbour and the reason that exemption is safe. The
+# caller's room can also go away because the caller's own connection failed, a
+# token expired, or the server shut down; those end the script exactly the way
+# a hangup does, and folding them into `agent_ended_call` would make a harness
+# failure exit CLEAN. `room_close_ended_the_call` below is where the two are
+# told apart, and this is why it matters that they are.
+
+
+# LiveKit `DisconnectReason` names that mean the WORKER ended the call.
+#
+# Here rather than in `caller.py` for the same reason the exit code is: it
+# decides between a verdict about the prompt and a verdict about nothing, and
+# `caller.py` imports `livekit` and cannot run in CI. Names rather than enum
+# members so this module stays stdlib-only.
+#
+# `RuntimeControl.end_call` finishes a call with `delete_room`
+# (`arhiteq_worker/main.py`), and `delete_room_on_close` does the same when the
+# session closes for any other reason — so an agent hanging up reaches the
+# caller as the room being deleted, not only as the agent's participant
+# leaving.
+WORKER_ENDED_ROOM = frozenset({"ROOM_DELETED", "ROOM_CLOSED"})
+
+
+def room_close_ended_the_call(reason_name: str) -> bool:
+    """Whether a room-level disconnect was the agent hanging up.
+
+    Everything else — the caller's own network dropping, a token expiring, the
+    signal socket closing, the server shutting down — is this harness losing
+    its connection. Both end the script in the same place, and telling them
+    apart is the difference between exit 0 and exit 2: `agent_ended_call` is
+    deliberately not a broken reason, so a harness failure counted as a hangup
+    is reported as a call that ran and sounded fine.
+
+    An unrecognised reason is NOT a hangup. A new `DisconnectReason` in a later
+    livekit-rtc is far more likely to be a new way for a connection to fail than
+    a new way for an agent to say goodbye, and the safe default is the one that
+    admits the run proved nothing.
+    """
+    return reason_name in WORKER_ENDED_ROOM
 
 
 def exit_code(*, stopped: str, segments: int, findings: int) -> int:
