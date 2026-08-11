@@ -405,3 +405,126 @@ def test_replay_cache_does_not_cross_calls() -> None:
 
     asyncio.run(run())
     assert len(calls) == 2
+
+
+def test_a_retry_arriving_mid_request_does_not_double_write() -> None:
+    # The claim has to be staked before the request, not after it: livekit runs
+    # each function call of a generation as its own task, and the doubled
+    # generation can re-emit the call while the first is still in flight.
+    # Claiming only on completion would let both copies reach the endpoint.
+    calls: list[httpx.Request] = []
+    started = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        started.set()
+        await asyncio.sleep(0.05)  # the endpoint is slower than the retry gap
+        return httpx.Response(200, json={"ok": True})
+
+    state = CallState()
+
+    async def run() -> list[str]:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+
+            async def once() -> str:
+                return await safe_execute_custom_tool(
+                    http,
+                    name="log_medication_taken",
+                    url="https://consumer.example.com/log-medication",
+                    args={"taken": True, "medication_name": "Lipitor"},
+                    function_secret="s",
+                    variables={},
+                    state=state,
+                )
+
+            first = asyncio.create_task(once())
+            await started.wait()  # retry lands mid-flight
+            second = asyncio.create_task(once())
+            return list(await asyncio.gather(first, second))
+
+    first, second = asyncio.run(run())
+    assert len(calls) == 1
+    assert first == second
+
+
+def test_read_tools_are_not_replayed() -> None:
+    # A GET has no write to prevent, and a cached read would have the agent
+    # restate stale data as freshly fetched.
+    calls: list[httpx.Request] = []
+    state = CallState()
+
+    async def run() -> None:
+        async with _counting_client(calls) as http:
+            for _ in range(2):
+                await safe_execute_custom_tool(
+                    http,
+                    name="check_balance",
+                    url="https://consumer.example.com/balance",
+                    args={"phone": "+1555"},
+                    function_secret="s",
+                    variables={},
+                    state=state,
+                    entry={"method": "GET"},
+                )
+
+    asyncio.run(run())
+    assert len(calls) == 2
+
+
+def test_same_name_different_endpoint_is_not_replayed() -> None:
+    # A flow names function nodes by entry["name"] while their identity is
+    # tool_id, so two nodes can share a name and point at different endpoints.
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"from": str(request.url)})
+
+    state = CallState()
+
+    async def run() -> None:
+        async with _client(handler) as http:
+            for url in ("https://a.example.com/tool", "https://b.example.com/tool"):
+                await safe_execute_custom_tool(
+                    http,
+                    name="lookup",
+                    url=url,
+                    args={"q": "x"},
+                    function_secret="s",
+                    variables={},
+                    state=state,
+                )
+
+    asyncio.run(run())
+    assert seen == ["https://a.example.com/tool", "https://b.example.com/tool"]
+
+
+def test_identical_raw_args_resolving_differently_are_not_replayed() -> None:
+    # {{var}} resolution happens per call and `variables` mutates mid-call
+    # (response_variables capture, extract_dynamic_variable), so byte-identical
+    # raw args can carry different bodies.
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"ok": True})
+
+    state = CallState()
+    variables = {"member": "margaret"}
+
+    async def run() -> None:
+        async with _client(handler) as http:
+            for who in ("margaret", "mark"):
+                variables["member"] = who
+                await safe_execute_custom_tool(
+                    http,
+                    name="log_note",
+                    url="https://consumer.example.com/note",
+                    args={"who": "{{member}}"},
+                    function_secret="s",
+                    variables=variables,
+                    state=state,
+                )
+
+    asyncio.run(run())
+    assert [b["who"] for b in bodies] == ["margaret", "mark"]

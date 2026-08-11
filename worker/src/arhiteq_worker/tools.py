@@ -323,24 +323,86 @@ async def safe_execute_custom_tool(
     tool_call_id: str | None = None
     if state is not None:
         tool_call_id = state.add_tool_invocation(name, json.dumps(dict(args)))
-    # Sorted, because the retry is a fresh generation and the model does not
-    # re-emit the keys in their first order: the duplicate log_medication_taken
-    # of issue #250 arrived as {taken, phone, medication_name} and then as
-    # {medication_name, phone, taken}. Unsorted, the two would not match.
-    args_key = json.dumps(dict(args), sort_keys=True, default=str)
-    if state is not None:
-        replayed = state.replayable_tool_result(name, args_key, window_s=TOOL_REPLAY_WINDOW_S)
+    verb = str(entry.get("method") or "POST").upper()
+    if state is None or verb == "GET":
+        # A read gains nothing from the guard — there is no write to prevent —
+        # and caching one would have the agent restate stale data as freshly
+        # fetched when a listener asks it to check again.
+        return await _invoke_custom_tool(
+            http,
+            name=name,
+            url=url,
+            args=args,
+            function_secret=function_secret,
+            variables=variables,
+            call_info=call_info,
+            state=state,
+            entry=entry,
+            tool_call_id=tool_call_id,
+        )
+    # Keyed on the RESOLVED body, not the raw args: a `response_variables`
+    # capture or an extract_dynamic_variable tool mutates `variables` mid-call,
+    # so two calls with byte-identical `{{var}}` arguments can send different
+    # bodies. Sorted, because the retry is a fresh generation and the model does
+    # not re-emit the keys in their first order — the duplicate
+    # log_medication_taken of issue #250 arrived as {taken, phone,
+    # medication_name} and then as {medication_name, phone, taken}. The url is
+    # in the key because a tool's model-facing name is not unique: a flow names
+    # function nodes by `entry["name"]` while their identity is `tool_id`, so
+    # two nodes can share a name and point at different endpoints.
+    key = (
+        name,
+        url,
+        json.dumps(
+            {k: resolve_deep(v, variables) for k, v in args.items()}, sort_keys=True, default=str
+        ),
+    )
+    # Held across the request, so a retry that arrives while the first is still
+    # in flight waits for it rather than dialling alongside it.
+    async with state.tool_replay_lock(key):
+        replayed = state.replayable_tool_result(key, window_s=TOOL_REPLAY_WINDOW_S)
         if replayed is not None:
+            # No url in the log: httpx errors are redacted for the same reason
+            # (see _tool_error) — a tenant-configured tool URL can carry a token.
             logger.info(
                 "tool %s repeated identical args within %.0fs — replaying the first result "
-                "instead of calling %s again",
+                "instead of calling the endpoint again",
                 name,
                 TOOL_REPLAY_WINDOW_S,
-                url,
             )
             metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="replayed").inc()
             state.add_tool_result(name, replayed, tool_call_id)
             return replayed
+        return await _invoke_custom_tool(
+            http,
+            name=name,
+            url=url,
+            args=args,
+            function_secret=function_secret,
+            variables=variables,
+            call_info=call_info,
+            state=state,
+            entry=entry,
+            tool_call_id=tool_call_id,
+            replay_key=key,
+        )
+
+
+async def _invoke_custom_tool(
+    http: httpx.AsyncClient,
+    *,
+    name: str,
+    url: str,
+    args: Mapping[str, Any],
+    function_secret: str,
+    variables: Mapping[str, Any],
+    call_info: Mapping[str, Any] | None,
+    state: CallState | None,
+    entry: Mapping[str, Any],
+    tool_call_id: str | None,
+    replay_key: tuple[str, str, str] | None = None,
+) -> str:
+    """Send one custom-tool request and record its result on the call."""
     try:
         result = await execute_custom_tool(
             http,
@@ -360,8 +422,8 @@ async def safe_execute_custom_tool(
             wrap_args=entry.get("args_at_root") is False,
         )
         metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="success").inc()
-        if state is not None:
-            state.remember_tool_result(name, args_key, result)
+        if state is not None and replay_key is not None:
+            state.remember_tool_result(replay_key, result)
         captured = extract_response_variables(result, entry.get("response_variables") or {})
         if captured and isinstance(variables, dict):
             # Later {{var}} references (tool args, transfer destinations)

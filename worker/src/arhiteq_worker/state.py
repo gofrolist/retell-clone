@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import time
 from dataclasses import dataclass, field
@@ -39,14 +40,35 @@ class CallState:
     collected_dynamic_variables: dict[str, str] = field(default_factory=dict)
     # Monotone counter behind generated tool_call_id values.
     tool_seq: int = field(default=0, init=False)
-    # (name, canonical args) → (monotonic seconds, result) for the replay guard
-    # below. Successful custom-tool results only, and only for this call.
-    tool_replay_cache: dict[tuple[str, str], tuple[float, str]] = field(
+    # Replay guard for issue #250, keyed by (tool name, endpoint, resolved args).
+    # Successful write-tool results only, and only for this call.
+    tool_replay_cache: dict[tuple[str, str, str], tuple[float, str]] = field(
+        default_factory=dict, init=False
+    )
+    tool_replay_locks: dict[tuple[str, str, str], asyncio.Lock] = field(
         default_factory=dict, init=False
     )
 
-    def replayable_tool_result(self, name: str, args_key: str, *, window_s: float) -> str | None:
-        """The result of an identical call to *name* made within *window_s*.
+    def tool_replay_lock(self, key: tuple[str, str, str]) -> asyncio.Lock:
+        """Serialise identical tool calls so the guard also covers the retry
+        that arrives while the first request is still in flight.
+
+        Claiming only after the round trip would leave the whole request open:
+        livekit runs every function call of a generation as its own task, and
+        the doubled generation can re-emit the call before the first one
+        returns — the same reasoning `_do_agent_swap` stakes its claim before
+        the first await for. Holding this across the request makes the second
+        caller wait and then find the first result, instead of dialling in
+        parallel with it.
+        """
+        lock = self.tool_replay_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self.tool_replay_locks[key] = lock
+        return lock
+
+    def replayable_tool_result(self, key: tuple[str, str, str], *, window_s: float) -> str | None:
+        """The result of an identical call made within *window_s*.
 
         A Gemini Live turn that is abandoned after its tool ran loses the tool's
         result before it reaches the model (issue #250): the request is sent,
@@ -60,7 +82,7 @@ class CallState:
         the first attempt failed, a retry is the model recovering, and it has to
         reach the endpoint.
         """
-        cached = self.tool_replay_cache.get((name, args_key))
+        cached = self.tool_replay_cache.get(key)
         if cached is None:
             return None
         at, result = cached
@@ -68,8 +90,8 @@ class CallState:
             return None
         return result
 
-    def remember_tool_result(self, name: str, args_key: str, result: str) -> None:
-        self.tool_replay_cache[(name, args_key)] = (time.monotonic(), result)
+    def remember_tool_result(self, key: tuple[str, str, str], result: str) -> None:
+        self.tool_replay_cache[key] = (time.monotonic(), result)
 
     def _stamp(self, item: dict[str, Any]) -> dict[str, Any]:
         # time_ms = offset from answer ≈ offset into the recording; items
