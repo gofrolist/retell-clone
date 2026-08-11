@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.2](https://github.com/gofrolist/retell-clone/compare/v0.26.1...v0.26.2) (2026-08-11)
+
+
+### Bug Fixes
+
+* **worker:** stop a dropped Live tool result from writing twice ([#252](https://github.com/gofrolist/retell-clone/issues/252)) ([9757c2a](https://github.com/gofrolist/retell-clone/commit/9757c2a690e3d60fa657a37737708f8af2d024f4))
+
 ## [0.26.1](https://github.com/gofrolist/retell-clone/compare/v0.26.0...v0.26.1) (2026-08-09)
 
 
