@@ -266,3 +266,142 @@ def test_tool_calls_recorded_in_call_state() -> None:
     assert json.loads(state.items[1]["content"]) == {"done": True}
     # tool records appear in transcript_with_tool_calls but not transcript.
     assert state.transcript_object() == []
+
+
+def _counting_client(calls: list[httpx.Request]) -> httpx.AsyncClient:
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"ok": True, "seq": len(calls)})
+
+    return _client(handler)
+
+
+def test_repeated_identical_tool_call_is_not_sent_twice() -> None:
+    # Issue #250: a Gemini Live turn abandoned after its tool ran loses the
+    # result before the model sees it, so the model re-issues the identical
+    # call. The endpoint must be written once — a second POST here is a second
+    # dose in a member's medication record.
+    calls: list[httpx.Request] = []
+    state = CallState()
+
+    async def run() -> tuple[str, str]:
+        async with _counting_client(calls) as http:
+            kwargs = {
+                "name": "log_medication_taken",
+                "url": "https://consumer.example.com/log-medication",
+                "function_secret": "s",
+                "variables": {},
+                "state": state,
+            }
+            first = await safe_execute_custom_tool(
+                http, args={"taken": True, "phone": "+1555", "medication_name": "Lipitor"}, **kwargs
+            )
+            # Key order differs on the retry, exactly as the model re-emits it.
+            second = await safe_execute_custom_tool(
+                http, args={"medication_name": "Lipitor", "phone": "+1555", "taken": True}, **kwargs
+            )
+            return first, second
+
+    first, second = asyncio.run(run())
+    assert len(calls) == 1
+    assert first == second
+    # Both invocations stay in the transcript: the model did call twice, and
+    # the platform record has to keep saying so.
+    roles = [item["role"] for item in state.items]
+    assert roles.count("tool_call_invocation") == 2
+    assert roles.count("tool_call_result") == 2
+
+
+def test_replay_expires_with_the_window(monkeypatch) -> None:
+    calls: list[httpx.Request] = []
+    state = CallState()
+    monkeypatch.setattr("arhiteq_worker.tools.TOOL_REPLAY_WINDOW_S", 0.0)
+
+    async def run() -> None:
+        async with _counting_client(calls) as http:
+            for _ in range(2):
+                await safe_execute_custom_tool(
+                    http,
+                    name="log_mood",
+                    url="https://consumer.example.com/log-mood",
+                    args={"mood": "ok"},
+                    function_secret="s",
+                    variables={},
+                    state=state,
+                )
+
+    asyncio.run(run())
+    assert len(calls) == 2
+
+
+def test_differing_arguments_are_not_deduplicated() -> None:
+    calls: list[httpx.Request] = []
+    state = CallState()
+
+    async def run() -> None:
+        async with _counting_client(calls) as http:
+            for mood in ("doing alright", "slept well"):
+                await safe_execute_custom_tool(
+                    http,
+                    name="log_mood",
+                    url="https://consumer.example.com/log-mood",
+                    args={"mood_summary": mood},
+                    function_secret="s",
+                    variables={},
+                    state=state,
+                )
+
+    asyncio.run(run())
+    assert len(calls) == 2
+
+
+def test_a_failed_call_is_retried_rather_than_replayed() -> None:
+    # A retry after a failure is the model recovering, not the #250 duplicate:
+    # it has to reach the endpoint.
+    attempts: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(request)
+        if len(attempts) == 1:
+            return httpx.Response(500, text="boom")
+        return httpx.Response(200, json={"ok": True})
+
+    state = CallState()
+
+    async def run() -> str:
+        async with _client(handler) as http:
+            for _ in range(2):
+                result = await safe_execute_custom_tool(
+                    http,
+                    name="log_outcome",
+                    url="https://consumer.example.com/log-outcome",
+                    args={"outcome": "done"},
+                    function_secret="s",
+                    variables={},
+                    state=state,
+                )
+            return result
+
+    result = asyncio.run(run())
+    assert len(attempts) == 2
+    assert json.loads(result) == {"ok": True}
+
+
+def test_replay_cache_does_not_cross_calls() -> None:
+    calls: list[httpx.Request] = []
+
+    async def run() -> None:
+        async with _counting_client(calls) as http:
+            for _ in range(2):
+                await safe_execute_custom_tool(
+                    http,
+                    name="log_mood",
+                    url="https://consumer.example.com/log-mood",
+                    args={"mood": "ok"},
+                    function_secret="s",
+                    variables={},
+                    state=CallState(),
+                )
+
+    asyncio.run(run())
+    assert len(calls) == 2

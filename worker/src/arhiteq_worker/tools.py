@@ -43,6 +43,15 @@ TOOL_TIMEOUT_S = 10.0
 TOOL_TIMEOUT_MIN_S = 1.0
 TOOL_TIMEOUT_MAX_S = 600.0
 _ALLOWED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
+# How long an identical custom-tool call is answered from the first result
+# instead of being sent again (issue #250 — a Gemini Live turn abandoned after
+# its tool ran drops the result, and the model re-issues the call).
+#
+# Measured on the layer-3 audio harness against the Live check-in agent: the
+# model's retries landed 0.66s, 1.17s and 4.85s after the call whose answer was
+# lost. 10s clears the slowest of those with room, and is short enough that a
+# listener asking for the same action twice in one breath still gets it twice.
+TOOL_REPLAY_WINDOW_S = 10.0
 # Cap the tool response body we buffer and feed back to the LLM: a buggy or
 # hostile endpoint returning tens of MB would stall the live call and blow up
 # token cost. 256 KiB is far more than any real tool result.
@@ -314,6 +323,24 @@ async def safe_execute_custom_tool(
     tool_call_id: str | None = None
     if state is not None:
         tool_call_id = state.add_tool_invocation(name, json.dumps(dict(args)))
+    # Sorted, because the retry is a fresh generation and the model does not
+    # re-emit the keys in their first order: the duplicate log_medication_taken
+    # of issue #250 arrived as {taken, phone, medication_name} and then as
+    # {medication_name, phone, taken}. Unsorted, the two would not match.
+    args_key = json.dumps(dict(args), sort_keys=True, default=str)
+    if state is not None:
+        replayed = state.replayable_tool_result(name, args_key, window_s=TOOL_REPLAY_WINDOW_S)
+        if replayed is not None:
+            logger.info(
+                "tool %s repeated identical args within %.0fs — replaying the first result "
+                "instead of calling %s again",
+                name,
+                TOOL_REPLAY_WINDOW_S,
+                url,
+            )
+            metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="replayed").inc()
+            state.add_tool_result(name, replayed, tool_call_id)
+            return replayed
     try:
         result = await execute_custom_tool(
             http,
@@ -333,6 +360,8 @@ async def safe_execute_custom_tool(
             wrap_args=entry.get("args_at_root") is False,
         )
         metrics.TOOL_CALLS_TOTAL.labels(tool=name, outcome="success").inc()
+        if state is not None:
+            state.remember_tool_result(name, args_key, result)
         captured = extract_response_variables(result, entry.get("response_variables") or {})
         if captured and isinstance(variables, dict):
             # Later {{var}} references (tool args, transfer destinations)

@@ -39,6 +39,37 @@ class CallState:
     collected_dynamic_variables: dict[str, str] = field(default_factory=dict)
     # Monotone counter behind generated tool_call_id values.
     tool_seq: int = field(default=0, init=False)
+    # (name, canonical args) → (monotonic seconds, result) for the replay guard
+    # below. Successful custom-tool results only, and only for this call.
+    tool_replay_cache: dict[tuple[str, str], tuple[float, str]] = field(
+        default_factory=dict, init=False
+    )
+
+    def replayable_tool_result(self, name: str, args_key: str, *, window_s: float) -> str | None:
+        """The result of an identical call to *name* made within *window_s*.
+
+        A Gemini Live turn that is abandoned after its tool ran loses the tool's
+        result before it reaches the model (issue #250): the request is sent,
+        the endpoint writes, and the reply is dropped. The model, still holding
+        an unanswered call, issues the identical call again — so a second dose
+        lands in a member's medication record while the transcript shows one
+        answer. Replaying the first result satisfies the retry without a second
+        write.
+
+        Only successful results are cached (see ``remember_tool_result``): when
+        the first attempt failed, a retry is the model recovering, and it has to
+        reach the endpoint.
+        """
+        cached = self.tool_replay_cache.get((name, args_key))
+        if cached is None:
+            return None
+        at, result = cached
+        if time.monotonic() - at > window_s:
+            return None
+        return result
+
+    def remember_tool_result(self, name: str, args_key: str, result: str) -> None:
+        self.tool_replay_cache[(name, args_key)] = (time.monotonic(), result)
 
     def _stamp(self, item: dict[str, Any]) -> dict[str, Any]:
         # time_ms = offset from answer ≈ offset into the recording; items
