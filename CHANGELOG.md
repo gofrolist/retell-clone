@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.1](https://github.com/gofrolist/retell-clone/compare/v0.27.0...v0.27.1) (2026-08-12)
+
+
+### Performance Improvements
+
+* **api:** let a local suite raise the simulation concurrency ([#259](https://github.com/gofrolist/retell-clone/issues/259)) ([b88af49](https://github.com/gofrolist/retell-clone/commit/b88af49d0590c75d3114e8996cc9949a7e0b20f4))
+
 ## [0.27.0](https://github.com/gofrolist/retell-clone/compare/v0.26.3...v0.27.0) (2026-08-12)
 
 
