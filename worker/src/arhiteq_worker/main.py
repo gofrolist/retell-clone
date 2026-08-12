@@ -1341,7 +1341,6 @@ async def _run_amd(
 
 
 async def entrypoint(ctx: JobContext) -> None:
-    metrics.ensure_server()
     await ctx.connect()
 
     api_client = InternalAPI()
@@ -1696,18 +1695,20 @@ async def entrypoint(ctx: JobContext) -> None:
 def _run() -> None:
     # Deploy configs pass lowercase levels ("info"); logging wants uppercase.
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
-    metrics.ensure_server()
     try:
         # livekit-agents ≥1.3: AgentServer with explicit-dispatch agent name.
         from livekit.agents import AgentServer
     except ImportError:
         AgentServer = None
     if AgentServer is not None:
-        server = AgentServer()
+        # Metrics live in the job subprocesses; only livekit's exporter reads
+        # across them. See arhiteq_worker.metrics.
+        server = AgentServer(**metrics.exporter_options())
         server.rtc_session(agent_name=AGENT_NAME)(entrypoint)
         cli.run_app(server)
     else:
-        # livekit-agents 1.2 fallback.
+        # livekit-agents 1.2 fallback — unreachable under the >=1.6.7 pin, and
+        # it predates the prometheus options, so it exports no metrics.
         from livekit.agents import WorkerOptions
 
         cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, agent_name=AGENT_NAME))
