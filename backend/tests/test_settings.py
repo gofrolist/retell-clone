@@ -45,3 +45,21 @@ def test_arhiteq_prefixed_names_win_over_bare():
         LIVEKIT_API_KEY="bare",
     )
     assert s.livekit_api_key == "prefixed"
+
+
+def test_sim_concurrency_defaults_to_four_and_is_raisable():
+    # Four protects a Gemini quota shared with real calls. A laptop grading the
+    # 98-case suite against its own key has no such contention and spends most
+    # of a 22-minute run with cases queued behind four slots.
+    assert _settings().sim_concurrency == 4
+    assert _settings(ARHITEQ_SIM_CONCURRENCY="12").sim_concurrency == 12
+
+
+def test_sim_concurrency_below_one_is_refused():
+    # Zero would park every batch forever on a semaphore that never opens —
+    # a stall with no error, which is the worst way for a typo to arrive.
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _settings(ARHITEQ_SIM_CONCURRENCY="0")

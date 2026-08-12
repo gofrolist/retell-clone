@@ -57,6 +57,11 @@ class Settings(BaseSettings):
         ),
     )
     analysis_model: str = "gemini-3.1-flash-lite"
+    # How many simulated calls run at once, process-wide. The default protects a
+    # shared Gemini quota from one batch of a thousand cases; raise it where the
+    # quota is not contended and a whole suite is waiting on four slots. Below 1
+    # is meaningless, so it is clamped rather than allowed to stall every batch.
+    sim_concurrency: int = Field(4, ge=1)
     # Stands in for the agent under simulation when its own model cannot serve
     # text generation — Gemini Live models are realtime-audio only. Unset falls
     # back to `analysis_model`, which is what this has always done.

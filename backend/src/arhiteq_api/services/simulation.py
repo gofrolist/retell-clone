@@ -96,6 +96,14 @@ MAX_TOOL_CALLS_PER_TURN = 6
 # How many simulated calls run at once across the whole process. A batch may
 # hold up to 1000 cases and each case is dozens of model round-trips, so this
 # is what stops one POST — or ten — from saturating the Gemini quota.
+#
+# Four is right for a deployment sharing its quota with real calls, and
+# needlessly strict for a laptop grading a 98-case suite against its own key:
+# at four slots that run is ~22 minutes, most of it cases waiting for a slot.
+# Settings.sim_concurrency (ARHITEQ_SIM_CONCURRENCY) raises it where the quota
+# is not contended; unset, nothing changes.
+# The default lives on Settings.sim_concurrency; this name is kept because the
+# constant is part of what the module has always exported.
 RUN_CONCURRENCY = 4
 # A batch still `in_progress` after this long was orphaned by a restart the
 # graceful-shutdown path didn't get to run. Readers treat it as finished.
@@ -1327,7 +1335,7 @@ def _slots() -> asyncio.Semaphore:
     global _run_slots, _run_slots_loop
     loop = asyncio.get_running_loop()
     if _run_slots is None or _run_slots_loop is not loop:
-        _run_slots = asyncio.Semaphore(RUN_CONCURRENCY)
+        _run_slots = asyncio.Semaphore(get_settings().sim_concurrency)
         _run_slots_loop = loop
     return _run_slots
 
