@@ -64,14 +64,22 @@ Every counter above is incremented inside a livekit job subprocess, one per
 call, so the endpoint runs in prometheus_client multiprocess mode: `_run()`
 passes livekit `prometheus_port` + `prometheus_multiproc_dir`, livekit exports
 `PROMETHEUS_MULTIPROC_DIR` before spawning any job process, and its `/metrics`
-handler aggregates the per-process files (livekit's own `lk_agents_*` series
-come along for free). Two things follow:
+handler aggregates the per-process files. Three things follow:
 
 - A series is absent until some job writes it — there are no zero-valued
   series at startup, so alerts must treat "missing" as "none yet".
 - `PROMETHEUS_MULTIPROC_DIR` must be pod-local and ephemeral. livekit wipes it
   at worker start; pointing it at a shared or persistent volume would
   resurrect counts from an earlier run.
+- **Only the multiprocess registry is served**, so series recorded in the
+  supervisor process are not exported: livekit's own `lk_agents_*`, and
+  prometheus_client's `process_*` / `python_*`. livekit imports its telemetry
+  metrics before it sets `PROMETHEUS_MULTIPROC_DIR`, so they are single-process
+  values, and exporting the variable earlier would not rescue them — livekit
+  wipes the directory at start, unlinking the files the supervisor already
+  holds open. Nothing consumes them today (the Grafana dashboards use
+  `arhiteq_*` plus cAdvisor, and the worker HPA scales on CPU); per-pod process
+  stats are available from cAdvisor either way.
 
 ## Development
 
