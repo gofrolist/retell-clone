@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.3](https://github.com/gofrolist/retell-clone/compare/v0.26.2...v0.26.3) (2026-08-12)
+
+
+### Bug Fixes
+
+* **worker:** export the metrics that only job subprocesses record ([#254](https://github.com/gofrolist/retell-clone/issues/254)) ([addbc4d](https://github.com/gofrolist/retell-clone/commit/addbc4db16423b72e6a3ea0ac1a5240bff568027))
+
 ## [0.26.2](https://github.com/gofrolist/retell-clone/compare/v0.26.1...v0.26.2) (2026-08-11)
 
 
