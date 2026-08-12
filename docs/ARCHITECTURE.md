@@ -335,5 +335,9 @@ screenshots/  Retell dashboard reference for the UI clone
   `arhiteq_llm_ttfb_seconds` / `arhiteq_tts_ttfb_seconds` (latency SLO:
   p95 agent response — acceptance criterion from the migration spec §8),
   `arhiteq_amd_detections_total{result}`.
+- The worker's series are recorded in per-call job subprocesses, so its
+  `/metrics` runs in prometheus_client multiprocess mode and is served by
+  livekit (`prometheus_port` / `prometheus_multiproc_dir`); a worker series is
+  absent until a call writes it. See `worker/README.md` § Metrics.
 - kube-prometheus-stack installed via Helm; ServiceMonitors per service;
   Grafana dashboards in `infra/helm/monitoring/dashboards/`.

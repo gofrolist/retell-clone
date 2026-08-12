@@ -1,23 +1,41 @@
 """Prometheus metrics for the Arhiteq voice worker.
 
-Exposed on ``:9090`` (override with ``ARHITEQ_METRICS_PORT``). Series names
-match docs/ARCHITECTURE.md "Observability".
+Exposed on ``:9090/metrics`` (override with ``ARHITEQ_METRICS_PORT``). Series
+names match docs/ARCHITECTURE.md "Observability".
 
-NOTE: livekit-agents runs each job in a subprocess by default; every process
-that records metrics starts (or tries to start) its own exporter and silently
-skips if the port is taken. For exact aggregate numbers across job processes
-use prometheus_client multiprocess mode (TODO if per-process scrape via the
-pod is not enough).
+livekit-agents runs every call in its own job subprocess, and every counter
+below is incremented *there* — the supervisor process increments none of them.
+So the exporter has to read across processes: ``_run()`` in main.py hands
+livekit the ``prometheus_port`` / ``prometheus_multiproc_dir`` options from
+`exporter_options`, and livekit serves ``/metrics`` from a
+``MultiProcessCollector`` registry over that directory. prometheus_client
+switches into multiprocess mode from ``PROMETHEUS_MULTIPROC_DIR``, which
+livekit sets before it spawns any job process, so the metric objects here are
+file-backed in the children and the aggregate is exact.
+
+An in-process ``start_http_server`` cannot do this job: the supervisor binds
+the port first, so every job subprocess loses the race, skips its own exporter
+and takes its counts to the grave — which is why none of these series were
+ever scraped before.
+
+Two consequences of multiprocess mode worth knowing:
+
+- A series only appears once some job process has written it. There are no
+  zero-valued series at startup, so alerts must tolerate an absent series.
+- Each job process leaves a ``*_<pid>.db`` behind — prometheus_client keeps
+  them deliberately, so counters stay monotonic across process exits, and
+  livekit never calls ``mark_process_dead``. livekit wipes the directory when
+  the worker starts, so they are bounded by one pod's lifetime; the directory
+  must therefore be pod-local and ephemeral, never a shared volume.
 """
 
 from __future__ import annotations
 
-import logging
 import os
+import tempfile
+from typing import Any
 
-from prometheus_client import Counter, Histogram, start_http_server
-
-logger = logging.getLogger("arhiteq-worker.metrics")
+from prometheus_client import Counter, Histogram
 
 JOBS_TOTAL = Counter(
     "arhiteq_worker_jobs_total",
@@ -51,21 +69,19 @@ AMD_DETECTIONS_TOTAL = Counter(
     ["result"],
 )
 
-_server_started = False
+_DEFAULT_MULTIPROC_DIR = os.path.join(tempfile.gettempdir(), "arhiteq-worker-metrics")
 
 
-def ensure_server(port: int | None = None) -> None:
-    """Start the metrics HTTP server once per process; ignore port clashes."""
-    global _server_started
-    if _server_started:
-        return
-    if port is None:
-        port = int(os.getenv("ARHITEQ_METRICS_PORT", "9090"))
-    try:
-        start_http_server(port)
-        _server_started = True
-        logger.info("metrics server listening on :%d", port)
-    except OSError as exc:
-        # Another worker process on this host already exposes the port.
-        _server_started = True
-        logger.debug("metrics server not started (port %d): %s", port, exc)
+def exporter_options() -> dict[str, Any]:
+    """livekit ``AgentServer`` kwargs that make the series above scrapable."""
+    port = int(os.getenv("ARHITEQ_METRICS_PORT", "9090"))
+    if not port:
+        # Escape hatch for running a second worker on one host. Deployments
+        # leave this alone: the k8s probes tcpSocket the same port.
+        return {"prometheus_port": None, "prometheus_multiproc_dir": None}
+    return {
+        "prometheus_port": port,
+        "prometheus_multiproc_dir": (
+            os.getenv("PROMETHEUS_MULTIPROC_DIR") or _DEFAULT_MULTIPROC_DIR
+        ),
+    }

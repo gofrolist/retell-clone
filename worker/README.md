@@ -19,7 +19,7 @@ Binding contracts: `docs/ARCHITECTURE.md`, `docs/INTERNAL_API.md`,
 | `tools.py` | Retell tool declarations → livekit function tools (flat-args HTTP bridge, end_call, transfer_call) |
 | `amd.py` | Telnyx AMD attributes + Gemini greeting classifier, voicemail_option |
 | `state.py` | Per-call state, transcript formatting, finalize payload |
-| `metrics.py` | Prometheus exporter on `:9090` |
+| `metrics.py` | Prometheus series + the multiprocess exporter options livekit serves on `:9090` |
 
 ## Environment variables
 
@@ -38,7 +38,8 @@ Binding contracts: `docs/ARCHITECTURE.md`, `docs/INTERNAL_API.md`,
 | `ARHITEQ_CARTESIA_TTS_MODEL` | no | Cartesia TTS model (default `sonic-2`) |
 | `ARHITEQ_CARTESIA_STT_MODEL` | no | Cartesia STT model (default `ink-whisper`) |
 | `ARHITEQ_DIAL_TIMEOUT_S` | no | Outbound answer-wait timeout (default `60`) |
-| `ARHITEQ_METRICS_PORT` | no | Prometheus port (default `9090`) |
+| `ARHITEQ_METRICS_PORT` | no | Prometheus port (default `9090`; `0` disables the exporter — the k8s probes target this port, so leave it alone in deployments) |
+| `PROMETHEUS_MULTIPROC_DIR` | no | Where job subprocesses write their metric files (default `<tmp>/arhiteq-worker-metrics`); must be pod-local and ephemeral |
 | `LOG_LEVEL` | no | Python log level (default `INFO`) |
 
 ## Retell agent-option mappings
@@ -59,8 +60,18 @@ Documented in `main.py`; summary:
 - `arhiteq_llm_ttfb_seconds`, `arhiteq_tts_ttfb_seconds`
 - `arhiteq_amd_detections_total{result}`
 
-Jobs run in subprocesses; each process starts the exporter if the port is
-free. For exact aggregates use prometheus_client multiprocess mode (TODO).
+Every counter above is incremented inside a livekit job subprocess, one per
+call, so the endpoint runs in prometheus_client multiprocess mode: `_run()`
+passes livekit `prometheus_port` + `prometheus_multiproc_dir`, livekit exports
+`PROMETHEUS_MULTIPROC_DIR` before spawning any job process, and its `/metrics`
+handler aggregates the per-process files (livekit's own `lk_agents_*` series
+come along for free). Two things follow:
+
+- A series is absent until some job writes it — there are no zero-valued
+  series at startup, so alerts must treat "missing" as "none yet".
+- `PROMETHEUS_MULTIPROC_DIR` must be pod-local and ephemeral. livekit wipes it
+  at worker start; pointing it at a shared or persistent volume would
+  resurrect counts from an earlier run.
 
 ## Development
 
