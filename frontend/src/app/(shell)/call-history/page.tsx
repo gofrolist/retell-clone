@@ -22,7 +22,10 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
-const COLUMNS_LS_KEY = "arhiteq.callHistory.columns";
+// Bumped to v2 when the Retell-parity columns landed: a set saved against the
+// old catalog would pin the table to the columns that existed back then and
+// hide every new one, so those sets are dropped rather than migrated.
+const COLUMNS_LS_KEY = "arhiteq.callHistory.columns.v2";
 
 function callsToCsv(calls: Call[]): string {
   const rows = [
@@ -458,7 +461,7 @@ export default function CallHistoryPage() {
             {columnsOpen && (
               <>
                 <div className="fixed inset-0 z-20" onClick={() => setColumnsOpen(false)} />
-                <div className="absolute right-0 top-full z-30 mt-1 w-56 rounded-xl border border-line bg-white p-2 shadow-lg">
+                <div className="absolute right-0 top-full z-30 mt-1 max-h-[min(60vh,26rem)] w-60 overflow-y-auto rounded-xl border border-line bg-white p-2 shadow-lg">
                   <div className="mb-0.5 px-1 text-xs font-semibold uppercase tracking-wide text-faint">
                     Columns
                   </div>

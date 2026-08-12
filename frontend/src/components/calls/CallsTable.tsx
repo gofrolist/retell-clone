@@ -90,11 +90,6 @@ export const CALL_COLUMNS: { id: string; header: string; cell: (c: Call) => Reac
     cell: (c) => <StatusDot color={SENTIMENT_COLOR[c.user_sentiment]} label={c.user_sentiment} />,
   },
   {
-    id: "agent",
-    header: "Agent",
-    cell: (c) => <span className="text-sub">{c.agent_name}</span>,
-  },
-  {
     id: "from",
     header: "From",
     cell: (c) => <span className="tabular-nums text-sub">{c.from_number}</span>,
@@ -104,20 +99,84 @@ export const CALL_COLUMNS: { id: string; header: string; cell: (c: Call) => Reac
     header: "To",
     cell: (c) => <span className="tabular-nums text-sub">{c.to_number}</span>,
   },
+  {
+    id: "direction",
+    header: "Direction",
+    cell: (c) => <span className="text-sub">{c.direction}</span>,
+  },
+  {
+    id: "outcome",
+    header: "Session Outcome",
+    cell: (c) => (
+      <StatusDot
+        color={c.call_successful ? "green" : c.call_successful === false ? "red" : "gray"}
+        label={
+          c.call_successful ? "Successful" : c.call_successful === false ? "Unsuccessful" : "Unknown"
+        }
+      />
+    ),
+  },
+  {
+    id: "latency",
+    header: "End to End Latency",
+    cell: (c) => (
+      <span className="tabular-nums">
+        {c.end_to_end_latency_ms ? `${Math.round(c.end_to_end_latency_ms)}ms` : "-"}
+      </span>
+    ),
+  },
+  {
+    id: "callback_number",
+    header: "Callback Phone Number",
+    cell: (c) =>
+      c.callback_phone_number ? (
+        <span className="tabular-nums text-sub">{c.callback_phone_number}</span>
+      ) : (
+        <span className="text-sub">-</span>
+      ),
+  },
+  {
+    id: "client_type",
+    header: "Client Type",
+    cell: (c) => <span className="text-sub">{c.client_type || "-"}</span>,
+  },
+  {
+    id: "summary",
+    header: "Summary",
+    cell: (c) =>
+      c.call_summary ? (
+        <span className="block max-w-[320px] truncate text-sub" title={c.call_summary}>
+          {c.call_summary}
+        </span>
+      ) : (
+        <span className="text-sub">-</span>
+      ),
+  },
+  {
+    id: "agent_id",
+    header: "Agent ID",
+    cell: (c) => (
+      <span onClick={(e) => e.stopPropagation()}>
+        <CopyId value={c.agent_id} display={truncateId(c.agent_id, 20)} />
+      </span>
+    ),
+  },
+  {
+    id: "agent_version",
+    header: "Agent Version",
+    cell: (c) => <span className="tabular-nums text-sub">{c.agent_version}</span>,
+  },
+  {
+    // Kept as `agent` (not `agent_name`) so column sets saved before the
+    // Retell-parity columns landed keep resolving.
+    id: "agent",
+    header: "Agent Name",
+    cell: (c) => <span className="text-sub">{c.agent_name}</span>,
+  },
 ];
 
-/** Columns shown when the user hasn't customized anything (Retell's default set). */
-export const DEFAULT_CALL_COLUMNS = [
-  "time",
-  "duration",
-  "channel",
-  "cost",
-  "session_id",
-  "end_reason",
-  "status",
-  "sentiment",
-  "from",
-];
+/** Columns shown when the user hasn't customized anything: everything, in catalog order. */
+export const DEFAULT_CALL_COLUMNS = CALL_COLUMNS.map((c) => c.id);
 
 export default function CallsTable({
   calls,

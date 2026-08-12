@@ -536,6 +536,9 @@ export interface RawCall {
   };
   call_cost?: { combined_cost?: number };
   latency?: { e2e?: { p50?: number } };
+  metadata?: Record<string, unknown>;
+  callback_phone_number?: string | null;
+  client_type?: string | null;
   retell_llm_dynamic_variables?: Record<string, unknown>;
   collected_dynamic_variables?: Record<string, unknown>;
   detail_logs?: { time_ms: number; level: string; message: string }[];
@@ -777,6 +780,10 @@ export function uiCallFromRaw(c: RawCall): Call {
       ...(c.collected_dynamic_variables ?? {}),
     }).map(([k, v]) => [k, String(v)]),
   );
+  // Callback number and client type have no backend column: take a top-level
+  // field if one ever appears, else whatever the caller put in metadata.
+  const meta = c.metadata ?? {};
+  const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
   return {
     call_id: c.call_id,
     agent_id: c.agent_id,
@@ -797,6 +804,8 @@ export function uiCallFromRaw(c: RawCall): Call {
     user_sentiment: (SENTIMENTS.has(sentiment) ? sentiment : "Unknown") as Call["user_sentiment"],
     call_successful: analysis.call_successful ?? null,
     end_to_end_latency_ms: c.latency?.e2e?.p50,
+    callback_phone_number: str(c.callback_phone_number) ?? str(meta.callback_phone_number),
+    client_type: str(c.client_type) ?? str(meta.client_type),
     call_summary: analysis.call_summary,
     recording_url: c.recording_url,
     transcript: transcriptFromRaw(c),

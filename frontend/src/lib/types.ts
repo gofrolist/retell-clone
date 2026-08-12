@@ -105,6 +105,11 @@ export interface Call {
   user_sentiment: Sentiment;
   call_successful: boolean | null;
   end_to_end_latency_ms?: number;
+  // Retell shows these two as Call History columns. Nothing in our backend
+  // writes them, so they come from the call's free-form metadata when a
+  // consumer sets them, and render as "-" otherwise.
+  callback_phone_number?: string;
+  client_type?: string;
   llm_token_usage?: number;
   call_summary?: string;
   recording_url?: string;
