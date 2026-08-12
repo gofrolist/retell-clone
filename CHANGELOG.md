@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.0](https://github.com/gofrolist/retell-clone/compare/v0.26.3...v0.27.0) (2026-08-12)
+
+
+### Features
+
+* **dashboard:** add the call-history columns Retell shows and we didn't ([#257](https://github.com/gofrolist/retell-clone/issues/257)) ([ff4f1c1](https://github.com/gofrolist/retell-clone/commit/ff4f1c18a1c26f0a822441967e77797b0c3ffa9c))
+
 ## [0.26.3](https://github.com/gofrolist/retell-clone/compare/v0.26.2...v0.26.3) (2026-08-12)
 
 
