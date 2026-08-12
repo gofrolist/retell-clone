@@ -338,6 +338,7 @@ screenshots/  Retell dashboard reference for the UI clone
 - The worker's series are recorded in per-call job subprocesses, so its
   `/metrics` runs in prometheus_client multiprocess mode and is served by
   livekit (`prometheus_port` / `prometheus_multiproc_dir`); a worker series is
-  absent until a call writes it. See `worker/README.md` § Metrics.
+  absent until a call writes it, and supervisor-side series (`lk_agents_*`,
+  `process_*`) are not exported. See `worker/README.md` § Metrics.
 - kube-prometheus-stack installed via Helm; ServiceMonitors per service;
   Grafana dashboards in `infra/helm/monitoring/dashboards/`.
