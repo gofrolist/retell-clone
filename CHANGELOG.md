@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.3](https://github.com/gofrolist/retell-clone/compare/v0.27.2...v0.27.3) (2026-08-13)
+
+
+### Bug Fixes
+
+* **worker:** leave the voicemail message on a Live call, where it never was ([#263](https://github.com/gofrolist/retell-clone/issues/263)) ([a40af67](https://github.com/gofrolist/retell-clone/commit/a40af6738043564bf67c8c80ca4d2fa8b390d76d))
+
 ## [0.27.2](https://github.com/gofrolist/retell-clone/compare/v0.27.1...v0.27.2) (2026-08-13)
 
 
