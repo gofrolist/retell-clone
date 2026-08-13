@@ -65,7 +65,7 @@ class _FakeSession:
         self.said: list[str] = []
         self.replies: list[str | None] = []
 
-    async def say(self, text: str) -> None:
+    async def say(self, text: str, *, allow_interruptions: bool = True) -> None:
         self.said.append(text)
 
     async def generate_reply(self, instructions: str | None = None) -> None:
@@ -671,7 +671,7 @@ class _GatedSession(_FakeSession):
         self.gate = asyncio.Event()
         self._gated = True
 
-    async def say(self, text: str) -> None:
+    async def say(self, text: str, *, allow_interruptions: bool = True) -> None:
         if self._gated:
             self._gated = False
             await self.gate.wait()
