@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.4](https://github.com/gofrolist/retell-clone/compare/v0.27.3...v0.27.4) (2026-08-13)
+
+
+### Bug Fixes
+
+* **worker:** tell a swapped-in agent the call it joined is already in progress ([#265](https://github.com/gofrolist/retell-clone/issues/265)) ([4585816](https://github.com/gofrolist/retell-clone/commit/4585816cdccc43a4b56239cddada8188204318f5))
+
 ## [0.27.3](https://github.com/gofrolist/retell-clone/compare/v0.27.2...v0.27.3) (2026-08-13)
 
 
