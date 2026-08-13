@@ -536,6 +536,57 @@ class ArhiteqAgent(Agent):
         self.session.generate_reply()
 
 
+async def speak_verbatim(
+    session: Any,
+    agent: Any,
+    *,
+    text: str,
+    call_id: str = "",
+    allow_interruptions: bool = True,
+) -> None:
+    """Say *text* word for word, on either kind of session.
+
+    A Gemini Live session is built without a TTS, so ``session.say`` raises
+    there — nothing worker-side can voice a line and only the model can. The
+    line therefore goes into the session's instructions for exactly one turn
+    (see live_speech for why instructions and not ``generate_reply``), and the
+    instructions are put back afterwards so it does not read as a standing
+    order.
+
+    Every caller that speaks a fixed line has to come through here. The AMD
+    path did not: it called ``session.say`` directly, so on every production
+    call the voicemail message raised, was swallowed by a ``except Exception``
+    and logged at WARNING, and the call hung up in silence looking exactly like
+    an ordinary machine_detected.
+
+    ``allow_interruptions`` only reaches the pipeline path; on Live the turn is
+    the model's own generation and there is nothing to hand the flag to.
+    """
+    if session is None:
+        return
+    live = getattr(session, "tts", None) is None
+    if not live:
+        await session.say(text, allow_interruptions=allow_interruptions)
+        return
+
+    base = getattr(agent, "instructions", None)
+    if agent is None or not isinstance(base, str):
+        # Nothing to pin onto. Still ask for the turn rather than dropping its
+        # slot, but say so: the authored wording is lost and the model will
+        # improvise something in its place.
+        logger.warning(
+            "call=%s: a static line could not be pinned, the model will improvise it",
+            call_id,
+        )
+        await session.generate_reply()
+        return
+    await agent.update_instructions(f"{base}{live_verbatim_instructions(text)}")
+    try:
+        await session.generate_reply()
+    finally:
+        await agent.update_instructions(base)
+
+
 class CallRuntime:
     """Call-control surface handed to built-in tools (tools.CallControl)."""
 
@@ -546,9 +597,26 @@ class CallRuntime:
         self.sip_participant_identity: str | None = None
         # Installed after the session starts (needs the live agent/session).
         self._agent_swap: Callable[[str, Mapping[str, Any]], Awaitable[str]] | None = None
+        self._say: Callable[..., Awaitable[None]] | None = None
 
     def set_agent_swap(self, handler: Callable[[str, Mapping[str, Any]], Awaitable[str]]) -> None:
         self._agent_swap = handler
+
+    def set_say(self, handler: Callable[..., Awaitable[None]]) -> None:
+        """Bind the session/agent pair a spoken line needs (see speak_verbatim).
+
+        Same shape as set_agent_swap and for the same reason: CallRuntime is
+        built before the session exists, and the AMD path needs to speak.
+        """
+        self._say = handler
+
+    async def say(self, text: str, *, allow_interruptions: bool = True) -> None:
+        if self._say is None:
+            # Nothing bound: the session never started, so there is nobody to
+            # say it to. Worth a line, because the caller believes it spoke.
+            logger.warning("say(%r) with no session bound; nothing was spoken", text[:60])
+            return
+        await self._say(text, allow_interruptions=allow_interruptions)
 
     async def press_digit(self, digits: str) -> None:
         # DTMF rides the SIP leg; 0.3s between events mirrors telephony pacing.
@@ -959,7 +1027,7 @@ class _FlowWiring:
             # conversation — but say so, because the authored wording is lost.
             logger.warning(
                 "flow call=%s: %s could not be pinned, the model will improvise it",
-                self._call_id,
+                self._cfg.call_id,
                 what,
             )
             await session.generate_reply()
@@ -974,15 +1042,13 @@ class _FlowWiring:
         finally:
             await agent.update_instructions(base)
 
-    async def say(self, text: str) -> None:
-        session = self._session
-        if session is None:
-            return
-        if not self._live:
-            await session.say(text)
-            return
-        await self._pinned_turn(
-            lambda base: f"{base}{live_verbatim_instructions(text)}", what="a static line"
+    async def say(self, text: str, *, allow_interruptions: bool = True) -> None:
+        await speak_verbatim(
+            self._session,
+            self._agent,
+            text=text,
+            call_id=self._cfg.call_id,
+            allow_interruptions=allow_interruptions,
         )
 
     async def generate_reply(self, instructions: str | None) -> None:
@@ -1300,7 +1366,6 @@ async def _run_amd(
     cfg: CallConfig,
     state: CallState,
     runtime: CallRuntime,
-    session: AgentSession,
     llm: Any,
     participant: rtc.RemoteParticipant | None,
     amd_speech: list[str],
@@ -1330,7 +1395,13 @@ async def _run_amd(
     message = amd.voicemail_message(cfg.agent.voicemail_option)
     if message:
         try:
-            await session.say(resolve_template(message, variables), allow_interruptions=False)
+            # runtime.say, not session.say: a Gemini Live session has no TTS,
+            # so session.say raises there and the message is never left. Every
+            # production call runs Live, so no voicemail this agent was
+            # configured to leave has ever been spoken — the exception was
+            # caught and logged at WARNING, and the call hung up in silence
+            # looking exactly like a normal machine_detected.
+            await runtime.say(resolve_template(message, variables), allow_interruptions=False)
         except Exception as exc:  # noqa: BLE001
             logger.warning("voicemail message playback failed: %s", exc)
     await runtime.end_call("machine_detected", flush_grace=bool(message))
@@ -1619,6 +1690,18 @@ async def entrypoint(ctx: JobContext) -> None:
 
     runtime.set_agent_swap(_do_agent_swap)
 
+    async def _say_verbatim(text: str, *, allow_interruptions: bool = True) -> None:
+        # `agent` is rebound by an agent swap, so read it at call time.
+        await speak_verbatim(
+            session,
+            agent,
+            text=text,
+            call_id=cfg.call_id,
+            allow_interruptions=allow_interruptions,
+        )
+
+    runtime.set_say(_say_verbatim)
+
     async def _post_call_started() -> None:
         # Best-effort: a slow/failed call_started webhook must never delay the
         # greeting or abort the call.
@@ -1697,7 +1780,6 @@ async def entrypoint(ctx: JobContext) -> None:
                 cfg,
                 state,
                 runtime,
-                session,
                 llm,
                 participant,
                 amd_speech,

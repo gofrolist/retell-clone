@@ -31,7 +31,7 @@ class _FakeSession:
         self.said: list[str] = []
         self.replies: list[str | None] = []
 
-    async def say(self, text: str) -> None:
+    async def say(self, text: str, *, allow_interruptions: bool = True) -> None:
         self.said.append(text)
 
     def generate_reply(self, instructions: str | None = None):

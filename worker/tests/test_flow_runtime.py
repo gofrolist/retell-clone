@@ -61,7 +61,7 @@ class Fakes:
     async def set_tools(self, tools: list[Any]) -> None:
         self.tools.append(tools)
 
-    async def say(self, text: str) -> None:
+    async def say(self, text: str, *, allow_interruptions: bool = True) -> None:
         self.said.append(text)
 
     async def generate_reply(self, instructions: str | None) -> None:
