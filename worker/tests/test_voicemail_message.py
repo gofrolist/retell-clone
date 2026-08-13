@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from arhiteq_worker.live_speech import live_verbatim_instructions
+from arhiteq_worker.live_speech import live_verbatim_instructions, speak_verbatim
 
 
 class FakePipelineSession:
@@ -66,26 +66,31 @@ class FakeAgent:
         self.history.append(text)
 
 
-def _runtime(session, agent="default"):
-    """A CallRuntime with a say handler bound, the way entrypoint binds it."""
-    from arhiteq_worker.main import CallRuntime, speak_verbatim
+class _Speaker:
+    """Stands in for what `CallRuntime.say` delegates to.
 
-    runtime = CallRuntime.__new__(CallRuntime)
-    runtime._agent_swap = None
-    bound = FakeAgent() if agent == "default" else agent
-    runtime.agent = bound
+    Deliberately does not import `arhiteq_worker.main`: that pulls the whole
+    livekit stack in, and the worker's CI test group installs the dev group
+    without it — the same reason live_speech is kept import-free. The logic is
+    therefore tested where it lives.
+    """
 
-    async def handler(text: str, *, allow_interruptions: bool = True) -> None:
+    def __init__(self, session, agent="default") -> None:
+        self.session = session
+        self.agent = FakeAgent() if agent == "default" else agent
+
+    async def say(self, text: str, *, allow_interruptions: bool = True) -> None:
         await speak_verbatim(
-            session,
-            bound,
+            self.session,
+            self.agent,
             text=text,
             call_id="call_test",
             allow_interruptions=allow_interruptions,
         )
 
-    runtime._say = handler
-    return runtime
+
+def _runtime(session, agent="default"):
+    return _Speaker(session, agent)
 
 
 @pytest.mark.asyncio
