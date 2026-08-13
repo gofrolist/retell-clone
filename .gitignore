@@ -26,3 +26,7 @@ supabase/
 # Both are reproducible and neither belongs in history.
 worker/tests/audio/artifacts/
 worker/tests/audio/.cache/
+# The --agents map, copied from the prompt repo's dist/agent-ids.json. The ids
+# in it belong to one seeded workspace on one machine, so a committed copy is
+# wrong for everyone including whoever committed it.
+worker/tests/audio/agents.json
