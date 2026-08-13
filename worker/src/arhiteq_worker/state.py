@@ -33,8 +33,12 @@ class CallState:
     # Chronological items; role in {"agent","user"} for utterances, plus
     # tool_call_invocation / tool_call_result entries.
     items: list[dict[str, Any]] = field(default_factory=list)
-    # End-to-end latency samples (ms): llm ttft + tts ttfb per agent turn.
+    # End-to-end latency samples (ms) per agent turn: llm ttft + tts ttfb on a
+    # pipeline session, ttft alone on a realtime one (no synthesis step).
     e2e_latency_ms: list[float] = field(default_factory=list)
+    # Input tokens per generation. The prompt is most of it, so this is what
+    # says whether a call got slower because the prompt got bigger.
+    input_tokens: list[int] = field(default_factory=list)
     # Variables captured by extract_dynamic_variable tools during the call
     # (Retell surfaces these as call.collected_dynamic_variables).
     collected_dynamic_variables: dict[str, str] = field(default_factory=dict)
@@ -165,12 +169,22 @@ class CallState:
             call_status = "not_connected"
         latency: dict[str, Any] | None = None
         if self.e2e_latency_ms:
+            # p50/p95 are the shape consumers already read; max and num are
+            # additive. One slow turn is what a listener remembers, and a p95
+            # over three turns hides it.
             latency = {
                 "e2e": {
                     "p50": round(_percentile(self.e2e_latency_ms, 50), 1),
                     "p95": round(_percentile(self.e2e_latency_ms, 95), 1),
+                    "max": round(max(self.e2e_latency_ms), 1),
+                    "num": len(self.e2e_latency_ms),
                 }
             }
+            if self.input_tokens:
+                latency["input_tokens"] = {
+                    "p50": round(_percentile([float(t) for t in self.input_tokens], 50)),
+                    "max": max(self.input_tokens),
+                }
         return {
             "end_timestamp": end_ms,
             # CONTRACT: duration_ms = answer→hangup talk time, NOT dial time.

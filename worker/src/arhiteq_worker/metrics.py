@@ -69,6 +69,98 @@ AMD_DETECTIONS_TOTAL = Counter(
     ["result"],
 )
 
+
+def observe_turn(
+    m: Any,
+    *,
+    carry: dict[str, float],
+    e2e_out: list[float],
+    input_tokens_out: list[int],
+) -> None:
+    """Record one generation's latency, whichever kind of session produced it.
+
+    A pipeline turn reports two numbers — the LLM's time to first token and the
+    TTS's time to first byte — and the caller waits for both, so end-to-end is
+    their sum.
+
+    A **realtime** turn reports neither: ``RealtimeModelMetrics`` carries
+    ``ttft`` ("time to first audio token") and has no ``ttfb`` at all, because
+    a speech-to-speech model has no separate synthesis step. That is the whole
+    bug this function exists to fix. The previous code only appended a sample
+    inside the ``ttfb`` branch, so on a realtime session it appended nothing,
+    ever — and since production runs Gemini Live on every call, every call
+    finalized with ``latency: null``. The one question the field is there to
+    answer ("is it slower than it was?") had no data behind it at all.
+
+    For a realtime turn ``ttft`` IS the end-to-end wait: first audio token out
+    is the moment the listener hears something.
+
+    ``ttft`` is ``-1`` when a generation produced no audio (a tool-only turn),
+    and cancelled generations are barged-in turns whose timing measures the
+    interruption rather than the agent. Neither is a latency sample.
+
+    **Dispatch is on the metric type, never on which attributes are missing.**
+    livekit emits one event per component, and the classes are disjoint:
+    ``LLMMetrics`` has ``ttft`` and no ``ttfb``, ``TTSMetrics`` has ``ttfb`` and
+    no ``ttft``, ``STTMetrics`` has neither. "No ttfb, so this must be realtime"
+    is therefore true of every LLM event on a pipeline session, and reading it
+    that way appended two samples per turn — the LLM leg alone, then the real
+    sum — halving the reported p50 on exactly the sessions it was not meant to
+    touch.
+    """
+    kind = getattr(m, "type", "")
+
+    if kind == "realtime_model_metrics":
+        # Speech-to-speech: one event per generation, no synthesis leg to add,
+        # so first audio token out is the whole wait the listener feels.
+        if getattr(m, "cancelled", False):
+            return
+        ttft = getattr(m, "ttft", -1)
+        tokens = getattr(m, "input_tokens", 0)
+        if isinstance(tokens, int) and tokens > 0:
+            input_tokens_out.append(tokens)
+        if ttft is not None and ttft >= 0:
+            LLM_TTFB_SECONDS.observe(ttft)
+            e2e_out.append(ttft * 1000.0)
+        return
+
+    if kind == "llm_metrics":
+        # Half of a pipeline turn: hold ttft until its TTS leg arrives.
+        if getattr(m, "cancelled", False):
+            # Drop the carry too. A cancelled generation whose TTS segment
+            # still reports would otherwise be paired with the PREVIOUS turn's
+            # ttft and recorded as one plausible-looking sample.
+            carry.pop("value", None)
+            return
+        # LLMMetrics calls the prompt `prompt_tokens`; `input_tokens` on the
+        # STT/TTS events is audio and text billing, not prompt size.
+        prompt_tokens = getattr(m, "prompt_tokens", 0)
+        if isinstance(prompt_tokens, int) and prompt_tokens > 0:
+            input_tokens_out.append(prompt_tokens)
+        ttft = getattr(m, "ttft", -1)
+        if ttft is not None and ttft >= 0:
+            LLM_TTFB_SECONDS.observe(ttft)
+            carry["value"] = ttft
+        return
+
+    if kind == "tts_metrics":
+        if getattr(m, "cancelled", False):
+            carry.pop("value", None)
+            return
+        ttfb = getattr(m, "ttfb", -1)
+        if ttfb is None or ttfb < 0:
+            return
+        TTS_TTFB_SECONDS.observe(ttfb)
+        # Pair with the ttft this turn set, and consume it: one ttft belongs to
+        # one ttfb, and a leftover would pair with the next turn.
+        ttft = carry.pop("value", None)
+        if ttft is not None:
+            e2e_out.append((ttft + ttfb) * 1000.0)
+        return
+
+    # stt / vad / eou / interruption / avatar: not a turn latency.
+
+
 _DEFAULT_MULTIPROC_DIR = os.path.join(tempfile.gettempdir(), "arhiteq-worker-metrics")
 
 
