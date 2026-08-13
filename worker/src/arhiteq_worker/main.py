@@ -159,6 +159,19 @@ try:
 except ValueError:
     SWAP_SETTLE_TIMEOUT_S = 5.0
 
+# Ceiling on the voicemail message an AMD verdict leaves before hanging up. On
+# Live the message is a model generation, so the await only returns once Gemini
+# has produced and played the whole turn — and the callee is a machine talking
+# through its own outgoing message, which Live's server-side turn detection is
+# free to wait out. Without a bound, `end_call("machine_detected")` sits behind
+# a generation that may never land and the only backstop left is the hour-long
+# `_max_duration_watchdog`. Generous enough for a real message to finish.
+# <= 0 disables the bound. Parsed safely (see above).
+try:
+    VOICEMAIL_SAY_TIMEOUT_S = max(0.0, float(os.getenv("ARHITEQ_VOICEMAIL_SAY_TIMEOUT_S", "30.0")))
+except ValueError:
+    VOICEMAIL_SAY_TIMEOUT_S = 30.0
+
 # Live-only safety net: native-audio Gemini Live voices its goodbye but defers
 # the end_call tool call to its next turn (which only fires on fresh user
 # input), leaving seconds of dead air. When the agent voices a closing line and
@@ -559,7 +572,7 @@ class CallRuntime:
         """
         self._say = handler
 
-    async def say(self, text: str, *, allow_interruptions: bool = True) -> None:
+    async def say(self, text: str, *, allow_interruptions: bool | None = None) -> None:
         if self._say is None:
             # Nothing bound: the session never started, so there is nobody to
             # say it to. Worth a line, because the caller believes it spoke.
@@ -991,7 +1004,7 @@ class _FlowWiring:
         finally:
             await agent.update_instructions(base)
 
-    async def say(self, text: str, *, allow_interruptions: bool = True) -> None:
+    async def say(self, text: str, *, allow_interruptions: bool | None = None) -> None:
         await speak_verbatim(
             self._session,
             self._agent,
@@ -1350,7 +1363,19 @@ async def _run_amd(
             # configured to leave has ever been spoken — the exception was
             # caught and logged at WARNING, and the call hung up in silence
             # looking exactly like a normal machine_detected.
-            await runtime.say(resolve_template(message, variables), allow_interruptions=False)
+            #
+            # Bounded, because on Live this awaits a whole model generation and
+            # the hangup below is queued behind it (see VOICEMAIL_SAY_TIMEOUT_S).
+            await asyncio.wait_for(
+                runtime.say(resolve_template(message, variables), allow_interruptions=False),
+                timeout=VOICEMAIL_SAY_TIMEOUT_S or None,
+            )
+        except TimeoutError:
+            logger.warning(
+                "call=%s: voicemail message did not finish in %.1fs; hanging up",
+                cfg.call_id,
+                VOICEMAIL_SAY_TIMEOUT_S,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("voicemail message playback failed: %s", exc)
     await runtime.end_call("machine_detected", flush_grace=bool(message))
@@ -1639,8 +1664,11 @@ async def entrypoint(ctx: JobContext) -> None:
 
     runtime.set_agent_swap(_do_agent_swap)
 
-    async def _say_verbatim(text: str, *, allow_interruptions: bool = True) -> None:
-        # `agent` is rebound by an agent swap, so read it at call time.
+    async def _say_verbatim(text: str, *, allow_interruptions: bool | None = None) -> None:
+        # An agent swap mutates this same Agent in place (update_instructions /
+        # update_tools) rather than building a new one, so the closed-over
+        # `agent` stays the live one and speak_verbatim pins onto the
+        # destination agent's instructions.
         await speak_verbatim(
             session,
             agent,

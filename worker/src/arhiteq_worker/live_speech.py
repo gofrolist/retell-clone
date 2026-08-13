@@ -101,7 +101,7 @@ async def speak_verbatim(
     *,
     text: str,
     call_id: str = "",
-    allow_interruptions: bool = True,
+    allow_interruptions: bool | None = None,
 ) -> None:
     """Say *text* word for word, on either kind of session.
 
@@ -119,13 +119,21 @@ async def speak_verbatim(
     an ordinary machine_detected.
 
     ``allow_interruptions`` only reaches the pipeline path; on Live the turn is
-    the model's own generation and there is nothing to hand the flag to.
+    the model's own generation and there is nothing to hand the flag to. None —
+    the default — means "don't override", and the flag is left off the
+    ``session.say`` call so livekit falls back to the session's own setting
+    (which the worker derives from the agent's interruption_sensitivity).
+    Passing it explicitly regardless would make a static line interruptible on
+    an agent configured with interruption_sensitivity 0.
     """
     if session is None:
         return
     live = getattr(session, "tts", None) is None
     if not live:
-        await session.say(text, allow_interruptions=allow_interruptions)
+        if allow_interruptions is None:
+            await session.say(text)
+        else:
+            await session.say(text, allow_interruptions=allow_interruptions)
         return
 
     base = getattr(agent, "instructions", None)
