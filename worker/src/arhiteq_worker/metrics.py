@@ -69,6 +69,57 @@ AMD_DETECTIONS_TOTAL = Counter(
     ["result"],
 )
 
+
+def observe_turn(
+    m: Any,
+    *,
+    carry: dict[str, float],
+    e2e_out: list[float],
+    input_tokens_out: list[int],
+) -> None:
+    """Record one generation's latency, whichever kind of session produced it.
+
+    A pipeline turn reports two numbers — the LLM's time to first token and the
+    TTS's time to first byte — and the caller waits for both, so end-to-end is
+    their sum.
+
+    A **realtime** turn reports neither: ``RealtimeModelMetrics`` carries
+    ``ttft`` ("time to first audio token") and has no ``ttfb`` at all, because
+    a speech-to-speech model has no separate synthesis step. That is the whole
+    bug this function exists to fix. The previous code only appended a sample
+    inside the ``ttfb`` branch, so on a realtime session it appended nothing,
+    ever — and since production runs Gemini Live on every call, every call
+    finalized with ``latency: null``. The one question the field is there to
+    answer ("is it slower than it was?") had no data behind it at all.
+
+    For a realtime turn ``ttft`` IS the end-to-end wait: first audio token out
+    is the moment the listener hears something.
+
+    ``ttft`` is ``-1`` when a generation produced no audio (a tool-only turn),
+    and cancelled generations are barged-in turns whose timing measures the
+    interruption rather than the agent. Neither is a latency sample.
+    """
+    ttft = getattr(m, "ttft", None)
+    ttfb = getattr(m, "ttfb", None)
+    if getattr(m, "cancelled", False):
+        return
+
+    if ttft is not None and ttft >= 0:
+        LLM_TTFB_SECONDS.observe(ttft)
+        carry["value"] = ttft
+
+    input_tokens = getattr(m, "input_tokens", None)
+    if isinstance(input_tokens, int) and input_tokens > 0:
+        input_tokens_out.append(input_tokens)
+
+    if ttfb is not None and ttfb >= 0:
+        TTS_TTFB_SECONDS.observe(ttfb)
+        e2e_out.append((carry.get("value", 0.0) + ttfb) * 1000.0)
+    elif ttfb is None and ttft is not None and ttft >= 0:
+        # Realtime: no synthesis step to add, so first audio token is the wait.
+        e2e_out.append(ttft * 1000.0)
+
+
 _DEFAULT_MULTIPROC_DIR = os.path.join(tempfile.gettempdir(), "arhiteq-worker-metrics")
 
 

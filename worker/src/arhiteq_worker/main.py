@@ -1288,16 +1288,12 @@ def _wire_session_events(
     # and carries the ttft/ttfb we need.
     @session.on("metrics_collected")
     def _on_metrics(ev: Any) -> None:
-        m = getattr(ev, "metrics", ev)
-        ttft = getattr(m, "ttft", None)
-        ttfb = getattr(m, "ttfb", None)
-        if ttft is not None and ttft >= 0:
-            metrics.LLM_TTFB_SECONDS.observe(ttft)
-            last_llm_ttft["value"] = ttft
-        if ttfb is not None and ttfb >= 0:
-            metrics.TTS_TTFB_SECONDS.observe(ttfb)
-            e2e_ms = (last_llm_ttft.get("value", 0.0) + ttfb) * 1000.0
-            state.e2e_latency_ms.append(e2e_ms)
+        metrics.observe_turn(
+            getattr(ev, "metrics", ev),
+            carry=last_llm_ttft,
+            e2e_out=state.e2e_latency_ms,
+            input_tokens_out=state.input_tokens,
+        )
 
 
 async def _run_amd(
@@ -1362,7 +1358,27 @@ async def entrypoint(ctx: JobContext) -> None:
         state.ended_at_ms = state.ended_at_ms or now_ms()
         try:
             if state.call_id:
-                await api_client.finalize(state.call_id, state.build_finalize_payload())
+                payload = state.build_finalize_payload()
+                # One greppable line per call. The histograms are only useful
+                # to whoever is scraping them, and nobody is; a bad call gets
+                # reported by the person who was on it, and this is what that
+                # report can be checked against afterwards.
+                lat = (payload.get("latency") or {}).get("e2e")
+                if lat:
+                    tokens = (payload.get("latency") or {}).get("input_tokens") or {}
+                    logger.info(
+                        "call latency: call_id=%s turns=%s p50=%.0fms p95=%.0fms max=%.0fms "
+                        "input_tokens_p50=%s",
+                        state.call_id,
+                        lat["num"],
+                        lat["p50"],
+                        lat["p95"],
+                        lat["max"],
+                        tokens.get("p50", "?"),
+                    )
+                else:
+                    logger.info("call latency: call_id=%s no samples", state.call_id)
+                await api_client.finalize(state.call_id, payload)
         except InternalAPIError as exc:
             logger.error("finalize failed: %s", exc)
         finally:
