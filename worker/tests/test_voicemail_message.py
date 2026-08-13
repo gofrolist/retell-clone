@@ -73,7 +73,7 @@ def _runtime(session, agent="default"):
     runtime = CallRuntime.__new__(CallRuntime)
     runtime._agent_swap = None
     bound = FakeAgent() if agent == "default" else agent
-    runtime._bound_agent = bound
+    runtime.agent = bound
 
     async def handler(text: str, *, allow_interruptions: bool = True) -> None:
         await speak_verbatim(
@@ -103,10 +103,10 @@ async def test_live_voicemail_is_pinned_instead_of_raising() -> None:
     runtime = _runtime(session)
     await runtime.say("Sorry we missed you.", allow_interruptions=False)
     assert session.generated == 1, "the model was never asked to speak the line"
-    pinned = runtime._bound_agent.history[0]
+    pinned = runtime.agent.history[0]
     assert live_verbatim_instructions("Sorry we missed you.") in pinned
     # ...and the instructions are put back, so the line is not a standing order.
-    assert runtime._bound_agent.instructions == "BASE"
+    assert runtime.agent.instructions == "BASE"
 
 
 @pytest.mark.asyncio

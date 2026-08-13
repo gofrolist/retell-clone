@@ -28,6 +28,11 @@ Kept livekit-free so it is unit-testable in the dev-only test group.
 
 from __future__ import annotations
 
+import logging
+from typing import Any
+
+logger = logging.getLogger("arhiteq-worker.live_speech")
+
 # The placeholder the google plugin sends to trigger a generation. Named in the
 # directive so the model stops scoring it as a (non-)answer from the caller.
 _PLACEHOLDER_NOTE = (
@@ -88,3 +93,54 @@ def live_verbatim_instructions(line: str) -> str:
         when="Your next spoken turn",
         line=line,
     )
+
+
+async def speak_verbatim(
+    session: Any,
+    agent: Any,
+    *,
+    text: str,
+    call_id: str = "",
+    allow_interruptions: bool = True,
+) -> None:
+    """Say *text* word for word, on either kind of session.
+
+    A Gemini Live session is built without a TTS, so ``session.say`` raises
+    there — nothing worker-side can voice a line and only the model can. The
+    line therefore goes into the session's instructions for exactly one turn
+    (see live_speech for why instructions and not ``generate_reply``), and the
+    instructions are put back afterwards so it does not read as a standing
+    order.
+
+    Every caller that speaks a fixed line has to come through here. The AMD
+    path did not: it called ``session.say`` directly, so on every production
+    call the voicemail message raised, was swallowed by a ``except Exception``
+    and logged at WARNING, and the call hung up in silence looking exactly like
+    an ordinary machine_detected.
+
+    ``allow_interruptions`` only reaches the pipeline path; on Live the turn is
+    the model's own generation and there is nothing to hand the flag to.
+    """
+    if session is None:
+        return
+    live = getattr(session, "tts", None) is None
+    if not live:
+        await session.say(text, allow_interruptions=allow_interruptions)
+        return
+
+    base = getattr(agent, "instructions", None)
+    if agent is None or not isinstance(base, str):
+        # Nothing to pin onto. Still ask for the turn rather than dropping its
+        # slot, but say so: the authored wording is lost and the model will
+        # improvise something in its place.
+        logger.warning(
+            "call=%s: a static line could not be pinned, the model will improvise it",
+            call_id,
+        )
+        await session.generate_reply()
+        return
+    await agent.update_instructions(f"{base}{live_verbatim_instructions(text)}")
+    try:
+        await session.generate_reply()
+    finally:
+        await agent.update_instructions(base)
