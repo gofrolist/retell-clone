@@ -1602,12 +1602,18 @@ async def entrypoint(ctx: JobContext) -> None:
         On a Gemini Live call the tool-set change costs a session reconnect, so
         a swap is not free and a redundant one is not harmless — see
         `_settle_realtime_session`. Swapping onto the agent already running is
-        therefore refused outright rather than paid for, and so is a swap
+        therefore refused outright rather than paid for, and so is a bounce
         straight back to the agent that just handed the call over (`SwapGuard`).
 
         The destination agent is briefed on what the reconnect cost it before
         its prompt goes in — `live_handoff_instructions` for why a bare prompt
         left it reading a call in progress as a call just starting.
+
+        Both of those are Live-only. A pipeline session pays no reconnect and
+        keeps the tool calls in its chat context, so the destination agent can
+        see the hand-back for itself and the prompt rule against bouncing it
+        back can fire on its own; arming the guard there would only add its
+        false refusals to a call that never had the amnesia they buy.
 
         The claim on `running_agent_id` is staked before the first await, not
         after the last one. livekit runs every function call of a generation as
@@ -1620,8 +1626,16 @@ async def entrypoint(ctx: JobContext) -> None:
         if agent_id and agent_id == running_agent_id:
             logger.info("agent swap: call %s already running agent %s", cfg.call_id, agent_id)
             return json.dumps({"result": f"already acting as agent {agent_id}"})
-        if swap_guard.is_ping_pong(
-            current=running_agent_id, destination=agent_id, user_turns=state.user_turns
+        # One reading of the clock for the whole swap: the awaits below span a
+        # config fetch and up to SWAP_SETTLE_TIMEOUT_S of reconnect, and a
+        # caller turn landing in that window would otherwise be recorded as
+        # having happened before this swap and bar the next hand-back.
+        turns_now, tools_now = state.user_turns, state.tool_seq
+        if live_session and swap_guard.is_ping_pong(
+            current=running_agent_id,
+            destination=agent_id,
+            user_turns=turns_now,
+            tool_seq=tools_now,
         ):
             # Refused, not paid for: the reason goes back to the model as the
             # tool's own answer, which is the one place it is certain to read.
@@ -1634,10 +1648,11 @@ async def entrypoint(ctx: JobContext) -> None:
             return json.dumps(
                 {
                     "error": (
-                        f"agent {agent_id} just handed this call to you and the other "
-                        "person has not spoken since, so handing it back would return "
-                        "it to the agent that gave it up. Handle the request yourself, "
-                        "say plainly that it cannot be answered, or move on."
+                        f"agent {agent_id} just handed this call to you and nothing has "
+                        "happened since, so handing it back would return it to the agent "
+                        "that gave it up. Handle the request yourself, say plainly that "
+                        "it cannot be answered, or move on. Say it to the other person "
+                        "now: calling this tool again instead will only fail again."
                     )
                 }
             )
@@ -1697,9 +1712,13 @@ async def entrypoint(ctx: JobContext) -> None:
                     )
                 except Exception:  # voice switch is best-effort
                     logger.warning("agent_swap voice switch failed", exc_info=True)
-        swap_guard.record(
-            source=previous_agent_id, destination=agent_id, user_turns=state.user_turns
-        )
+        if live_session:
+            swap_guard.record(
+                source=previous_agent_id,
+                destination=agent_id,
+                user_turns=turns_now,
+                tool_seq=tools_now,
+            )
         logger.info("agent swap: call %s now running agent %s", cfg.call_id, agent_id)
         return json.dumps({"result": f"now acting as agent {agent_id}"})
 

@@ -82,6 +82,27 @@ def test_the_handoff_block_names_what_the_reconnect_erased() -> None:
     assert "handing it straight back" in block.lower()
 
 
+def test_the_handoff_block_stops_applying_once_the_handoff_turn_is_over() -> None:
+    """It is a suffix with no removal path — the next swap is what replaces it.
+
+    So the two rules that would be wrong later in the call are scoped in the
+    text itself: opening the call is barred for the first turn after the
+    handoff, and the ban on re-running a lookup covers the answers already in
+    the transcript, not a request the caller makes afterwards.
+    """
+    block = live_handoff_instructions()
+    assert "on your first turn here" in block
+    assert "later in the call" in block
+
+
+def test_the_handoff_block_leaves_self_introduction_to_the_agents_own_prompt() -> None:
+    # Suppressing the greeting is the point (Clara's specialists are the same
+    # voice and must not be caught changing), but this block is appended AFTER
+    # the destination prompt and so has the last word: an agent whose own
+    # instructions say to name itself on taking over keeps that.
+    assert "unless your instructions above tell you" in live_handoff_instructions()
+
+
 def test_the_handoff_block_carries_the_note_itself() -> None:
     # update_instructions replaces the whole prompt, so from the first swap
     # onwards this block is the only thing putting the note back — and a Live

@@ -23,7 +23,7 @@ def _percentile(samples: list[float], pct: float) -> float:
 
 @dataclass(slots=True)
 class SwapGuard:
-    """Refuses the swap that hands a subject straight back to where it came from.
+    """Refuses the swap that bounces a subject back unanswered.
 
     A specialist that cannot answer hands the call back; the agent it lands on
     reads the same unanswered request and hands it straight over again. Both
@@ -34,23 +34,47 @@ class SwapGuard:
     spent four socket rebuilds and half its length in that loop, and answered
     the caller's question from neither agent's knowledge.
 
-    The caller is the signal. A swap back to the agent that just handed off,
-    with nothing said in between, is the loop closing rather than a
-    conversation that moved on — so anything the caller says clears the guard,
-    including a request that legitimately belongs to the agent handed back to.
+    Two things clear the guard, because either one means the call moved rather
+    than bounced:
+
+    - the caller speaking. A swap back to the agent that just handed off, with
+      nothing said in between, is the loop closing rather than a conversation
+      that moved on, so anything the caller says clears it — including a
+      request that legitimately belongs to the agent handed back to.
+    - the agent working the subject before handing it back, which shows as a
+      tool call of its own between the two swaps. The round trip Clara's split
+      is built on — check-in routes a price question to pharmacy, pharmacy
+      looks it up, answers and hands back, all inside one caller turn — is that
+      shape, and refusing it would strand the caller on the specialist. The
+      loop legs have no such call: the agent bounces the subject on arrival.
+
+    What stays refused is a hand-back where the receiving agent neither heard
+    anything new nor did anything — including one that would have answered from
+    its prompt alone, which is the price of reading tool calls rather than
+    speech (an agent's spoken turn is not committed to the transcript until its
+    generation ends, and the swap runs inside that generation).
     """
 
-    # (source, destination, caller turns at the time) of the last swap made.
-    last: tuple[str, str, int] | None = None
+    # The last swap made: (source, destination, caller turns, tool_seq).
+    last: tuple[str, str, int, int] | None = None
 
-    def is_ping_pong(self, *, current: str, destination: str, user_turns: int) -> bool:
+    def is_ping_pong(
+        self, *, current: str, destination: str, user_turns: int, tool_seq: int
+    ) -> bool:
         if self.last is None:
             return False
-        source, dest, turns = self.last
-        return destination == source and current == dest and user_turns == turns
+        source, dest, turns, seq = self.last
+        return (
+            destination == source
+            and current == dest
+            and user_turns == turns
+            # Both swaps count themselves: `_run_tool` records an invocation
+            # before running the tool, so seq + 1 is "nothing ran in between".
+            and tool_seq <= seq + 1
+        )
 
-    def record(self, *, source: str, destination: str, user_turns: int) -> None:
-        self.last = (source, destination, user_turns)
+    def record(self, *, source: str, destination: str, user_turns: int, tool_seq: int) -> None:
+        self.last = (source, destination, user_turns, tool_seq)
 
 
 @dataclass(slots=True)
