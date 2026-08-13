@@ -24,6 +24,16 @@ class TestTranscript:
         s.add_message("user", "Hi")
         assert s.transcript_text() == "User: Hi"
 
+    def test_caller_turns_are_counted_for_the_swap_guard(self):
+        # Only the caller's, and only the ones that carried words: the count is
+        # what tells a hand-back the conversation moved on (see SwapGuard).
+        s = CallState()
+        s.add_message("agent", "Hi John.")
+        s.add_message("user", "Hello.")
+        s.add_message("user", "")
+        s.add_tool_result("kb_lookup", "{}", "tool_call_1")
+        assert s.user_turns == 1
+
     def test_tool_calls_excluded_from_transcript_but_kept_in_items(self):
         s = CallState()
         s.add_message("agent", "One sec.")

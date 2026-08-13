@@ -42,6 +42,34 @@ _PLACEHOLDER_NOTE = (
 )
 
 
+# What the destination agent of a swap has to be told, because the rebuilt
+# socket no longer shows it (see live_handoff_instructions). Written to be read
+# at the handoff and to stop applying after it: the block outlives the moment it
+# describes — it stays in the instructions until the next swap — so every rule
+# in it names the turn it governs rather than standing for the rest of the call.
+_HANDOFF_NOTE = (
+    "You have just been handed a call that is already in progress. The call did "
+    "NOT restart, so on your first turn here: do not greet the other person, do "
+    "not open the call, do not start over, and do not introduce yourself unless "
+    "your instructions above tell you to when you take a call over. Pick the "
+    "conversation up at their last turn.\n"
+    "Two things are missing from what you can see:\n"
+    "- The tool calls made before the handoff. The spoken turns are all there, "
+    "the calls behind them are not, so you cannot tell which lookups have "
+    "already run. Read the transcript before you speak or call anything: an "
+    "answer already in it has already been looked up and already been said, so "
+    "do not begin by repeating it or by re-running the lookup behind it. This "
+    "covers what was said before you arrived and nothing else — later in the "
+    "call, anything the other person asks for is a fresh request, and you look "
+    "it up and answer it as you normally would, even if it has come up before.\n"
+    "- The handoff itself. If the transcript reads as though the other person's "
+    "subject has just been dealt with by someone who could not finish it, that "
+    "is what happened, and it was handed to you. Handing it straight back would "
+    "hand it to the agent that gave it up. Answer it yourself, say plainly that "
+    "it cannot be answered, or move the conversation on."
+)
+
+
 def _verbatim_block(*, header: str, when: str, line: str, lead: str = "") -> str:
     """An instructions suffix pinning *line* as the model's next spoken turn."""
     return (
@@ -78,6 +106,40 @@ def live_opening_instructions(greeting: str) -> str:
         when="Your first spoken turn of this call",
         line=greeting,
     )
+
+
+def live_handoff_instructions() -> str:
+    """Brief the destination agent of a Live ``agent_swap`` on what it can see.
+
+    A swap changes the tool set, which a Live socket carries in its setup
+    message, so the connection is rebuilt (see `_settle_realtime_session`). The
+    plugin replays the chat context into the new socket with
+    ``exclude_function_call=True, exclude_handoff=True`` — the spoken turns
+    survive, every tool call and result does not. The destination agent
+    therefore arrives at a transcript with no record of the lookups behind it,
+    nor of the handoff that just put it there, and reads the moment as the
+    start of a call.
+
+    Production call call_6ed66e6ae63f4a95f6f9294e42dd641f showed all three
+    consequences in thirty seconds: the same knowledge-base query run twice and
+    the same canned answer spoken twice, a subject handed back and immediately
+    handed over again (past a prompt rule forbidding exactly that, which could
+    not fire on evidence the model no longer had), and — on the last hand-back,
+    to a caller who had just said goodbye — the check-in agent's opening
+    greeting instead of a goodbye. The caller had to say bye twice.
+
+    Unlike `live_verbatim_instructions`, this block cannot be pulled once its
+    turn is over — the next ``update_instructions`` is the next swap, calls
+    later. So it is phrased as a briefing on the turn it arrives for, not as
+    standing policy: a caller asking for the same figure ten turns on must not
+    meet a prompt that still forbids looking it up.
+
+    Also carries the placeholder note, and must: ``update_instructions``
+    replaces the whole string, so the suffix `ArhiteqAgent.__init__` put on the
+    opening instructions is gone from the first swap onwards — including the
+    note that stops the plugin's ``"."`` from reading as caller silence.
+    """
+    return live_placeholder_note() + f"\n\n## MID-CALL HANDOFF\n{_HANDOFF_NOTE}"
 
 
 def live_verbatim_instructions(line: str) -> str:

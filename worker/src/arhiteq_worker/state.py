@@ -22,6 +22,62 @@ def _percentile(samples: list[float], pct: float) -> float:
 
 
 @dataclass(slots=True)
+class SwapGuard:
+    """Refuses the swap that bounces a subject back unanswered.
+
+    A specialist that cannot answer hands the call back; the agent it lands on
+    reads the same unanswered request and hands it straight over again. Both
+    prompts forbid this, and neither can obey: a swap rebuilds the Gemini Live
+    socket, and the replayed history carries the spoken turns without the tool
+    calls, so the hand-back is invisible to the agent receiving it (see
+    `live_handoff_instructions`). Call call_6ed66e6ae63f4a95f6f9294e42dd641f
+    spent four socket rebuilds and half its length in that loop, and answered
+    the caller's question from neither agent's knowledge.
+
+    Two things clear the guard, because either one means the call moved rather
+    than bounced:
+
+    - the caller speaking. A swap back to the agent that just handed off, with
+      nothing said in between, is the loop closing rather than a conversation
+      that moved on, so anything the caller says clears it — including a
+      request that legitimately belongs to the agent handed back to.
+    - the agent working the subject before handing it back, which shows as a
+      tool call of its own between the two swaps. The round trip Clara's split
+      is built on — check-in routes a price question to pharmacy, pharmacy
+      looks it up, answers and hands back, all inside one caller turn — is that
+      shape, and refusing it would strand the caller on the specialist. The
+      loop legs have no such call: the agent bounces the subject on arrival.
+
+    What stays refused is a hand-back where the receiving agent neither heard
+    anything new nor did anything — including one that would have answered from
+    its prompt alone, which is the price of reading tool calls rather than
+    speech (an agent's spoken turn is not committed to the transcript until its
+    generation ends, and the swap runs inside that generation).
+    """
+
+    # The last swap made: (source, destination, caller turns, tool_seq).
+    last: tuple[str, str, int, int] | None = None
+
+    def is_ping_pong(
+        self, *, current: str, destination: str, user_turns: int, tool_seq: int
+    ) -> bool:
+        if self.last is None:
+            return False
+        source, dest, turns, seq = self.last
+        return (
+            destination == source
+            and current == dest
+            and user_turns == turns
+            # Both swaps count themselves: `_run_tool` records an invocation
+            # before running the tool, so seq + 1 is "nothing ran in between".
+            and tool_seq <= seq + 1
+        )
+
+    def record(self, *, source: str, destination: str, user_turns: int, tool_seq: int) -> None:
+        self.last = (source, destination, user_turns, tool_seq)
+
+
+@dataclass(slots=True)
 class CallState:
     call_id: str = ""
     answered_at_ms: int | None = None
@@ -44,6 +100,9 @@ class CallState:
     collected_dynamic_variables: dict[str, str] = field(default_factory=dict)
     # Monotone counter behind generated tool_call_id values.
     tool_seq: int = field(default=0, init=False)
+    # Caller turns committed so far. `SwapGuard` reads it to tell a hand-back
+    # the conversation has moved past from one it is about to bounce back.
+    user_turns: int = field(default=0, init=False)
     # Replay guard for issue #250, keyed by (tool name, endpoint, resolved args).
     # Successful write-tool results only, and only for this call.
     tool_replay_cache: dict[tuple[str, str, str], tuple[float, str]] = field(
@@ -107,6 +166,8 @@ class CallState:
     def add_message(self, role: str, content: str) -> None:
         if content:
             self.items.append(self._stamp({"role": role, "content": content}))
+            if role == "user":
+                self.user_turns += 1
 
     def add_tool_invocation(self, name: str, arguments: str) -> str:
         self.tool_seq += 1

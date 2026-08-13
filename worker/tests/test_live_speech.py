@@ -6,6 +6,7 @@ Data-only, so these run in the dev-only test group. The livekit half — that
 """
 
 from arhiteq_worker.live_speech import (
+    live_handoff_instructions,
     live_opening_instructions,
     live_placeholder_note,
     live_verbatim_instructions,
@@ -59,6 +60,56 @@ def test_the_mid_call_block_leaves_the_note_to_the_instructions_it_extends() -> 
     assert live_placeholder_note() not in live_verbatim_instructions("Hi.")
 
 
+def test_the_handoff_block_forbids_opening_the_call_again() -> None:
+    """The symptom the block exists for.
+
+    On the last hand-back of call call_6ed66e6ae63f4a95f6f9294e42dd641f the
+    check-in agent answered a caller who had just said goodbye with its opening
+    greeting, because a rebuilt socket and a bare prompt read as a call that
+    was only now starting.
+    """
+    block = live_handoff_instructions()
+    assert "already in progress" in block
+    assert "do not greet" in block
+
+
+def test_the_handoff_block_names_what_the_reconnect_erased() -> None:
+    # Both halves matter: the tool calls (so the destination agent does not
+    # re-run a lookup and re-speak its answer) and the handoff itself (so it
+    # does not bounce the subject back to the agent that gave it up).
+    block = live_handoff_instructions()
+    assert "tool calls made before the handoff" in block
+    assert "handing it straight back" in block.lower()
+
+
+def test_the_handoff_block_stops_applying_once_the_handoff_turn_is_over() -> None:
+    """It is a suffix with no removal path — the next swap is what replaces it.
+
+    So the two rules that would be wrong later in the call are scoped in the
+    text itself: opening the call is barred for the first turn after the
+    handoff, and the ban on re-running a lookup covers the answers already in
+    the transcript, not a request the caller makes afterwards.
+    """
+    block = live_handoff_instructions()
+    assert "on your first turn here" in block
+    assert "later in the call" in block
+
+
+def test_the_handoff_block_leaves_self_introduction_to_the_agents_own_prompt() -> None:
+    # Suppressing the greeting is the point (Clara's specialists are the same
+    # voice and must not be caught changing), but this block is appended AFTER
+    # the destination prompt and so has the last word: an agent whose own
+    # instructions say to name itself on taking over keeps that.
+    assert "unless your instructions above tell you" in live_handoff_instructions()
+
+
+def test_the_handoff_block_carries_the_note_itself() -> None:
+    # update_instructions replaces the whole prompt, so from the first swap
+    # onwards this block is the only thing putting the note back — and a Live
+    # session without it can read the plugin's "." as caller silence and hang up.
+    assert live_placeholder_note() in live_handoff_instructions()
+
+
 def test_a_block_is_appended_not_substituted() -> None:
     # Every block is a suffix: callers concatenate them onto a prompt, so the
     # leading separator is the module's job, not every call site's.
@@ -66,5 +117,6 @@ def test_a_block_is_appended_not_substituted() -> None:
         live_opening_instructions(GREETING),
         live_verbatim_instructions("Hi."),
         live_placeholder_note(),
+        live_handoff_instructions(),
     ):
         assert block.startswith("\n\n## ")
