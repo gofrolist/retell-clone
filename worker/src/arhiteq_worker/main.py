@@ -66,11 +66,12 @@ from arhiteq_worker.flow_runtime import FlowRuntime
 from arhiteq_worker.goodbye import looks_like_goodbye
 from arhiteq_worker.internal_api import InternalAPI, InternalAPIError
 from arhiteq_worker.live_speech import (
+    live_handoff_instructions,
     live_opening_instructions,
     live_placeholder_note,
     speak_verbatim,
 )
-from arhiteq_worker.state import CallState, now_ms
+from arhiteq_worker.state import CallState, SwapGuard, now_ms
 from arhiteq_worker.tools import DTMF_CODES, build_tools
 from arhiteq_worker.variables import resolve_template
 from arhiteq_worker.voices import resolve_cartesia_voice, resolve_gemini_voice
@@ -1562,6 +1563,12 @@ async def entrypoint(ctx: JobContext) -> None:
         on_user_turn=flow_wiring.on_user_item if flow_wiring is not None else None,
     )
 
+    # A Gemini Live session is the one built without a TTS (the voice is baked
+    # into the realtime model). It is the session whose fixed lines have to be
+    # pinned in the instructions rather than spoken by say(), and the only one a
+    # swap costs a reconnect.
+    live_session = session.tts is None
+
     agent = ArhiteqAgent(
         instructions=instructions,
         tools=livekit_tools,
@@ -1570,9 +1577,7 @@ async def entrypoint(ctx: JobContext) -> None:
         # it, and honours a "user" start_speaker by deferring it), so the agent
         # itself must not also open — "user" is what keeps on_enter quiet.
         start_speaker="user" if flow_wiring is not None else cfg.llm.start_speaker,
-        # A Gemini Live session is the one built without a TTS; its greeting
-        # has to be pinned in the instructions rather than spoken by say().
-        live=session.tts is None,
+        live=live_session,
         # The pre-reply walk seam; `_wire_session_events` above holds the
         # realtime fallback. Both go through `_FlowWiring`, which de-duplicates.
         on_user_turn=flow_wiring.on_user_turn if flow_wiring is not None else None,
@@ -1584,6 +1589,7 @@ async def entrypoint(ctx: JobContext) -> None:
     # own config so a hand-back to the entry agent before anything was swapped
     # is recognised as the no-op it is.
     running_agent_id = str((cfg.raw.get("agent") or {}).get("agent_id") or "")
+    swap_guard = SwapGuard()
 
     async def _do_agent_swap(agent_id: str, entry: Mapping[str, Any]) -> str:
         """agent_swap tool: re-point the live session at another agent's config.
@@ -1596,7 +1602,12 @@ async def entrypoint(ctx: JobContext) -> None:
         On a Gemini Live call the tool-set change costs a session reconnect, so
         a swap is not free and a redundant one is not harmless — see
         `_settle_realtime_session`. Swapping onto the agent already running is
-        therefore refused outright rather than paid for.
+        therefore refused outright rather than paid for, and so is a swap
+        straight back to the agent that just handed the call over (`SwapGuard`).
+
+        The destination agent is briefed on what the reconnect cost it before
+        its prompt goes in — `live_handoff_instructions` for why a bare prompt
+        left it reading a call in progress as a call just starting.
 
         The claim on `running_agent_id` is staked before the first await, not
         after the last one. livekit runs every function call of a generation as
@@ -1609,6 +1620,27 @@ async def entrypoint(ctx: JobContext) -> None:
         if agent_id and agent_id == running_agent_id:
             logger.info("agent swap: call %s already running agent %s", cfg.call_id, agent_id)
             return json.dumps({"result": f"already acting as agent {agent_id}"})
+        if swap_guard.is_ping_pong(
+            current=running_agent_id, destination=agent_id, user_turns=state.user_turns
+        ):
+            # Refused, not paid for: the reason goes back to the model as the
+            # tool's own answer, which is the one place it is certain to read.
+            logger.info(
+                "agent swap refused (ping-pong): call %s %s -> %s",
+                cfg.call_id,
+                running_agent_id,
+                agent_id,
+            )
+            return json.dumps(
+                {
+                    "error": (
+                        f"agent {agent_id} just handed this call to you and the other "
+                        "person has not spoken since, so handing it back would return "
+                        "it to the agent that gave it up. Handle the request yourself, "
+                        "say plainly that it cannot be answered, or move on."
+                    )
+                }
+            )
         previous_agent_id, running_agent_id = running_agent_id, agent_id
         try:
             swap_raw = await api_client.get_agent_config(agent_id, call_id=cfg.call_id)
@@ -1625,6 +1657,12 @@ async def entrypoint(ctx: JobContext) -> None:
         # the rest of the call (the prompt below is resolved against it).
         variables.set_default_timezone(swap_cfg.agent.timezone)
         new_instructions = resolve_template(swap_cfg.llm.general_prompt, variables)
+        if live_session:
+            # update_instructions REPLACES the string, so everything the opening
+            # instructions carried is gone from the first swap onwards. The
+            # destination agent gets the handoff briefing — and the placeholder
+            # note back — in its place.
+            new_instructions += live_handoff_instructions()
         new_tools = build_tools(
             swap_cfg.llm.general_tools,
             http=tool_http,
@@ -1659,6 +1697,9 @@ async def entrypoint(ctx: JobContext) -> None:
                     )
                 except Exception:  # voice switch is best-effort
                     logger.warning("agent_swap voice switch failed", exc_info=True)
+        swap_guard.record(
+            source=previous_agent_id, destination=agent_id, user_turns=state.user_turns
+        )
         logger.info("agent swap: call %s now running agent %s", cfg.call_id, agent_id)
         return json.dumps({"result": f"now acting as agent {agent_id}"})
 
