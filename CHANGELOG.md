@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.2](https://github.com/gofrolist/retell-clone/compare/v0.27.1...v0.27.2) (2026-08-13)
+
+
+### Bug Fixes
+
+* **worker:** record per-turn latency on realtime calls, where there was none ([#261](https://github.com/gofrolist/retell-clone/issues/261)) ([df4ebe7](https://github.com/gofrolist/retell-clone/commit/df4ebe7c3eba7c511b8c2632418a24b4fe2c5a03))
+
 ## [0.27.1](https://github.com/gofrolist/retell-clone/compare/v0.27.0...v0.27.1) (2026-08-12)
 
 
