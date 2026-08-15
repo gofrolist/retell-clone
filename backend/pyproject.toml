@@ -19,7 +19,7 @@ dependencies = [
     "prometheus-client>=0.26.0",
     "google-auth>=2.56.3,<2.57.0",
     "PyJWT>=2.8",
-    "google-cloud-storage>=3.13.0",
+    "google-cloud-storage>=3.13.1",
 ]
 
 [dependency-groups]
