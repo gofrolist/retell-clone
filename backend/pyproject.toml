@@ -32,7 +32,7 @@ dev = [
     # our lint contract (see [tool.ruff.lint]), and it expanded from ~2 rule
     # prefixes to ~38 in 0.16.0. Pinning the minor keeps that set from shifting
     # under us again without a reviewed bump.
-    "ruff>=0.16.1,<0.17.0",
+    "ruff>=0.16.2,<0.17.0",
 ]
 
 [build-system]
