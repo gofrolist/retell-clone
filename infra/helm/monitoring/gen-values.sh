@@ -70,6 +70,21 @@ for placeholder, value in subs.items():
 open(dst, "w").write(text)
 PY
 chmod 600 "$OUT"
+
+# GKE runs the control plane and kube-dns itself, so these four are never
+# scrapable here. Leaving them on does more than add dead targets: the chart
+# ships each component's alert rules alongside its ServiceMonitor, and
+# KubeSchedulerDown/KubeControllerManagerDown/KubeProxyDown all fire the moment
+# the component is expected but absent. An editing accident that drops these
+# lines pages you at 3am about a control plane Google is running fine, so
+# assert them rather than trusting the file.
+for component in kubeControllerManager kubeScheduler kubeProxy kubeEtcd coreDns; do
+  grep -A1 "^$component:" "$OUT" | grep -q "enabled: false" || {
+    echo "ERROR: $component is not disabled in $OUT — see infra/README.md § 3" >&2
+    exit 1
+  }
+done
+
 echo "wrote $OUT"
 
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null 2>&1 || true
