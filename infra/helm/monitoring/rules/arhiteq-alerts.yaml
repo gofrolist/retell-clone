@@ -80,7 +80,7 @@ spec:
           expr: |
             sum(rate(arhiteq_webhook_deliveries_total{outcome="failed"}[15m]))
               /
-            clamp_min(sum(rate(arhiteq_webhook_deliveries_total[15m])), 0.001)
+            clamp_min(sum(rate(arhiteq_webhook_deliveries_total{outcome=~"delivered|failed"}[15m])), 0.001)
               > 0.1
           for: 15m
           labels:
@@ -90,6 +90,10 @@ spec:
             description: >-
               `failed` is post-retry, so these events reached nobody. The
               consumer's backend has no record of these calls.
+              The denominator counts only the terminal outcomes: one event
+              emits `webhook_max_attempts` (3) `retry` samples on its way to a
+              single `failed`, so dividing by every outcome would put a real
+              10% failure rate at 0.077 and never fire.
 
         - alert: ArhiteqWebhookURLBlocked
           expr: |
@@ -181,6 +185,8 @@ spec:
         - alert: ArhiteqWorkersSaturated
           expr: |
             avg(arhiteq_worker_active_jobs) > 8
+              and
+            sum(rate(arhiteq_worker_jobs_total[15m])) > 0
           for: 15m
           labels:
             severity: warning
@@ -190,6 +196,15 @@ spec:
               At or past the per-pod concurrency the worker HPA targets
               (`worker.hpa.customMetric.targetAverageValue`). If replicas are
               not climbing, the HPA is capped or scaling is stuck.
+              Treat the number as a floor, not a reading: a job process killed
+              outright (OOM, SIGKILL past livekit's shutdown deadline) never
+              runs its decrement and leaks +1 for the rest of the pod's life
+              (`worker/src/arhiteq_worker/metrics.py`). The `jobs_total` clause
+              is what keeps accumulated drift from pinning this alert on an
+              idle worker; on a busy one, compare against the calls list before
+              concluding the pool is genuinely full. Same caveat applies if
+              `worker.hpa.customMetric.enabled` is ever turned on — drift there
+              scales replicas that no traffic needs.
 
     - name: livekit.rules
       rules:
@@ -209,8 +224,44 @@ spec:
           annotations:
             summary: "livekit-sip is reporting itself unavailable"
             description: >-
-              No SIP leg can be set up: inbound calls will not connect and
-              outbound dials will fail.
+              No SIP leg can be set up: new inbound calls will not connect and
+              outbound dials will fail. Two different causes share this one
+              gauge — upstream derives it from `Monitor.Health()`, which is
+              non-OK for `HealthNotStarted`/`HealthStopped` (the process is
+              broken) *and* for `HealthUnderLoad` (CPU idle fell below
+              `1 - max_cpu_utilization`, so the bridge is shedding new INVITEs
+              on purpose). Check the pod's CPU first: under load the fix is
+              capacity — replicas or the voice pool — not the trunk. Calls
+              already up are unaffected in the load case.
+
+        # The `to`-keep relabeling in the SIP chart's ServiceMonitor drops every
+        # series whose `to` is not one of our own hosts. If that allowlist ever
+        # stops matching what the trunk actually sends, the inbound series do
+        # not go to zero — they cease to exist, which no threshold alert can
+        # see. `invite_requests_raw` carries no `to` and so survives the filter
+        # unconditionally: traffic there with nothing on the far side means the
+        # filter is eating everything.
+        - alert: LiveKitSIPInboundSeriesMissing
+          expr: |
+            sum(rate(livekit_sip_invite_requests_raw[1h])) > 0
+              and
+            absent(livekit_sip_invite_accepted)
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "SIP INVITEs are arriving but every per-host series is filtered out"
+            description: >-
+              Reconcile `serviceMonitor.knownSipHosts` in
+              `infra/helm/livekit/sip` against the live `to` values:
+              `kubectl port-forward -n livekit <sip-pod> 9889:9889` then `curl -s
+              localhost:9889/metrics | grep livekit_sip_invite_accepted`.
+              Until it matches, inbound call volume is invisible: no
+              `livekit_sip_calls_active{dir="in"}` or
+              `calls_terminated{dir="in"}` exists to dashboard or alert on.
+              This catches a total mismatch, not a partial one — once any
+              allowed host has been seen, the series exists for the rest of
+              that pod's life and `absent()` stops being true.
 
         - alert: LiveKitOutboundSIPFailing
           expr: |

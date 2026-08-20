@@ -33,11 +33,28 @@ prometheusPort: 9889
 serviceMonitor:
   create: true
   interval: 30s
-  # Regex alternation of the `to` label values worth storing: our inbound
-  # host and the outbound trunk. Series with any other `to` are dropped at
-  # ingest as scanner noise — so if a trunk ever presents a different host,
-  # add it here or its metrics quietly stop existing.
-  knownSipHosts: sip\.arhiteq\.com|sip\.telnyx\.com
+  # The `to` label values worth storing, as literal hosts (the template quotes
+  # each one for the regex, so `.` is a dot here, not a wildcard). Series with
+  # any other `to` are dropped at ingest as scanner noise.
+  #
+  # `to` is the *host* from the INVITE's To-header, so it is whatever the far
+  # side dialled — an IP as often as a name. Measured on prod 2026-08-20, the
+  # live values were the LoadBalancer IP and the voice nodes' external IPs;
+  # the `sip.<domain>` FQDN never appeared, because Telnyx resolves it before
+  # it sends. So `service.loadBalancerIP` is appended to this list
+  # automatically (see templates/servicemonitor.yaml) and does not need
+  # repeating here; list only the extra hosts.
+  #
+  # The node external IPs are deliberately absent: those series are SIP
+  # scanners reaching hostNetwork:5060 directly, which is exactly what this
+  # filter is for. Real trunk traffic arrives via the LoadBalancer.
+  #
+  # Get this wrong and the metrics do not go to zero, they cease to exist —
+  # `LiveKitSIPInboundSeriesMissing` is the backstop for that. To re-measure:
+  #   kubectl port-forward -n livekit <sip-pod> 9889:9889
+  #   curl -s localhost:9889/metrics | grep -oE 'to="[^"]*"' | sort -u
+  knownSipHosts:
+    - sip.telnyx.com # outbound trunk address (`dir="out"` series)
 
 # RTP media flows directly to node IPs (matches the terraform firewall rule
 # on the voice pool), so the pod runs with hostNetwork. Signalling (UDP

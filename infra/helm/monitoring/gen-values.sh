@@ -53,15 +53,37 @@ kubectl -n monitoring create configmap arhiteq-dashboards \
 # Never clobber hand edits silently: keep the previous file for diffing.
 [ -f "$OUT" ] && cp -p "$OUT" "$OUT.bak"
 
-# `|` as the delimiter and no regex metacharacters in the replacements: the
-# Grafana password is operator-chosen, and a `/` in it would end the s command.
+# Python, not sed: both values are operator-chosen and a `/` in the Grafana
+# password would end the s command. The two placeholders are *not* substituted
+# the same way, because they sit in differently-typed YAML slots:
+#
+#   - the password becomes a quoted scalar. Spliced in bare, one containing
+#     `: ` or a trailing ` #` yields a different value than the operator set,
+#     and one starting with `*`, `&`, `{`, `[`, `!`, `%` or a quote fails the
+#     parse outright — either way they cannot log into Grafana.
+#   - the chat id must stay *unquoted*: Alertmanager's `chat_id` is an int64,
+#     and a quoted YAML string does not unmarshal into it. So it is validated
+#     as an integer rather than escaped — the only safe way to leave it bare.
 python3 - "$HERE/values.yaml" "$OUT" <<'PY'
-import os, sys
+import json, os, sys
+
 src, dst = sys.argv[1], sys.argv[2]
 text = open(src).read()
+
+chat_id = os.environ["TELEGRAM_CHAT_ID"].strip()
+try:
+    int(chat_id)
+except ValueError:
+    raise SystemExit(
+        f"TELEGRAM_CHAT_ID must be an integer (negative for groups/channels), got {chat_id!r}"
+    ) from None
+
 subs = {
-    "CHANGE_ME_GRAFANA_ADMIN": os.environ["GRAFANA_ADMIN_PASSWORD"],
-    "TELEGRAM_CHAT_ID": os.environ["TELEGRAM_CHAT_ID"],
+    # A YAML double-quoted scalar is JSON-string-compatible, so json.dumps is
+    # the right escaper here: it covers the quotes, backslashes and control
+    # characters that would otherwise alter the value or break the parse.
+    "CHANGE_ME_GRAFANA_ADMIN": json.dumps(os.environ["GRAFANA_ADMIN_PASSWORD"]),
+    "TELEGRAM_CHAT_ID": chat_id,
 }
 for placeholder, value in subs.items():
     if placeholder not in text:
@@ -87,7 +109,15 @@ done
 
 echo "wrote $OUT"
 
+# `repo add` on a machine that already has the repo prints "already exists ...
+# skipping" and exits 0 *without* refreshing the cached index, so `repo update`
+# is not optional here: without it the first CHART_VERSION bump past whatever
+# is cached dies at `helm upgrade` with "chart ... not found in
+# prometheus-community index" — and by then this script has already applied the
+# Secret, the ConfigMap and the rendered values.
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null 2>&1 || true
+helm repo update prometheus-community >/dev/null
+
 helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
   --version "$CHART_VERSION" -n monitoring -f "$OUT"
 

@@ -1,11 +1,16 @@
 {{- if .Values.serviceMonitor.create }}
 # Separate from the signalling Service on purpose: that one is a public
 # LoadBalancer, and a metrics port added to it would be a metrics port on the
-# internet. This is ClusterIP, so Prometheus can reach 9889 and nobody else can.
+# internet. This one is headless ClusterIP, so it publishes no route of its own.
 #
-# The pods run with hostNetwork, so these endpoints resolve to node IPs. That
-# is fine — kube-proxy is not in the path; Prometheus dials the endpoint
-# address directly.
+# What it does NOT do is close port 9889. The pods run with hostNetwork
+# (deployment.yaml), so the SIP process binds 9889 on every voice node's
+# interfaces no matter what kind this Service is — the Service only tells
+# Prometheus which endpoints to dial, and being headless means it dials the
+# node addresses directly with kube-proxy out of the path. 9889 stays off the
+# internet because the voice-pool firewall opens only the SIP and media ports
+# (`infra/terraform/network.tf`) and GCP default-denies the rest. Any future
+# port here needs its own answer to that question; "it's ClusterIP" is not one.
 apiVersion: v1
 kind: Service
 metadata:

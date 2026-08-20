@@ -348,5 +348,9 @@ screenshots/  Retell dashboard reference for the UI clone
   creates no Service. `livekit_sip_*` is where trunk problems surface first.
 - kube-prometheus-stack installed via Helm; ServiceMonitors per service;
   Grafana dashboards in `infra/helm/monitoring/dashboards/`, alert rules in
-  `infra/helm/monitoring/rules/`. Alertmanager runs with no receiver — alerts
-  are visible in Grafana and go nowhere else.
+  `infra/helm/monitoring/rules/`. Alertmanager delivers to Telegram — bot
+  token from the `alertmanager-telegram` Secret, chat id and message template
+  rendered by `infra/helm/monitoring/gen-values.sh` from `prod.env`. Grouped
+  by `alertname`/`namespace`/`severity`, with `critical` on a faster route,
+  and capped at 8 alerts per message so a large group stays inside Telegram's
+  4096-character limit.

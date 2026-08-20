@@ -169,12 +169,22 @@ helm install livekit-sip infra/helm/livekit/sip \
   -n livekit -f infra/helm/livekit/livekit-sip-values.yaml
 ```
 
-Both charts gate their ServiceMonitor on a metrics port being configured, not
-on `serviceMonitor.create` alone — `livekit.prometheus_port` for the server
-chart, `prometheusPort` for the in-repo SIP chart. Set `create: true` without
-the port and the chart renders nothing, silently; that is how LiveKit went
-unscraped from the first install until 2026-08-20. Confirm with
-`kubectl get servicemonitor,podmonitor -n livekit` after installing.
+The upstream server chart gates its ServiceMonitor on `livekit.prometheus_port`
+being set, not on `serviceMonitor.create` alone: set `create: true` without the
+port and it renders nothing, silently — that is how LiveKit went unscraped from
+the first install until 2026-08-20. The in-repo SIP chart gates on
+`serviceMonitor.create` alone and fails loudly instead (an unset
+`prometheusPort` renders an empty `port:`, which the apply rejects). Confirm
+with `kubectl get servicemonitor,podmonitor -n livekit` after installing.
+
+The SIP chart also drops any `livekit_sip_*` series whose `to` label is not one
+of our own endpoints — SIP scanners hit 5060 with arbitrary values and an
+unbounded label is how a Prometheus falls over. `service.loadBalancerIP` is
+allowlisted automatically; anything else goes in `serviceMonitor.knownSipHosts`.
+Note `to` is a *host as dialled*, which in practice is an IP, not the
+`sip.<domain>` FQDN — Telnyx resolves that before it sends. Getting the list
+wrong makes inbound series cease to exist rather than read zero, so
+`LiveKitSIPInboundSeriesMissing` watches for exactly that.
 
 ## 5. SIP trunks + dispatch rule (lk CLI)
 
