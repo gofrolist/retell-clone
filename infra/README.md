@@ -81,10 +81,30 @@ kubectl -n monitoring create configmap arhiteq-dashboards \
 helm install monitoring prometheus-community/kube-prometheus-stack \
   -n monitoring -f infra/helm/monitoring/values.yaml \
   --set-string grafana.adminPassword='<STRONG_PASSWORD>'
+
+# Alert rules, and the egress PodMonitor (the egress chart ships neither a
+# Service nor a ServiceMonitor template, so there is nothing to attach one to).
+kubectl apply -f infra/helm/monitoring/rules/arhiteq-alerts.yaml
+kubectl apply -f infra/helm/monitoring/extra/livekit-egress-podmonitor.yaml
 ```
 
 Grafana: `kubectl -n monitoring port-forward svc/monitoring-grafana 3001:80`
 → http://localhost:3001 (dashboards land in the "Arhiteq" folder).
+
+Alerts fire into the bundled Alertmanager, which has no receiver configured —
+they are visible in Grafana and at
+`kubectl -n monitoring port-forward svc/monitoring-alertmanager 9093:9093`, and
+nowhere else. Point `alertmanager.config.receivers` at Slack/PagerDuty when
+there is somewhere to send them.
+
+Checking what is actually scraped:
+
+```bash
+kubectl -n monitoring port-forward svc/monitoring-prometheus 9090:9090
+# http://localhost:9090/targets — every arhiteq-*, livekit-*, egress and
+# livekit-sip job should be up. A job missing entirely means its
+# ServiceMonitor did not render; see the livekit note in section 4.
+```
 
 ## 4. LiveKit server + SIP
 
@@ -104,6 +124,13 @@ helm install livekit-server livekit/livekit-server \
 helm install livekit-sip infra/helm/livekit/sip \
   -n livekit -f infra/helm/livekit/livekit-sip-values.yaml
 ```
+
+Both charts gate their ServiceMonitor on a metrics port being configured, not
+on `serviceMonitor.create` alone — `livekit.prometheus_port` for the server
+chart, `prometheusPort` for the in-repo SIP chart. Set `create: true` without
+the port and the chart renders nothing, silently; that is how LiveKit went
+unscraped from the first install until 2026-08-20. Confirm with
+`kubectl get servicemonitor,podmonitor -n livekit` after installing.
 
 ## 5. SIP trunks + dispatch rule (lk CLI)
 

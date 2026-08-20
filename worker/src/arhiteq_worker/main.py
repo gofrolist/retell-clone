@@ -1428,10 +1428,16 @@ async def entrypoint(ctx: JobContext) -> None:
         except InternalAPIError as exc:
             logger.error("finalize failed: %s", exc)
         finally:
+            metrics.ACTIVE_JOBS.dec()
             await api_client.aclose()
             await lkapi.aclose()
 
     ctx.add_shutdown_callback(_finalize)
+    # Paired with the `dec()` above, and incremented only once the callback is
+    # registered so the two cannot get out of step. Not next to JOBS_TOTAL
+    # below: that runs after the config load, which can raise, and a job that
+    # dies there still ends up in `_finalize`.
+    metrics.ACTIVE_JOBS.inc()
 
     try:
         cfg_raw, participant = await _load_call_config(ctx, api_client, state)

@@ -334,11 +334,19 @@ screenshots/  Retell dashboard reference for the UI clone
   `arhiteq_tool_calls_total{tool,outcome}`,
   `arhiteq_llm_ttfb_seconds` / `arhiteq_tts_ttfb_seconds` (latency SLO:
   p95 agent response — acceptance criterion from the migration spec §8),
-  `arhiteq_amd_detections_total{result}`.
+  `arhiteq_amd_detections_total{result}`,
+  `arhiteq_worker_active_jobs` (concurrency; also the worker HPA's custom
+  metric).
 - The worker's series are recorded in per-call job subprocesses, so its
   `/metrics` runs in prometheus_client multiprocess mode and is served by
   livekit (`prometheus_port` / `prometheus_multiproc_dir`); a worker series is
   absent until a call writes it, and supervisor-side series (`lk_agents_*`,
   `process_*`) are not exported. See `worker/README.md` § Metrics.
+- LiveKit is scraped too: `livekit-server` and `livekit-sip` via
+  ServiceMonitors their charts render (each gated on a metrics port being set
+  — see `infra/README.md` § 4), `egress` via a PodMonitor, because that chart
+  creates no Service. `livekit_sip_*` is where trunk problems surface first.
 - kube-prometheus-stack installed via Helm; ServiceMonitors per service;
-  Grafana dashboards in `infra/helm/monitoring/dashboards/`.
+  Grafana dashboards in `infra/helm/monitoring/dashboards/`, alert rules in
+  `infra/helm/monitoring/rules/`. Alertmanager runs with no receiver — alerts
+  are visible in Grafana and go nowhere else.

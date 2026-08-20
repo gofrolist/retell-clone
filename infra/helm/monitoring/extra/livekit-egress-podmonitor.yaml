@@ -1,0 +1,22 @@
+# The official egress chart exports metrics (`egress.prometheus_port` in
+# egress-values.yaml) but ships neither a Service nor a ServiceMonitor
+# template, so there is nothing to hang a ServiceMonitor off. A PodMonitor
+# scrapes the pods directly and needs no chart change.
+#
+#   kubectl apply -f infra/helm/monitoring/extra/livekit-egress-podmonitor.yaml
+#
+# Re-apply after `helm upgrade egress` only if the chart's pod labels change.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: livekit-egress
+  namespace: livekit
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: egress
+      app.kubernetes.io/instance: egress
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s

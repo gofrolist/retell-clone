@@ -56,6 +56,7 @@ Documented in `main.py`; summary:
 ## Metrics (`:9090/metrics`)
 
 - `arhiteq_worker_jobs_total{direction}`
+- `arhiteq_worker_active_jobs` — concurrency, `multiprocess_mode="livesum"`
 - `arhiteq_tool_calls_total{tool,outcome}`
 - `arhiteq_llm_ttfb_seconds`, `arhiteq_tts_ttfb_seconds`
 - `arhiteq_amd_detections_total{result}`
@@ -68,6 +69,12 @@ handler aggregates the per-process files. Three things follow:
 
 - A series is absent until some job writes it — there are no zero-valued
   series at startup, so alerts must treat "missing" as "none yet".
+- `arhiteq_worker_active_jobs` is incremented and decremented in the job
+  process (a supervisor-side gauge would not be exported, per the third point
+  below). A job killed outright — OOM, SIGKILL — never runs its decrement and
+  leaves +1 behind until the pod restarts: prometheus_client keeps the file and
+  livekit never calls `mark_process_dead`. Normal endings, errors included, go
+  through `entrypoint`'s shutdown callback and decrement correctly.
 - `PROMETHEUS_MULTIPROC_DIR` must be pod-local and ephemeral. livekit wipes it
   at worker start; pointing it at a shared or persistent volume would
   resurrect counts from an earlier run.

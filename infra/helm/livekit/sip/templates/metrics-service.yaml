@@ -1,0 +1,28 @@
+{{- if .Values.serviceMonitor.create }}
+# Separate from the signalling Service on purpose: that one is a public
+# LoadBalancer, and a metrics port added to it would be a metrics port on the
+# internet. This is ClusterIP, so Prometheus can reach 9889 and nobody else can.
+#
+# The pods run with hostNetwork, so these endpoints resolve to node IPs. That
+# is fine — kube-proxy is not in the path; Prometheus dials the endpoint
+# address directly.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-metrics
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: metrics
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: {{ .Values.prometheusPort }}
+      targetPort: {{ .Values.prometheusPort }}
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}

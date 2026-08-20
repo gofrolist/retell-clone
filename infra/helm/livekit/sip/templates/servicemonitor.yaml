@@ -1,0 +1,44 @@
+{{- if .Values.serviceMonitor.create }}
+# livekit-sip is where a bad trunk shows up first — `livekit_sip_invite_*`,
+# `livekit_sip_calls_active`, `livekit_sip_packets_rtp`. It has always exported
+# them; nothing scraped them until this existed.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: metrics
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      metricRelabelings:
+        # `to` is whatever the INVITE asked for, and 5060 is open to the
+        # internet — SIP scanners had already contributed 50k+ requests across
+        # a handful of spoofed `to` values before anything scraped this, and
+        # nothing stops the next one from using a fresh value every packet.
+        # An unbounded label is how a Prometheus falls over, so keep only the
+        # series whose `to` names one of our own hosts, plus every series that
+        # has no `to` at all (the empty alternative below).
+        #
+        # Dropping, not rewriting: folding the unknown values into a shared
+        # `to="other"` would give one pod several series with byte-identical
+        # label sets in a single scrape, and Prometheus rejects the whole
+        # scrape as duplicate samples. Scanner volume is still visible in
+        # `livekit_sip_invite_requests_raw`, which carries no `to`.
+        - sourceLabels: [to]
+          regex: {{ .Values.serviceMonitor.knownSipHosts }}|
+          action: keep
+        # Regenerated on every SIP process start, so each restart would orphan
+        # one series and mint another. `pod` and `instance` already say which
+        # replica a sample came from.
+        - regex: node_id
+          action: labeldrop
+{{- end }}

@@ -127,3 +127,9 @@ kubeProxy:
   enabled: false
 kubeEtcd:
   enabled: false
+# GKE runs kube-dns, not CoreDNS. The chart's CoreDNS ServiceMonitor still
+# matches kube-dns's Service labels, so it discovers the pods and then fails
+# on :9153, which kube-dns does not serve — two permanently-down targets that
+# make "any target down?" useless as a health question.
+coreDns:
+  enabled: false

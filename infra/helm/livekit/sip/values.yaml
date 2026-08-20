@@ -28,6 +28,17 @@ config:
 healthPort: 8189
 prometheusPort: 9889
 
+# Scrape `prometheusPort` via a ClusterIP-only metrics Service (the signalling
+# Service below is a public LoadBalancer and must not carry it).
+serviceMonitor:
+  create: true
+  interval: 30s
+  # Regex alternation of the `to` label values worth storing: our inbound
+  # host and the outbound trunk. Series with any other `to` are dropped at
+  # ingest as scanner noise — so if a trunk ever presents a different host,
+  # add it here or its metrics quietly stop existing.
+  knownSipHosts: sip\.arhiteq\.com|sip\.telnyx\.com
+
 # RTP media flows directly to node IPs (matches the terraform firewall rule
 # on the voice pool), so the pod runs with hostNetwork. Signalling (UDP
 # 5060) additionally comes in via the LoadBalancer Service below.
