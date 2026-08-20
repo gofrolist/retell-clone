@@ -1,12 +1,4 @@
 {
-  "__inputs": [
-    {
-      "name": "DS_PROMETHEUS",
-      "label": "Prometheus",
-      "type": "datasource",
-      "pluginId": "prometheus"
-    }
-  ],
   "title": "Arhiteq — Calls",
   "uid": "arhiteq-calls",
   "schemaVersion": 39,
@@ -21,7 +13,7 @@
       "id": 1,
       "type": "timeseries",
       "title": "Call rate by direction / status",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "fieldConfig": { "defaults": { "unit": "cps" }, "overrides": [] },
       "targets": [
@@ -36,7 +28,7 @@
       "id": 2,
       "type": "stat",
       "title": "Concurrent calls",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
       "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
       "targets": [
@@ -51,7 +43,7 @@
       "id": 3,
       "type": "timeseries",
       "title": "Call duration (p50 / p95 / p99)",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
       "targets": [
@@ -76,7 +68,7 @@
       "id": 4,
       "type": "timeseries",
       "title": "Webhook deliveries by event / outcome",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "fieldConfig": { "defaults": { "unit": "cps" }, "overrides": [] },
       "targets": [
@@ -91,7 +83,7 @@
       "id": 5,
       "type": "timeseries",
       "title": "Tool calls by tool / outcome",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
       "fieldConfig": { "defaults": { "unit": "cps" }, "overrides": [] },
       "targets": [
@@ -106,7 +98,7 @@
       "id": 6,
       "type": "timeseries",
       "title": "Webhook failure ratio",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
       "fieldConfig": { "defaults": { "unit": "percentunit", "max": 1, "min": 0 }, "overrides": [] },
       "targets": [

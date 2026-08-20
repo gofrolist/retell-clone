@@ -16,7 +16,7 @@ variable "cluster_name" {
 }
 
 variable "domain" {
-  description = "Base domain for the platform (e.g. arhiteq.example.com). Records created: api.<domain>, app.<domain>, livekit.<domain>, sip.<domain>."
+  description = "Base domain for the platform (e.g. arhiteq.example.com). Records created: api.<domain>, dashboard.<domain>, livekit.<domain>, grafana.<domain>, sip.<domain>."
   type        = string
 }
 

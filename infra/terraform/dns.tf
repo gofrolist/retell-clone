@@ -3,6 +3,12 @@
 #   livekit_ip — global, for the LiveKit signalling GCE Ingress + managed cert
 #                (the chart's loadBalancer.type gke-managed-cert renders an
 #                Ingress, and global HTTP(S) LBs only bind global addresses)
+#   grafana_ip — global, for the Grafana GCE Ingress in ns `monitoring`. Its
+#                own address because two GCE Ingresses cannot share one: each
+#                renders its own forwarding rule, and the second fails to bind
+#                an address the first already holds. Grafana lives in another
+#                namespace than the arhiteq Ingress, and GCE Ingress backends
+#                are namespace-local, so it cannot be a rule on that one.
 #   sip_ip     — regional, for the livekit-sip UDP LoadBalancer Service
 
 resource "google_compute_global_address" "web" {
@@ -13,6 +19,12 @@ resource "google_compute_global_address" "web" {
 
 resource "google_compute_global_address" "livekit" {
   name = "${var.cluster_name}-livekit-ip"
+
+  depends_on = [google_project_service.services]
+}
+
+resource "google_compute_global_address" "grafana" {
+  name = "${var.cluster_name}-grafana-ip"
 
   depends_on = [google_project_service.services]
 }
@@ -42,6 +54,7 @@ locals {
     api       = google_compute_global_address.web.address
     dashboard = google_compute_global_address.web.address
     livekit   = google_compute_global_address.livekit.address
+    grafana   = google_compute_global_address.grafana.address
     sip       = google_compute_address.sip.address
   }
 }

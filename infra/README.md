@@ -76,22 +76,91 @@ infra/helm/monitoring/gen-values.sh
 That is the whole install, and it is re-runnable. It reads
 `infra/private/prod.env`, applies the Alertmanager bot-token Secret and the
 dashboards ConfigMap, renders `infra/private/monitoring-values.yaml` from
-`infra/helm/monitoring/values.yaml` (filling `CHANGE_ME_GRAFANA_ADMIN` and
-`TELEGRAM_CHAT_ID`), `helm upgrade --install`s the pinned chart version, then
-applies the alert rules and the egress PodMonitor. Keys it needs in
+`infra/helm/monitoring/values.yaml` (filling the `CHANGE_ME_*` placeholders
+and `TELEGRAM_CHAT_ID`), `helm upgrade --install`s the pinned chart version,
+then applies the alert rules and the egress PodMonitor. Keys it needs in
 `prod.env`:
 
 | key | what |
 | --- | --- |
-| `GRAFANA_ADMIN_PASSWORD` | Grafana `admin` login |
+| `GRAFANA_ADMIN_PASSWORD` | owns the provisioned dashboards; no longer logs in (see § Grafana access) |
+| `GRAFANA_HOST` | public hostname, `grafana.<domain>` |
+| `GRAFANA_OAUTH_CLIENT_ID` | Google OAuth web client — see § Grafana access |
+| `GRAFANA_OAUTH_CLIENT_SECRET` | same client's secret; never enters a values file |
+| `GRAFANA_ALLOWED_EMAILS` | space/comma separated; exactly who may sign in |
 | `TELEGRAM_BOT_TOKEN` | from @BotFather; never enters a values file |
 | `TELEGRAM_CHAT_ID` | negative for groups/channels, positive for a DM |
 
 Nothing about monitoring is deployed by CI — `deploy.yml` only upgrades the
 `arhiteq` release. This script is how the monitoring stack changes.
 
-Grafana: `kubectl -n monitoring port-forward svc/monitoring-grafana 3001:80`
-→ http://localhost:3001 (dashboards land in the "Arhiteq" folder).
+### Grafana access
+
+Grafana is published at `https://grafana.<domain>` behind Google sign-in. It
+has its own GCE Ingress, static IP (`<cluster>-grafana-ip`) and
+ManagedCertificate rather than a rule on the arhiteq Ingress: GCE Ingress
+backends are namespace-local and Grafana lives in `monitoring`, and two GCE
+Ingresses cannot share one address. That is a second HTTPS load balancer's
+worth of cost.
+
+Google is the *only* way in: `disable_login_form = true` takes the
+username/password form off the login page, and `[auth.basic] enabled = false`
+closes the half that hiding the form leaves open — with basic auth on,
+`curl -u admin:<password> https://grafana.<domain>/api/...` keeps working from
+the internet however the login page looks. The admin password stays configured
+because the provisioned dashboards are owned by that user, but nothing accepts
+it any more.
+
+That leaves no password to fall back on if Google is what breaks — an expired
+client, a revoked secret, a bad allowlist edit. Recovery is to put one of the
+two switches back in `values.yaml` and re-run `gen-values.sh`, so it needs
+cluster access rather than a password:
+
+```yaml
+    auth:
+      disable_login_form: false
+```
+
+Who gets in is `GRAFANA_ALLOWED_EMAILS`, rendered into a JMESPath
+`role_attribute_path` that maps a listed address to `Admin` and everything
+else to no role at all; `role_attribute_strict = true` turns "no role" into a
+refused login. The usual `allowed_domains`/`hosted_domain` filter is not used
+on purpose — it is only meaningful for a Workspace domain, and against
+`@gmail.com` it would admit every Google account there is.
+
+One-time setup of the OAuth client (console only — gcloud cannot create a
+plain web client):
+
+1. APIs & Services → Credentials → Create credentials → OAuth client ID →
+   Web application.
+2. Authorized JavaScript origin: `https://grafana.<domain>`.
+   Authorized redirect URI: `https://grafana.<domain>/login/google` — Grafana
+   builds it from `root_url`, and a mismatch is a `redirect_uri_mismatch`
+   error at login.
+3. If the consent screen is External and still in Testing, add every address
+   in `GRAFANA_ALLOWED_EMAILS` as a test user or Google blocks them before
+   Grafana ever sees the login.
+4. Put the id and secret in `prod.env`, then re-run `gen-values.sh`.
+
+The managed certificate needs `grafana.<domain>` already resolving to the
+static IP, and takes 15–60 minutes to go Active on first provision:
+
+```bash
+kubectl -n monitoring get managedcertificate grafana-cert \
+  -o jsonpath='{.status.certificateStatus}{"\n"}'
+```
+
+The port-forward still reaches Grafana while the certificate provisions, but
+it lands on the same Google-only login page — and Google will refuse to
+redirect back to `localhost:3001`, since the OAuth client only authorizes
+`https://grafana.<domain>/login/google`. It is useful for `/api/health` and
+for reading logs, not for signing in.
+
+```bash
+kubectl -n monitoring port-forward svc/monitoring-grafana 3001:80
+```
+
+Dashboards land in the "Arhiteq" folder.
 
 ### Alerting
 
