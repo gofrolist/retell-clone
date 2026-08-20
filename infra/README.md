@@ -70,32 +70,76 @@ gcloud container clusters get-credentials arhiteq \
 Install monitoring first so the LiveKit/Arhiteq ServiceMonitor CRDs exist.
 
 ```bash
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-helm repo update
-
-kubectl create namespace monitoring
-kubectl -n monitoring create configmap arhiteq-dashboards \
-  --from-file=infra/helm/monitoring/dashboards/ \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-helm install monitoring prometheus-community/kube-prometheus-stack \
-  -n monitoring -f infra/helm/monitoring/values.yaml \
-  --set-string grafana.adminPassword='<STRONG_PASSWORD>'
-
-# Alert rules, and the egress PodMonitor (the egress chart ships neither a
-# Service nor a ServiceMonitor template, so there is nothing to attach one to).
-kubectl apply -f infra/helm/monitoring/rules/arhiteq-alerts.yaml
-kubectl apply -f infra/helm/monitoring/extra/livekit-egress-podmonitor.yaml
+infra/helm/monitoring/gen-values.sh
 ```
+
+That is the whole install, and it is re-runnable. It reads
+`infra/private/prod.env`, applies the Alertmanager bot-token Secret and the
+dashboards ConfigMap, renders `infra/private/monitoring-values.yaml` from
+`infra/helm/monitoring/values.yaml` (filling `CHANGE_ME_GRAFANA_ADMIN` and
+`TELEGRAM_CHAT_ID`), `helm upgrade --install`s the pinned chart version, then
+applies the alert rules and the egress PodMonitor. Keys it needs in
+`prod.env`:
+
+| key | what |
+| --- | --- |
+| `GRAFANA_ADMIN_PASSWORD` | Grafana `admin` login |
+| `TELEGRAM_BOT_TOKEN` | from @BotFather; never enters a values file |
+| `TELEGRAM_CHAT_ID` | negative for groups/channels, positive for a DM |
+
+Nothing about monitoring is deployed by CI — `deploy.yml` only upgrades the
+`arhiteq` release. This script is how the monitoring stack changes.
 
 Grafana: `kubectl -n monitoring port-forward svc/monitoring-grafana 3001:80`
 → http://localhost:3001 (dashboards land in the "Arhiteq" folder).
 
-Alerts fire into the bundled Alertmanager, which has no receiver configured —
-they are visible in Grafana and at
-`kubectl -n monitoring port-forward svc/monitoring-alertmanager 9093:9093`, and
-nowhere else. Point `alertmanager.config.receivers` at Slack/PagerDuty when
-there is somewhere to send them.
+### Alerting
+
+Alert rules live in `infra/helm/monitoring/rules/`; Alertmanager delivers them
+to Telegram. Two severities, one destination, different urgency: `critical`
+groups after 10s and repeats hourly, everything else groups after 30s and
+repeats every 12h. A critical alert inhibits the warnings sharing its name and
+namespace, so one broken thing sends one message.
+
+The `Watchdog` alert — the chart's always-firing heartbeat — is routed to the
+null receiver. It is there to prove the pipeline works to an *external*
+watcher; sending it to the same Telegram chat would prove nothing and notify
+forever.
+
+Setting up the bot:
+
+```bash
+# 1. Create the bot: message @BotFather, /newbot, keep the token.
+# 2. Send the bot any message (or add it to a group and post there) so a
+#    chat exists — a bot cannot open a conversation itself.
+# 3. Find the chat id:
+source infra/private/prod.env
+curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getUpdates" \
+  | jq '.result[].message.chat | {id, type, title, username}'
+# 4. Put both in infra/private/prod.env, then re-run gen-values.sh.
+```
+
+`getUpdates` only returns recent, undelivered updates, so if it comes back
+empty just message the bot again and retry.
+
+The token reaches Alertmanager as `bot_token_file`, pointing at the mounted
+Secret — it is never in the values file, the Helm release, or `helm get
+values` output. Rotating it means updating `prod.env`, re-running the script,
+and deleting the Alertmanager pod: the kubelet refreshes a projected volume
+lazily, so the old token can linger for a minute.
+
+Sending a test alert without waiting for something to break:
+
+```bash
+kubectl -n monitoring port-forward svc/monitoring-alertmanager 9093:9093
+curl -s -XPOST http://localhost:9093/api/v2/alerts -H 'Content-Type: application/json' -d '[{
+  "labels": {"alertname":"ArhiteqTestAlert","severity":"critical","namespace":"arhiteq"},
+  "annotations": {"summary":"Test alert","description":"Delivery check, ignore."}
+}]'
+```
+
+An alert posted this way keeps re-firing until it expires (default 5m) or you
+resolve it by re-posting with an `endsAt` in the past.
 
 Checking what is actually scraped:
 
