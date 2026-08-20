@@ -70,21 +70,85 @@ gcloud container clusters get-credentials arhiteq \
 Install monitoring first so the LiveKit/Arhiteq ServiceMonitor CRDs exist.
 
 ```bash
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-helm repo update
-
-kubectl create namespace monitoring
-kubectl -n monitoring create configmap arhiteq-dashboards \
-  --from-file=infra/helm/monitoring/dashboards/ \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-helm install monitoring prometheus-community/kube-prometheus-stack \
-  -n monitoring -f infra/helm/monitoring/values.yaml \
-  --set-string grafana.adminPassword='<STRONG_PASSWORD>'
+infra/helm/monitoring/gen-values.sh
 ```
+
+That is the whole install, and it is re-runnable. It reads
+`infra/private/prod.env`, applies the Alertmanager bot-token Secret and the
+dashboards ConfigMap, renders `infra/private/monitoring-values.yaml` from
+`infra/helm/monitoring/values.yaml` (filling `CHANGE_ME_GRAFANA_ADMIN` and
+`TELEGRAM_CHAT_ID`), `helm upgrade --install`s the pinned chart version, then
+applies the alert rules and the egress PodMonitor. Keys it needs in
+`prod.env`:
+
+| key | what |
+| --- | --- |
+| `GRAFANA_ADMIN_PASSWORD` | Grafana `admin` login |
+| `TELEGRAM_BOT_TOKEN` | from @BotFather; never enters a values file |
+| `TELEGRAM_CHAT_ID` | negative for groups/channels, positive for a DM |
+
+Nothing about monitoring is deployed by CI — `deploy.yml` only upgrades the
+`arhiteq` release. This script is how the monitoring stack changes.
 
 Grafana: `kubectl -n monitoring port-forward svc/monitoring-grafana 3001:80`
 → http://localhost:3001 (dashboards land in the "Arhiteq" folder).
+
+### Alerting
+
+Alert rules live in `infra/helm/monitoring/rules/`; Alertmanager delivers them
+to Telegram. Two severities, one destination, different urgency: `critical`
+groups after 10s and repeats hourly, everything else groups after 30s and
+repeats every 12h. A critical alert inhibits the warnings sharing its name and
+namespace, so one broken thing sends one message.
+
+The `Watchdog` alert — the chart's always-firing heartbeat — is routed to the
+null receiver. It is there to prove the pipeline works to an *external*
+watcher; sending it to the same Telegram chat would prove nothing and notify
+forever.
+
+Setting up the bot:
+
+```bash
+# 1. Create the bot: message @BotFather, /newbot, keep the token.
+# 2. Send the bot any message (or add it to a group and post there) so a
+#    chat exists — a bot cannot open a conversation itself.
+# 3. Find the chat id:
+source infra/private/prod.env
+curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getUpdates" \
+  | jq '.result[].message.chat | {id, type, title, username}'
+# 4. Put both in infra/private/prod.env, then re-run gen-values.sh.
+```
+
+`getUpdates` only returns recent, undelivered updates, so if it comes back
+empty just message the bot again and retry.
+
+The token reaches Alertmanager as `bot_token_file`, pointing at the mounted
+Secret — it is never in the values file, the Helm release, or `helm get
+values` output. Rotating it means updating `prod.env`, re-running the script,
+and deleting the Alertmanager pod: the kubelet refreshes a projected volume
+lazily, so the old token can linger for a minute.
+
+Sending a test alert without waiting for something to break:
+
+```bash
+kubectl -n monitoring port-forward svc/monitoring-alertmanager 9093:9093
+curl -s -XPOST http://localhost:9093/api/v2/alerts -H 'Content-Type: application/json' -d '[{
+  "labels": {"alertname":"ArhiteqTestAlert","severity":"critical","namespace":"arhiteq"},
+  "annotations": {"summary":"Test alert","description":"Delivery check, ignore."}
+}]'
+```
+
+An alert posted this way keeps re-firing until it expires (default 5m) or you
+resolve it by re-posting with an `endsAt` in the past.
+
+Checking what is actually scraped:
+
+```bash
+kubectl -n monitoring port-forward svc/monitoring-prometheus 9090:9090
+# http://localhost:9090/targets — every arhiteq-*, livekit-*, egress and
+# livekit-sip job should be up. A job missing entirely means its
+# ServiceMonitor did not render; see the livekit note in section 4.
+```
 
 ## 4. LiveKit server + SIP
 
@@ -104,6 +168,23 @@ helm install livekit-server livekit/livekit-server \
 helm install livekit-sip infra/helm/livekit/sip \
   -n livekit -f infra/helm/livekit/livekit-sip-values.yaml
 ```
+
+The upstream server chart gates its ServiceMonitor on `livekit.prometheus_port`
+being set, not on `serviceMonitor.create` alone: set `create: true` without the
+port and it renders nothing, silently — that is how LiveKit went unscraped from
+the first install until 2026-08-20. The in-repo SIP chart gates on
+`serviceMonitor.create` alone and fails loudly instead (an unset
+`prometheusPort` renders an empty `port:`, which the apply rejects). Confirm
+with `kubectl get servicemonitor,podmonitor -n livekit` after installing.
+
+The SIP chart also drops any `livekit_sip_*` series whose `to` label is not one
+of our own endpoints — SIP scanners hit 5060 with arbitrary values and an
+unbounded label is how a Prometheus falls over. `service.loadBalancerIP` is
+allowlisted automatically; anything else goes in `serviceMonitor.knownSipHosts`.
+Note `to` is a *host as dialled*, which in practice is an IP, not the
+`sip.<domain>` FQDN — Telnyx resolves that before it sends. Getting the list
+wrong makes inbound series cease to exist rather than read zero, so
+`LiveKitSIPInboundSeriesMissing` watches for exactly that.
 
 ## 5. SIP trunks + dispatch rule (lk CLI)
 

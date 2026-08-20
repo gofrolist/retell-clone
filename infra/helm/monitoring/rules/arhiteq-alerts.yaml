@@ -1,0 +1,280 @@
+# Arhiteq alert rules for kube-prometheus-stack.
+#
+#   kubectl apply -f infra/helm/monitoring/rules/arhiteq-alerts.yaml
+#
+# No `release: monitoring` label needed: monitoring/values.yaml sets
+# `ruleSelectorNilUsesHelmValues: false`, so Prometheus loads every
+# PrometheusRule in the cluster.
+#
+# Two things shape the thresholds below:
+#
+#  * The worker's series only exist once a job has written them (multiprocess
+#    mode — see worker/src/arhiteq_worker/metrics.py). An absent series is
+#    normal on an idle worker, so every worker rule is written to be silent
+#    when there is no data rather than to fire on it.
+#  * Production runs a realtime (speech-to-speech) model, which reports no TTS
+#    leg at all. `arhiteq_tts_ttfb_seconds` is therefore empty in prod and its
+#    rule is a no-op there; it exists for pipeline-model agents.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: arhiteq-alerts
+  namespace: monitoring
+spec:
+  groups:
+    - name: arhiteq.availability
+      rules:
+        - alert: ArhiteqTargetDown
+          expr: up{job=~"arhiteq-.*"} == 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Arhiteq {{ $labels.job }} target down ({{ $labels.pod }})"
+            description: >-
+              Prometheus has failed to scrape {{ $labels.instance }} for 10
+              minutes. Either the pod is unhealthy or its metrics port stopped
+              answering.
+
+        - alert: ArhiteqNoWorkersAvailable
+          expr: |
+            kube_deployment_status_replicas_available{namespace="arhiteq", deployment="arhiteq-worker"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "No Arhiteq voice workers available"
+            description: >-
+              Every worker replica is unavailable, so no call can be answered
+              or dialled. Inbound callers hear nothing.
+
+        - alert: ArhiteqNoAPIAvailable
+          expr: |
+            kube_deployment_status_replicas_available{namespace="arhiteq", deployment="arhiteq-api"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "No Arhiteq API replicas available"
+            description: >-
+              The control plane is down: no call can start (the worker loads
+              its config from it) and no webhook can be delivered.
+
+    - name: arhiteq.calls
+      rules:
+        - alert: ArhiteqInboundWebhookFallback
+          expr: |
+            sum(rate(arhiteq_inbound_resolutions_total{outcome="webhook_failed_fallback"}[15m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Inbound calls are falling back to the DID's default agent"
+            description: >-
+              The consumer's inbound webhook is failing, so callers are being
+              routed to the number's default agent instead of the one the
+              webhook would have chosen. Calls still connect — with the wrong
+              agent and without the variables the webhook supplies.
+
+        - alert: ArhiteqWebhookDeliveriesFailing
+          expr: |
+            sum(rate(arhiteq_webhook_deliveries_total{outcome="failed"}[15m]))
+              /
+            clamp_min(sum(rate(arhiteq_webhook_deliveries_total{outcome=~"delivered|failed"}[15m])), 0.001)
+              > 0.1
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Over 10% of webhook deliveries are failing outright"
+            description: >-
+              `failed` is post-retry, so these events reached nobody. The
+              consumer's backend has no record of these calls.
+              The denominator counts only the terminal outcomes: one event
+              emits `webhook_max_attempts` (3) `retry` samples on its way to a
+              single `failed`, so dividing by every outcome would put a real
+              10% failure rate at 0.077 and never fire.
+
+        - alert: ArhiteqWebhookURLBlocked
+          expr: |
+            sum(increase(arhiteq_webhook_deliveries_total{outcome="blocked_unsafe_url"}[30m])) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Webhook deliveries blocked by the SSRF guard"
+            description: >-
+              A workspace has a webhook URL that fails the allowlist/SSRF
+              check (docs/SECURITY.md). Either it is misconfigured or someone
+              is probing. Nothing is being delivered to it.
+
+        - alert: ArhiteqCallAnalysisFailing
+          expr: |
+            sum(rate(arhiteq_analysis_runs_total{outcome="error"}[30m]))
+              /
+            clamp_min(sum(rate(arhiteq_analysis_runs_total{outcome=~"ok|error"}[30m])), 0.001)
+              > 0.25
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Over 25% of post-call analyses are erroring"
+            description: >-
+              Calls complete, but `call_analysis` is missing from the
+              analyzed webhook and the call record. Usually the LLM provider.
+
+        - alert: ArhiteqCallsStuckOngoing
+          expr: |
+            sum(arhiteq_calls_ongoing) > 0
+              and
+            sum(rate(arhiteq_calls_total[1h])) == 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Calls counted as ongoing with nothing finishing"
+            description: >-
+              `arhiteq_calls_ongoing` is a per-replica in-process gauge: it is
+              incremented and decremented by whichever API pod handled each
+              end of the call, and a pod restart loses its count. Treat this
+              as "the counter has drifted" first and "calls are wedged"
+              second — check the calls list before paging anyone.
+
+    - name: arhiteq.voice
+      rules:
+        - alert: ArhiteqLLMLatencyHigh
+          expr: |
+            histogram_quantile(0.95, sum by (le) (rate(arhiteq_llm_ttfb_seconds_bucket[15m]))) > 2.5
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "p95 time to first token is {{ $value | humanizeDuration }}"
+            description: >-
+              On a realtime model this is the whole wait before the caller
+              hears a reply. Above ~2.5s the pause is long enough that callers
+              talk over the agent.
+
+        - alert: ArhiteqTTSLatencyHigh
+          expr: |
+            histogram_quantile(0.95, sum by (le) (rate(arhiteq_tts_ttfb_seconds_bucket[15m]))) > 1.5
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "p95 time to first synthesized audio is {{ $value | humanizeDuration }}"
+            description: >-
+              Pipeline-model agents only; realtime sessions have no TTS leg
+              and never populate this histogram.
+
+        - alert: ArhiteqToolCallsErroring
+          expr: |
+            sum(rate(arhiteq_tool_calls_total{outcome="error"}[15m]))
+              /
+            clamp_min(sum(rate(arhiteq_tool_calls_total[15m])), 0.001)
+              > 0.2
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Over 20% of agent tool calls are erroring"
+            description: >-
+              The agent is mid-conversation when these fail. Check the
+              consumer's tool endpoint before assuming it is ours.
+
+        - alert: ArhiteqWorkersSaturated
+          expr: |
+            avg(arhiteq_worker_active_jobs) > 8
+              and
+            sum(rate(arhiteq_worker_jobs_total[15m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Voice workers are averaging {{ $value }} concurrent jobs"
+            description: >-
+              At or past the per-pod concurrency the worker HPA targets
+              (`worker.hpa.customMetric.targetAverageValue`). If replicas are
+              not climbing, the HPA is capped or scaling is stuck.
+              Treat the number as a floor, not a reading: a job process killed
+              outright (OOM, SIGKILL past livekit's shutdown deadline) never
+              runs its decrement and leaks +1 for the rest of the pod's life
+              (`worker/src/arhiteq_worker/metrics.py`). The `jobs_total` clause
+              is what keeps accumulated drift from pinning this alert on an
+              idle worker; on a busy one, compare against the calls list before
+              concluding the pool is genuinely full. Same caveat applies if
+              `worker.hpa.customMetric.enabled` is ever turned on — drift there
+              scales replicas that no traffic needs.
+
+    - name: livekit.rules
+      rules:
+        - alert: LiveKitTargetDown
+          expr: up{job=~"livekit.*|.*-sip|egress"} == 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "LiveKit {{ $labels.job }} target down ({{ $labels.pod }})"
+
+        - alert: LiveKitSIPUnavailable
+          expr: livekit_sip_available == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "livekit-sip is reporting itself unavailable"
+            description: >-
+              No SIP leg can be set up: new inbound calls will not connect and
+              outbound dials will fail. Two different causes share this one
+              gauge — upstream derives it from `Monitor.Health()`, which is
+              non-OK for `HealthNotStarted`/`HealthStopped` (the process is
+              broken) *and* for `HealthUnderLoad` (CPU idle fell below
+              `1 - max_cpu_utilization`, so the bridge is shedding new INVITEs
+              on purpose). Check the pod's CPU first: under load the fix is
+              capacity — replicas or the voice pool — not the trunk. Calls
+              already up are unaffected in the load case.
+
+        # The `to`-keep relabeling in the SIP chart's ServiceMonitor drops every
+        # series whose `to` is not one of our own hosts. If that allowlist ever
+        # stops matching what the trunk actually sends, the inbound series do
+        # not go to zero — they cease to exist, which no threshold alert can
+        # see. `invite_requests_raw` carries no `to` and so survives the filter
+        # unconditionally: traffic there with nothing on the far side means the
+        # filter is eating everything.
+        - alert: LiveKitSIPInboundSeriesMissing
+          expr: |
+            sum(rate(livekit_sip_invite_requests_raw[1h])) > 0
+              and
+            absent(livekit_sip_invite_accepted)
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "SIP INVITEs are arriving but every per-host series is filtered out"
+            description: >-
+              Reconcile `serviceMonitor.knownSipHosts` in
+              `infra/helm/livekit/sip` against the live `to` values:
+              `kubectl port-forward -n livekit <sip-pod> 9889:9889` then `curl -s
+              localhost:9889/metrics | grep livekit_sip_invite_accepted`.
+              Until it matches, inbound call volume is invisible: no
+              `livekit_sip_calls_active{dir="in"}` or
+              `calls_terminated{dir="in"}` exists to dashboard or alert on.
+              This catches a total mismatch, not a partial one — once any
+              allowed host has been seen, the series exists for the rest of
+              that pod's life and `absent()` stops being true.
+
+        - alert: LiveKitOutboundSIPFailing
+          expr: |
+            sum(rate(livekit_sip_calls_terminated{dir="out", result!="success"}[15m]))
+              /
+            clamp_min(sum(rate(livekit_sip_calls_terminated{dir="out"}[15m])), 0.001)
+              > 0.5
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Over half of outbound SIP calls are failing at the trunk"
+            description: >-
+              What a rejected trunk looks like from our side — a bad SIP
+              username, an expired credential, or a negative Telnyx balance.
+              Every outbound call is affected while this fires.

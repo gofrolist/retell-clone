@@ -20,6 +20,13 @@ livekit:
     # Nodes advertise their external IPs for ICE.
     use_external_ip: true
 
+  # Metrics port. The chart gates BOTH the container port and the
+  # ServiceMonitor on this being set (`{{- if and .Values.serviceMonitor.create
+  # .Values.livekit.prometheus_port }}`), so `serviceMonitor.create: true`
+  # alone silently produces nothing — which is how livekit went unscraped from
+  # the first install until 2026-08-20.
+  prometheus_port: 6789
+
   # Multi-node routing requires Redis (Memorystore).
   # REDIS_HOST placeholder: terraform output `redis_host`.
   redis:
@@ -81,7 +88,10 @@ resources:
     memory: 8Gi
 
 # Prometheus metrics (scraped by kube-prometheus-stack).
+# Needs `livekit.prometheus_port` set above; on its own this does nothing.
+# The chart has no `labels` field — our Prometheus selects ServiceMonitors in
+# every namespace regardless of release label (see the selector settings in
+# monitoring/values.yaml), so no `release: monitoring` label is needed.
 serviceMonitor:
   create: true
-  labels:
-    release: monitoring
+  interval: 30s

@@ -84,6 +84,134 @@ alertmanager:
         cpu: 200m
         memory: 256Mi
 
+    # Mounts every key of the named Secret at
+    # /etc/alertmanager/secrets/<secret>/<key>. The bot token is read from
+    # there via `bot_token_file` so it never enters this file, the Helm
+    # release, or `helm get values` output. Create it out of band:
+    #
+    #   kubectl -n monitoring create secret generic alertmanager-telegram \
+    #     --from-literal=bot-token='<BotFather token>'
+    #
+    # Rotating the token means replacing the Secret and deleting the
+    # Alertmanager pod — the file is mounted, and Alertmanager re-reads
+    # `bot_token_file` on every notification, but the kubelet can take a
+    # minute to refresh the projected volume.
+    secrets:
+      - alertmanager-telegram
+
+  # Replaces the chart's default config wholesale, so the pieces that are
+  # only there by default — the "null" receiver, the Watchdog route, the
+  # severity inhibit rules — have to be repeated here or they are lost.
+  config:
+    global:
+      resolve_timeout: 5m
+
+    route:
+      # Not the chart default of `[namespace]` alone: that puts every
+      # unrelated arhiteq alert in one message, so a webhook failure and a
+      # latency regression arrive as one indistinguishable blob and share a
+      # repeat interval.
+      group_by: [alertname, namespace, severity]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: telegram
+
+      routes:
+        # Always-firing heartbeat from the chart. It exists to prove the
+        # alerting path works end to end, which is only useful to something
+        # watching Alertmanager from outside; sending it to Telegram would
+        # mean a message every repeat interval, forever.
+        - receiver: "null"
+          matchers:
+            - alertname = "Watchdog"
+
+        # Nothing else routes InfoInhibitor anywhere; without this it would
+        # fall through to the default receiver and get sent.
+        - receiver: "null"
+          matchers:
+            - alertname = "InfoInhibitor"
+
+        - receiver: telegram-critical
+          matchers:
+            - severity = "critical"
+          # A page-worthy alert should not wait out a 5m group interval, and
+          # should keep nagging until someone acts on it.
+          group_wait: 10s
+          group_interval: 2m
+          repeat_interval: 1h
+
+    # Chart defaults, kept verbatim: a critical alert suppresses the warning
+    # and info alerts that share its name and namespace, so one broken thing
+    # sends one message rather than three.
+    inhibit_rules:
+      - source_matchers: [severity = "critical"]
+        target_matchers: [severity =~ "warning|info"]
+        equal: [namespace, alertname]
+      - source_matchers: [severity = "warning"]
+        target_matchers: [severity = "info"]
+        equal: [namespace, alertname]
+      - source_matchers: [alertname = "InfoInhibitor"]
+        target_matchers: [severity = "info"]
+        equal: [namespace]
+      - target_matchers: [alertname = "InfoInhibitor"]
+
+    # Dropped along with the rest of the chart's default config when `config`
+    # was overridden, and `templateFiles` below is inert without it — the
+    # chart mounts those files here.
+    templates:
+      - /etc/alertmanager/config/*.tmpl
+
+    receivers:
+      - name: "null"
+
+      - name: telegram
+        telegram_configs: &telegram
+          - bot_token_file: /etc/alertmanager/secrets/alertmanager-telegram/bot-token
+            # Placeholder, substituted by gen-values.sh from prod.env. The
+            # real id lives only in the gitignored private values file: this
+            # repo is public and a chat id names a real person's chat.
+            # Negative for groups and channels, positive for a direct chat.
+            chat_id: TELEGRAM_CHAT_ID
+            parse_mode: HTML
+            send_resolved: true
+            message: '{{ template "telegram.arhiteq.message" . }}'
+
+      # Same destination, different routing timings (see the route above).
+      - name: telegram-critical
+        telegram_configs: *telegram
+
+  # Alertmanager renders the Telegram `message` with html/template, which
+  # escapes whatever an action interpolates but leaves the template's own
+  # literal markup alone. So `<b>` below is real markup, and a `<` inside an
+  # annotation arrives as `&lt;` without anything here doing the work.
+  #
+  # Escaping it by hand first — which is the obvious defensive move — is what
+  # you must NOT do: html/template then escapes the escape, and Telegram
+  # renders the literal text `a &lt; b` instead of `a < b`.
+  #
+  # The 8-alert cap keeps a large group under Telegram's 4096-character
+  # message limit; over it, the send fails and the notification is lost.
+  #
+  # The overflow line prints the group total, not the remainder: Alertmanager
+  # renders this with Go text/template, which has no arithmetic and no sprig,
+  # so `sub` is not available to compute `len - 8`. An unknown function is a
+  # render error, and a render error means the notification is never sent —
+  # so the wording says "8 of N", never "+N more".
+  templateFiles:
+    arhiteq.tmpl: |-
+      {{ define "telegram.arhiteq.message" -}}
+      {{ if eq .Status "firing" }}{{ if eq .CommonLabels.severity "critical" }}🚨{{ else }}⚠️{{ end }} <b>FIRING</b>{{ else }}✅ <b>RESOLVED</b>{{ end }} · {{ .CommonLabels.alertname }}{{ if gt (len .Alerts) 1 }} ×{{ len .Alerts }}{{ end }}
+      {{ range $i, $a := .Alerts }}{{ if lt $i 8 }}
+      <b>{{ $a.Annotations.summary }}</b>
+      {{ if $a.Annotations.description }}{{ $a.Annotations.description }}
+      {{ end }}{{ if $a.Labels.pod }}<code>{{ $a.Labels.pod }}</code>
+      {{ end }}{{ end }}{{ end }}
+      {{- if gt (len .Alerts) 8 }}
+      <i>{{ len .Alerts }} alerts in this group, first 8 shown</i>
+      {{ end }}
+      {{- end }}
+
 # Trim node-level components' resource footprint.
 prometheusOperator:
   resources:
@@ -126,4 +254,10 @@ kubeScheduler:
 kubeProxy:
   enabled: false
 kubeEtcd:
+  enabled: false
+# GKE runs kube-dns, not CoreDNS. The chart's CoreDNS ServiceMonitor still
+# matches kube-dns's Service labels, so it discovers the pods and then fails
+# on :9153, which kube-dns does not serve — two permanently-down targets that
+# make "any target down?" useless as a health question.
+coreDns:
   enabled: false

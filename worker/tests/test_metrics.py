@@ -20,6 +20,21 @@ from prometheus_client import CollectorRegistry, multiprocess
 from arhiteq_worker import metrics
 
 
+def _child_holds_jobs(active: int, finished: int) -> None:
+    """A job process that ran ``active + finished`` jobs and ended ``finished``.
+
+    Mirrors what ``entrypoint`` does: one ``inc()`` per job, one ``dec()`` in
+    the shutdown callback. livekit reuses a job process for several jobs, so
+    the interleaving matters more than the count.
+    """
+    from arhiteq_worker import metrics as child_metrics
+
+    for _ in range(active + finished):
+        child_metrics.ACTIVE_JOBS.inc()
+    for _ in range(finished):
+        child_metrics.ACTIVE_JOBS.dec()
+
+
 def _child_records(tool: str, times: int) -> None:
     """Stand in for a job subprocess: fresh interpreter state, own pid.
 
@@ -107,6 +122,53 @@ def test_histograms_survive_the_process_that_observed_them(tmp_path: Path) -> No
         if sample.name == "arhiteq_llm_ttfb_seconds_count"
     ]
     assert counts == [1.0]
+
+
+def _gauge(multiproc_dir: str, name: str) -> list[float]:
+    registry = CollectorRegistry()
+    multiprocess.MultiProcessCollector(registry, path=multiproc_dir)
+    return [
+        sample.value
+        for metric in registry.collect()
+        for sample in metric.samples
+        if sample.name == name
+    ]
+
+
+def _run_gauge_child(multiproc_dir: str, active: int, finished: int) -> None:
+    previous = os.environ.get("PROMETHEUS_MULTIPROC_DIR")
+    os.environ["PROMETHEUS_MULTIPROC_DIR"] = multiproc_dir
+    try:
+        proc = mp.get_context("spawn").Process(target=_child_holds_jobs, args=(active, finished))
+        proc.start()
+    finally:
+        if previous is None:
+            del os.environ["PROMETHEUS_MULTIPROC_DIR"]
+        else:
+            os.environ["PROMETHEUS_MULTIPROC_DIR"] = previous
+    proc.join(timeout=60)
+    assert proc.exitcode == 0
+
+
+class TestActiveJobs:
+    """`arhiteq_worker_active_jobs` — the latency dashboard's concurrency panel
+    and the worker HPA's custom metric both name this series, and until now
+    nothing ever wrote it."""
+
+    def test_sums_to_one_series_across_job_processes(self, tmp_path: Path) -> None:
+        multiproc_dir = str(tmp_path)
+        _run_gauge_child(multiproc_dir, active=2, finished=1)
+        _run_gauge_child(multiproc_dir, active=1, finished=3)
+
+        # One value, not one per pid: `multiprocess_mode="livesum"` is what
+        # keeps the default `all` mode from splitting this by process.
+        assert _gauge(multiproc_dir, "arhiteq_worker_active_jobs") == [3.0]
+
+    def test_a_job_that_ends_leaves_nothing_behind(self, tmp_path: Path) -> None:
+        multiproc_dir = str(tmp_path)
+        _run_gauge_child(multiproc_dir, active=0, finished=4)
+
+        assert _gauge(multiproc_dir, "arhiteq_worker_active_jobs") == [0.0]
 
 
 class TestExporterOptions:

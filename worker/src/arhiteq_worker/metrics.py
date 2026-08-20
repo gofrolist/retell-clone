@@ -35,13 +35,34 @@ import os
 import tempfile
 from typing import Any
 
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 
 JOBS_TOTAL = Counter(
     "arhiteq_worker_jobs_total",
     "Voice agent jobs handled by this worker",
     ["direction"],
 )
+
+ACTIVE_JOBS = Gauge(
+    "arhiteq_worker_active_jobs",
+    "Voice agent jobs this worker is running right now",
+    multiprocess_mode="livesum",
+)
+"""Concurrency, for the latency dashboard and the worker HPA's custom metric.
+
+``livesum`` rather than the default ``all``: the default appends a ``pid``
+label, which would make one series per job process ever run on the pod — the
+opposite of a gauge you can sum.
+
+This is incremented and decremented in the *job* process, not the supervisor,
+for the reason in this module's docstring: the supervisor's own metric objects
+are in-process and the ``/metrics`` endpoint only serves the multiprocess
+directory, so anything the supervisor sets is invisible. That means a job
+process killed outright (OOM, SIGKILL) never runs its decrement and leaks +1
+until the pod restarts — prometheus_client keeps the file, and livekit never
+calls ``mark_process_dead``. Normal endings, including errors, decrement in
+``entrypoint``'s shutdown callback.
+"""
 
 TOOL_CALLS_TOTAL = Counter(
     "arhiteq_tool_calls_total",
