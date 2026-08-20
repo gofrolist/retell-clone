@@ -56,6 +56,15 @@ output "livekit_ip" {
   value       = google_compute_global_address.livekit.address
 }
 
+output "grafana_ip" {
+  description = "Global static IP for the Grafana GCE Ingress (grafana.<domain>)."
+  value       = google_compute_global_address.grafana.address
+}
+
+output "grafana_ip_name" {
+  value = google_compute_global_address.grafana.name
+}
+
 output "sip_ip" {
   description = "Regional static IP for the livekit-sip UDP LoadBalancer (point the Telnyx trunk here / sip.<domain>)."
   value       = google_compute_address.sip.address

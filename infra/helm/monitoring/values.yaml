@@ -43,7 +43,127 @@ prometheus:
 grafana:
   # CHANGE ME (or better: set via --set-string grafana.adminPassword=... /
   # an existing secret with grafana.admin.existingSecret).
+  #
+  # Still required by the chart, but it is no longer a way in: the login form
+  # and basic auth are both off below, so nothing accepts it. It stays because
+  # the admin user still owns the provisioned dashboards, and because
+  # re-enabling either switch is the recovery path when Google is what broke.
   adminPassword: CHANGE_ME_GRAFANA_ADMIN
+
+  # The dashboard/datasource sidecars POST to Grafana's admin provisioning
+  # API with the admin password — which `[auth.basic] enabled = false` now
+  # refuses, turning every ConfigMap change into a 401 retry loop. Skipping
+  # the reload costs nothing: both sidecars write files into a `type: file`
+  # provider, and Grafana's provisioner rescans that directory on its own
+  # (~10s). Only datasource *changes* lose their live path — those need a
+  # pod restart now, which is a thing that happens roughly never.
+  sidecar:
+    dashboards:
+      skipReload: true
+    datasources:
+      skipReload: true
+
+  # Reachable at https://grafana.<domain> through its own GCE Ingress; see
+  # the `ingress:` block below and extra/grafana-managed-cert.yaml.
+  service:
+    annotations:
+      # Container-native load balancing. Without it the GCE controller wants
+      # a NodePort Service and refuses a ClusterIP one.
+      cloud.google.com/neg: '{"ingress": true}'
+
+  ingress:
+    enabled: true
+    annotations:
+      # Same as the arhiteq chart: GKE ships no IngressClass objects, so the
+      # legacy annotation is the selector that works. spec.ingressClassName
+      # pointing at a class that does not exist makes the controller ignore
+      # the Ingress silently — no events, no LB.
+      kubernetes.io/ingress.class: gce
+      kubernetes.io/ingress.global-static-ip-name: arhiteq-grafana-ip
+      kubernetes.io/ingress.allow-http: "false"
+      networking.gke.io/managed-certificates: grafana-cert
+    hosts:
+      - CHANGE_ME_GRAFANA_HOST
+    path: /
+    pathType: Prefix
+
+  # The ManagedCertificate the annotation above names. GKE does not create it
+  # from the annotation: an Ingress referencing a certificate that does not
+  # exist comes up serving the load balancer's own self-signed default, with
+  # nothing but a cert warning to say why. Shipping it with the release also
+  # means `helm uninstall` takes it away again.
+  extraObjects:
+    - apiVersion: networking.gke.io/v1
+      kind: ManagedCertificate
+      metadata:
+        name: grafana-cert
+      spec:
+        domains:
+          - CHANGE_ME_GRAFANA_HOST
+
+  podAnnotations:
+    # Rolls Grafana when the OAuth client changes. The id and secret arrive as
+    # env vars from a Secret this chart does not own, so Helm sees nothing to
+    # checksum: replacing the Secret on its own leaves the running process
+    # holding the credentials it started with, and the only symptom is that
+    # sign-in keeps failing against a client that looks correct in the cluster.
+    arhiteq.com/oauth-client-checksum: CHANGE_ME_GRAFANA_OAUTH_CHECKSUM
+
+  # The OAuth client id and secret are injected from the k8s Secret
+  # `grafana-google-oauth` (gen-values.sh creates it from prod.env) rather
+  # than written into this file: it is rendered into infra/private and passed
+  # to Helm, so anything here also lands in `helm get values` and the release
+  # Secret. GF_AUTH_GOOGLE_* override the matching grafana.ini keys.
+  envValueFrom:
+    GF_AUTH_GOOGLE_CLIENT_ID:
+      secretKeyRef:
+        name: grafana-google-oauth
+        key: client-id
+    GF_AUTH_GOOGLE_CLIENT_SECRET:
+      secretKeyRef:
+        name: grafana-google-oauth
+        key: client-secret
+
+  grafana.ini:
+    server:
+      # Must be the public URL: Grafana builds the OAuth redirect_uri from it,
+      # and a mismatch with the Google client's authorized redirect URI is a
+      # redirect_uri_mismatch error at login, not a warning at boot.
+      root_url: CHANGE_ME_GRAFANA_ROOT_URL
+
+    auth:
+      # Google is the only way in. Hiding the form is the visible half; the
+      # half that matters is basic auth below, which is a separate switch —
+      # leave it on and `curl -u admin:<password> https://<host>/api/...`
+      # keeps working from the internet no matter what the login page shows.
+      disable_login_form: true
+
+    auth.basic:
+      enabled: false
+
+    auth.google:
+      enabled: true
+      # First login has to be able to create the Grafana user; the allowlist
+      # below is what keeps that from meaning "anyone with a Google account".
+      allow_sign_up: true
+      # With the form gone the login page is one button, so auto_login would
+      # only save a click — at the cost of making /login unreachable while
+      # anything about the OAuth round trip is misbehaving.
+      auto_login: false
+      scopes: openid email profile
+      auth_url: https://accounts.google.com/o/oauth2/v2/auth
+      token_url: https://oauth2.googleapis.com/token
+      api_url: https://openidconnect.googleapis.com/v1/userinfo
+      use_pkce: true
+
+      # The allowlist. `allowed_domains`/`hosted_domain` are the usual filter,
+      # but they only mean something for a Workspace domain — for @gmail.com
+      # accounts they would admit the entire internet. So the filter is the
+      # role mapping instead: an email that is not listed maps to no role, and
+      # role_attribute_strict turns "no role" into a denied login rather than
+      # a default Viewer account.
+      role_attribute_path: CHANGE_ME_GRAFANA_ROLE_ATTRIBUTE_PATH
+      role_attribute_strict: true
 
   resources:
     requests:

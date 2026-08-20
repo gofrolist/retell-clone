@@ -5,12 +5,14 @@
 #
 # Does three things, in this order because each depends on the last:
 #
-#   1. Applies the Alertmanager Telegram bot token as a k8s Secret. It has to
-#      exist before the release references it — `alertmanagerSpec.secrets`
-#      mounts it as a volume, and a pod whose volume is missing never starts.
+#   1. Applies the Alertmanager Telegram bot token and the Grafana Google
+#      OAuth client as k8s Secrets. They have to exist before the release
+#      references them — `alertmanagerSpec.secrets` mounts one as a volume,
+#      and a pod whose volume is missing never starts.
 #   2. Renders infra/private/monitoring-values.yaml: this chart's values.yaml
-#      with the two placeholders filled from prod.env. Gitignored, because the
-#      repo is public and the chat id identifies a real person's chat.
+#      with the placeholders filled from prod.env. Gitignored, because the
+#      repo is public and the chat id and the operator emails identify real
+#      people.
 #   3. helm upgrade --install.
 #
 # Unlike infra/private/gen-arhiteq-prod.sh this lives in the repo, not in
@@ -37,6 +39,10 @@ set +a
 : "${GRAFANA_ADMIN_PASSWORD:?set it in infra/private/prod.env}"
 : "${TELEGRAM_BOT_TOKEN:?set it in infra/private/prod.env — see infra/README.md § Alerting}"
 : "${TELEGRAM_CHAT_ID:?set it in infra/private/prod.env — see infra/README.md § Alerting}"
+: "${GRAFANA_HOST:?set it in infra/private/prod.env — see infra/README.md § Grafana access}"
+: "${GRAFANA_OAUTH_CLIENT_ID:?set it in infra/private/prod.env — see infra/README.md § Grafana access}"
+: "${GRAFANA_OAUTH_CLIENT_SECRET:?set it in infra/private/prod.env — see infra/README.md § Grafana access}"
+: "${GRAFANA_ALLOWED_EMAILS:?set it in infra/private/prod.env — see infra/README.md § Grafana access}"
 
 kubectl get namespace monitoring >/dev/null 2>&1 || kubectl create namespace monitoring
 
@@ -44,6 +50,14 @@ kubectl get namespace monitoring >/dev/null 2>&1 || kubectl create namespace mon
 # to re-run, and plain `create` fails once the Secret exists.
 kubectl -n monitoring create secret generic alertmanager-telegram \
   --from-literal=bot-token="$TELEGRAM_BOT_TOKEN" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# Same shape for the Grafana OAuth client. It is a Secret rather than two more
+# values because the rendered values file is what Helm stores in the release —
+# `helm get values monitoring` would print the client secret back out.
+kubectl -n monitoring create secret generic grafana-google-oauth \
+  --from-literal=client-id="$GRAFANA_OAUTH_CLIENT_ID" \
+  --from-literal=client-secret="$GRAFANA_OAUTH_CLIENT_SECRET" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl -n monitoring create configmap arhiteq-dashboards \
@@ -64,8 +78,12 @@ kubectl -n monitoring create configmap arhiteq-dashboards \
 #   - the chat id must stay *unquoted*: Alertmanager's `chat_id` is an int64,
 #     and a quoted YAML string does not unmarshal into it. So it is validated
 #     as an integer rather than escaped — the only safe way to leave it bare.
+#   - the host, the root_url and the role_attribute_path expression are quoted
+#     scalars too. The expression is the one that matters: it is JMESPath full
+#     of single quotes and `&&`, so it has to arrive as a double-quoted YAML
+#     string or the parse ends somewhere in the middle of the allowlist.
 python3 - "$HERE/values.yaml" "$OUT" <<'PY'
-import json, os, sys
+import hashlib, json, os, re, sys
 
 src, dst = sys.argv[1], sys.argv[2]
 text = open(src).read()
@@ -78,11 +96,42 @@ except ValueError:
         f"TELEGRAM_CHAT_ID must be an integer (negative for groups/channels), got {chat_id!r}"
     ) from None
 
+host = os.environ["GRAFANA_HOST"].strip()
+if not re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+", host):
+    raise SystemExit(f"GRAFANA_HOST must be a bare hostname like grafana.example.com, got {host!r}")
+
+# Space- or comma-separated in prod.env; a JMESPath list literal here. An
+# empty allowlist would render `contains([], email)` — always false, so every
+# Google login is denied and the only way in is the admin password. That is
+# the safe direction, but it is never what the operator meant.
+emails = [e for e in re.split(r"[\s,]+", os.environ["GRAFANA_ALLOWED_EMAILS"]) if e]
+if not emails:
+    raise SystemExit("GRAFANA_ALLOWED_EMAILS is empty — nobody could sign in with Google")
+for email in emails:
+    if "@" not in email or "'" in email:
+        raise SystemExit(f"GRAFANA_ALLOWED_EMAILS entry {email!r} is not a usable email address")
+
+# Grafana evaluates this against the userinfo claims: a listed email becomes an
+# Admin, anything else yields no role at all — which role_attribute_strict in
+# values.yaml turns into a refused login.
+allowlist = ", ".join(f"'{e}'" for e in emails)
+role_path = f"contains([{allowlist}], email) && 'Admin' || ''"
+
 subs = {
     # A YAML double-quoted scalar is JSON-string-compatible, so json.dumps is
     # the right escaper here: it covers the quotes, backslashes and control
     # characters that would otherwise alter the value or break the parse.
     "CHANGE_ME_GRAFANA_ADMIN": json.dumps(os.environ["GRAFANA_ADMIN_PASSWORD"]),
+    "CHANGE_ME_GRAFANA_HOST": json.dumps(host),
+    "CHANGE_ME_GRAFANA_ROOT_URL": json.dumps(f"https://{host}/"),
+    "CHANGE_ME_GRAFANA_ROLE_ATTRIBUTE_PATH": json.dumps(role_path),
+    # Not the credentials themselves — this annotation is world-readable to
+    # anyone who can get the pod.
+    "CHANGE_ME_GRAFANA_OAUTH_CHECKSUM": hashlib.sha256(
+        "\0".join(
+            (os.environ["GRAFANA_OAUTH_CLIENT_ID"], os.environ["GRAFANA_OAUTH_CLIENT_SECRET"])
+        ).encode()
+    ).hexdigest(),
     "TELEGRAM_CHAT_ID": chat_id,
 }
 for placeholder, value in subs.items():
@@ -125,3 +174,11 @@ helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
 # hook for either, and Prometheus loads them from anywhere in the cluster.
 kubectl apply -f "$HERE/rules/arhiteq-alerts.yaml"
 kubectl apply -f "$HERE/extra/livekit-egress-podmonitor.yaml"
+
+cat <<EOF
+
+Grafana: https://$GRAFANA_HOST (Google sign-in for: $GRAFANA_ALLOWED_EMAILS)
+  cert:  kubectl -n monitoring get managedcertificate grafana-cert -o jsonpath='{.status.certificateStatus}'
+         first provision takes 15-60 min and needs $GRAFANA_HOST resolving to the ingress IP
+  local: kubectl -n monitoring port-forward svc/monitoring-grafana 3001:80
+EOF
