@@ -181,75 +181,27 @@ alertmanager:
       - name: telegram-critical
         telegram_configs: *telegram
 
-  # Alertmanager renders `message` with text/template, which does not escape
-  # anything, so a `<` in an annotation would reach Telegram as markup and be
-  # rejected as a parse error — dropping the notification entirely. Hence
-  # `arhiteq.esc`. Order matters: `&` has to be substituted before the others
-  # or it would double-escape the `&` in `&lt;`.
+  # Alertmanager renders the Telegram `message` with html/template, which
+  # escapes whatever an action interpolates but leaves the template's own
+  # literal markup alone. So `<b>` below is real markup, and a `<` inside an
+  # annotation arrives as `&lt;` without anything here doing the work.
+  #
+  # Escaping it by hand first — which is the obvious defensive move — is what
+  # you must NOT do: html/template then escapes the escape, and Telegram
+  # renders the literal text `a &lt; b` instead of `a < b`.
+  #
+  # The 8-alert cap keeps a large group under Telegram's 4096-character
+  # message limit; over it, the send fails and the notification is lost.
   templateFiles:
     arhiteq.tmpl: |-
-      {{ define "arhiteq.esc" -}}
-      {{ reReplaceAll "<" "&lt;" (reReplaceAll ">" "&gt;" (reReplaceAll "&" "&amp;" .)) }}
-      {{- end }}
-
       {{ define "telegram.arhiteq.message" -}}
       {{ if eq .Status "firing" }}{{ if eq .CommonLabels.severity "critical" }}🚨{{ else }}⚠️{{ end }} <b>FIRING</b>{{ else }}✅ <b>RESOLVED</b>{{ end }} · {{ .CommonLabels.alertname }}{{ if gt (len .Alerts) 1 }} ×{{ len .Alerts }}{{ end }}
       {{ range $i, $a := .Alerts }}{{ if lt $i 8 }}
-      <b>{{ template "arhiteq.esc" $a.Annotations.summary }}</b>
-      {{ if $a.Annotations.description }}{{ template "arhiteq.esc" $a.Annotations.description }}
+      <b>{{ $a.Annotations.summary }}</b>
+      {{ if $a.Annotations.description }}{{ $a.Annotations.description }}
       {{ end }}{{ if $a.Labels.pod }}<code>{{ $a.Labels.pod }}</code>
       {{ end }}{{ end }}{{ end }}
       {{- if gt (len .Alerts) 8 }}
       <i>+{{ len .Alerts }} alerts in this group, first 8 shown</i>
       {{ end }}
       {{- end }}
-
-# Trim node-level components' resource footprint.
-prometheusOperator:
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
-
-kube-state-metrics:
-  resources:
-    requests:
-      cpu: 50m
-      memory: 128Mi
-    limits:
-      cpu: 200m
-      memory: 256Mi
-
-prometheus-node-exporter:
-  resources:
-    requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      cpu: 200m
-      memory: 128Mi
-  # Node exporter must also run on tainted voice nodes.
-  tolerations:
-    - key: dedicated
-      operator: Equal
-      value: voice
-      effect: NoSchedule
-
-# GKE manages the control plane; these scrapes always fail there.
-kubeControllerManager:
-  enabled: false
-kubeScheduler:
-  enabled: false
-kubeProxy:
-  enabled: false
-kubeEtcd:
-  enabled: false
-# GKE runs kube-dns, not CoreDNS. The chart's CoreDNS ServiceMonitor still
-# matches kube-dns's Service labels, so it discovers the pods and then fails
-# on :9153, which kube-dns does not serve — two permanently-down targets that
-# make "any target down?" useless as a health question.
-coreDns:
-  enabled: false
