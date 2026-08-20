@@ -168,10 +168,10 @@ alertmanager:
       - name: telegram
         telegram_configs: &telegram
           - bot_token_file: /etc/alertmanager/secrets/alertmanager-telegram/bot-token
-            # TELEGRAM_CHAT_ID placeholder — the real chat id lives in the
-            # gitignored infra/private/monitoring-values.yaml, same as every
-            # other prod value. Negative for groups and channels, positive
-            # for a direct chat with the bot.
+            # Placeholder, substituted by gen-values.sh from prod.env. The
+            # real id lives only in the gitignored private values file: this
+            # repo is public and a chat id names a real person's chat.
+            # Negative for groups and channels, positive for a direct chat.
             chat_id: TELEGRAM_CHAT_ID
             parse_mode: HTML
             send_resolved: true
