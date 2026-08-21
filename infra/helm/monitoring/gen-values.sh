@@ -42,7 +42,18 @@ set +a
 : "${GRAFANA_HOST:?set it in infra/private/prod.env — see infra/README.md § Grafana access}"
 : "${GRAFANA_OAUTH_CLIENT_ID:?set it in infra/private/prod.env — see infra/README.md § Grafana access}"
 : "${GRAFANA_OAUTH_CLIENT_SECRET:?set it in infra/private/prod.env — see infra/README.md § Grafana access}"
-: "${GRAFANA_ALLOWED_EMAILS:?set it in infra/private/prod.env — see infra/README.md § Grafana access}"
+: "${GRAFANA_ADMIN_EMAILS:?set it in infra/private/prod.env — see infra/README.md § Grafana access}"
+# Optional: a deployment with no read-only operators is a normal one.
+: "${GRAFANA_VIEWER_EMAILS:=}"
+
+# The old single-list variable granted Admin to everyone on it. Silently
+# treating it as the admin list would be a fine guess and a bad default —
+# say so instead of handing someone Admin because their prod.env is stale.
+if [ -n "${GRAFANA_ALLOWED_EMAILS:-}" ]; then
+  echo "ERROR: GRAFANA_ALLOWED_EMAILS is gone — split it into GRAFANA_ADMIN_EMAILS" >&2
+  echo "       and GRAFANA_VIEWER_EMAILS in infra/private/prod.env" >&2
+  exit 1
+fi
 
 kubectl get namespace monitoring >/dev/null 2>&1 || kubectl create namespace monitoring
 
@@ -100,22 +111,41 @@ host = os.environ["GRAFANA_HOST"].strip()
 if not re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+", host):
     raise SystemExit(f"GRAFANA_HOST must be a bare hostname like grafana.example.com, got {host!r}")
 
-# Space- or comma-separated in prod.env; a JMESPath list literal here. An
-# empty allowlist would render `contains([], email)` — always false, so every
-# Google login is denied and the only way in is the admin password. That is
-# the safe direction, but it is never what the operator meant.
-emails = [e for e in re.split(r"[\s,]+", os.environ["GRAFANA_ALLOWED_EMAILS"]) if e]
-if not emails:
-    raise SystemExit("GRAFANA_ALLOWED_EMAILS is empty — nobody could sign in with Google")
-for email in emails:
-    if "@" not in email or "'" in email:
-        raise SystemExit(f"GRAFANA_ALLOWED_EMAILS entry {email!r} is not a usable email address")
+# Space- or comma-separated in prod.env; JMESPath list literals here. A single
+# quote in an address would close the literal early and rewrite the rest of the
+# expression, so it is rejected rather than escaped.
+def parse_emails(var, *, required):
+    emails = [e for e in re.split(r"[\s,]+", os.environ.get(var, "")) if e]
+    if required and not emails:
+        raise SystemExit(f"{var} is empty — nobody could sign in with Google")
+    for email in emails:
+        if "@" not in email or "'" in email:
+            raise SystemExit(f"{var} entry {email!r} is not a usable email address")
+    return emails
 
-# Grafana evaluates this against the userinfo claims: a listed email becomes an
-# Admin, anything else yields no role at all — which role_attribute_strict in
-# values.yaml turns into a refused login.
-allowlist = ", ".join(f"'{e}'" for e in emails)
-role_path = f"contains([{allowlist}], email) && 'Admin' || ''"
+
+admins = parse_emails("GRAFANA_ADMIN_EMAILS", required=True)
+viewers = parse_emails("GRAFANA_VIEWER_EMAILS", required=False)
+
+# Admin would win the `||` chain anyway, but an address in both lists means the
+# operator lost track of who is meant to have what — which is worth stopping on
+# when the two roles differ by "can edit every dashboard and datasource".
+both = sorted(set(admins) & set(viewers))
+if both:
+    raise SystemExit(f"in both GRAFANA_ADMIN_EMAILS and GRAFANA_VIEWER_EMAILS: {', '.join(both)}")
+
+# Grafana evaluates this against the userinfo claims. `||` binds looser than
+# `&&`, so it reads as (admin && 'Admin') || (viewer && 'Viewer') || '': the
+# first matching list wins and an unlisted address yields no role at all,
+# which role_attribute_strict in values.yaml turns into a refused login.
+def contains(emails):
+    return "contains([" + ", ".join(f"'{e}'" for e in emails) + "], email)"
+
+
+clauses = [f"{contains(admins)} && 'Admin'"]
+if viewers:
+    clauses.append(f"{contains(viewers)} && 'Viewer'")
+role_path = " || ".join(clauses + ["''"])
 
 subs = {
     # A YAML double-quoted scalar is JSON-string-compatible, so json.dumps is
@@ -177,7 +207,9 @@ kubectl apply -f "$HERE/extra/livekit-egress-podmonitor.yaml"
 
 cat <<EOF
 
-Grafana: https://$GRAFANA_HOST (Google sign-in for: $GRAFANA_ALLOWED_EMAILS)
+Grafana: https://$GRAFANA_HOST (Google sign-in)
+  admins:  $GRAFANA_ADMIN_EMAILS
+  viewers: ${GRAFANA_VIEWER_EMAILS:-(none)}
   cert:  kubectl -n monitoring get managedcertificate grafana-cert -o jsonpath='{.status.certificateStatus}'
          first provision takes 15-60 min and needs $GRAFANA_HOST resolving to the ingress IP
   local: kubectl -n monitoring port-forward svc/monitoring-grafana 3001:80
