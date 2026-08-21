@@ -364,26 +364,38 @@ export function estimateCost(
     return total(rows);
   }
 
-  // The rows must sum to the price the picker shows. Re-deriving the LLM row
-  // from marked-up token rates would drift from `per_minute` whenever a model
-  // carries an explicit price or a fixed adder, neither of which is
-  // expressible as a per-token markup — and a breakdown that does not add up
-  // is worse than no breakdown.
+  // The headline covers MODEL + STT + TTS and nothing else: the backend's
+  // `cost_per_min_stack` is `model + cartesia_stt + cartesia_tts` for a text
+  // model and `model` alone for an audio one (services/pricing.py), and
+  // `per_minute` is that stack marked up. So the pipeline rows must sum back
+  // to it, while the knowledge base — which the stack never priced — is an
+  // ADDITIONAL charge that pushes the total above the headline.
+  //
+  // Re-deriving the LLM row from marked-up token rates would drift from
+  // `per_minute` whenever a model carries an explicit price or a fixed adder,
+  // neither of which is expressible as a per-token markup — and a breakdown
+  // that does not add up is worse than no breakdown.
   const p = priced(input.model, prices);
   const headline = p.per_minute + p.per_minute_adder;
 
   // Gemini Live is one speech-to-speech model: no separate Cartesia STT/TTS,
-  // and it's billed per audio minute rather than per text turn.
+  // and it's billed per audio minute rather than per text turn. Its stack has
+  // no synthesis leg, so the headline IS the model row.
   if (isLiveModel(input.model)) {
-    const llmRow = Math.max(headline - (input.hasKb ? kb : 0), 0);
-    rows.push({ label: `Gemini Live: ${input.model}`, min: llmRow, max: llmRow });
+    rows.push({ label: `Gemini Live: ${input.model}`, min: headline, max: headline });
     if (input.hasKb) {
       rows.push({ label: "Knowledge Base", min: kb, max: kb });
     }
     return total(rows);
   }
 
-  const llmRow = Math.max(headline - stt - tts - (input.hasKb ? kb : 0), 0);
+  // Since price = (model + stt + tts) x markup and the component rows are the
+  // same components at the same markup, this is the model's own marked-up
+  // price and cannot go negative on a self-consistent card — a test pins that
+  // for every model in FALLBACK_PRICES. The clamp only guards a live card
+  // whose components outrun its model prices, where a negative row on screen
+  // would be worse than a flat one.
+  const llmRow = Math.max(headline - stt - tts, 0);
   rows.push({ label: `LLM: ${input.model}`, min: llmRow, max: llmRow });
   rows.push({ label: "STT: cartesia ink-whisper", min: stt, max: stt });
   rows.push({ label: "TTS: cartesia sonic-2", min: tts, max: tts });
