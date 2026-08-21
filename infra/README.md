@@ -188,11 +188,18 @@ redeploy) the API after changing one, not just after changing a rate.
 
 Every one of those tables starts out seeded with a placeholder rather than
 a real number. The one that matters most is the global markup,
-`markup_pct = 300` — deliberately not a recommendation. It puts a Live
-minute near $0.054/min against roughly $0.018/min of actual cost, under
-Retell's own published range of $0.07–$0.31/min. **Set the real number
-before the pricing UI reaches a customer** — that call belongs to an
-operator, not to this codebase.
+`markup_pct = 300` — deliberately not a recommendation. `cost_per_min_stack`
+for a Live model is just the audio-token cost (there's no separate STT/TTS
+leg), so at the seeded rates that's $0.0135/min, and the 300% markup puts
+the price at $0.054/min — exactly 4x, under Retell's own published range of
+$0.07–$0.31/min. That multiplier never touches telephony or
+`infra_fixed_monthly`: `telnyx_outbound`/`telnyx_inbound` are rows in
+`cost_rates` but not part of `cost_per_min_stack`, so a real outbound minute
+runs closer to $0.0185 all-in ($0.0135 audio + $0.005 trunk) against that
+same $0.054 price — a smaller margin than the headline 4x, and one that
+narrows further as trunk or infra rates rise. **Set the real number before
+the pricing UI reaches a customer** — that call belongs to an operator, not
+to this codebase.
 
 Rules are effective-dated, so set the markup with an insert, never an
 `UPDATE` — an update would rewrite the margin a call already billed under,
@@ -215,8 +222,9 @@ FROM pricing.model_price ORDER BY 1;
 usable rule resolved for that model at all, and it comes with a NULL
 `price_per_min` — never a price that happens to equal cost. The same is
 true of `cost_per_min_stack`: NULL means a component rate is missing (a
-typo'd or retired `cost_rates` row), not that the component is free. Either
-NULL is a sign to go find the missing or misnamed row, not a real price.
+typo'd or retired `cost_rates` row), not that the component is free. In
+either case, NULL is a sign to go find the missing or misnamed row, not a
+real price.
 
 The pricing endpoint (`GET /dashboard/pricing/models`) only ever serves
 prices: a model it can't price is dropped from `models` and named in
