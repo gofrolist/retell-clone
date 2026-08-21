@@ -5,7 +5,7 @@ from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
 
 from arhiteq_api.db import session_factory
-from arhiteq_api.models import CostRate, PriceRule
+from arhiteq_api.models import CostRate, PriceRule, now_ms
 from arhiteq_api.services.pricing import model_prices
 from tests.conftest import AUTH_HEADERS
 
@@ -205,3 +205,38 @@ async def test_a_rule_that_leaves_a_lever_unset_is_still_accepted(client):
     body = (await client.get("/dashboard/pricing/models", headers=AUTH_HEADERS)).json()
     live = next(m for m in body["models"] if m["model_id"] == LIVE)
     assert live["per_minute"] == pytest.approx(0.0135 * 6.0)
+
+
+async def test_a_future_dated_component_rate_is_not_served_early(client):
+    """The components block must be effective-dated like everything else.
+
+    A Cartesia rise scheduled for next week is a supported and tested feature
+    of the cost tables. Selecting component rates without a date filter serves
+    that future rate as today's STT/TTS price while `per_minute` still
+    reflects the current one — a breakdown that no longer sums to its own
+    headline — and with two rows for the component, whichever row the database
+    returns last silently wins.
+    """
+    async with session_factory()() as session:
+        session.add(
+            CostRate(
+                component="cartesia_tts",
+                unit="per_minute",
+                unit_price_usd=0.028,  # doubled, effective a week from now
+                effective_from_ms=now_ms() + 7 * 24 * 60 * 60 * 1000,
+                note="scheduled rise",
+            )
+        )
+        await session.commit()
+
+    body = (await client.get("/dashboard/pricing/models", headers=AUTH_HEADERS)).json()
+
+    # Today's rate at the seeded 300% global markup: 0.014 * 4.
+    assert body["components"]["cartesia_tts"] == pytest.approx(0.056)
+    # And the breakdown still reconciles: a TEXT model's headline covers
+    # model + STT + TTS at the same markup, so the components can never
+    # exceed it.
+    text = next(m for m in body["models"] if not m["is_audio"])
+    assert (
+        body["components"]["cartesia_stt"] + body["components"]["cartesia_tts"] < text["per_minute"]
+    )

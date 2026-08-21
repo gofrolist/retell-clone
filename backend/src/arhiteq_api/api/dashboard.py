@@ -58,7 +58,7 @@ from ..models import (
 from ..schemas import CompatModel, TestWebhookRequest
 from ..services import webhooks
 from ..services.gemini import build_genai_client, genai_credentials_available
-from ..services.pricing import ModelPrice, load_assumptions, model_prices
+from ..services.pricing import ModelPrice, current_rows, load_assumptions, model_prices
 from ..sessions import email_from_authorization
 from ._deps import apply_patch, get_owned
 from .auth_google import _email_allowed
@@ -1757,7 +1757,12 @@ async def pricing_models(
     unmarked-up (i.e. cost) component rates.
     """
     assumptions = await load_assumptions(session)
-    prices = await model_prices(session)
+    # One instant for the whole response. `model_prices` would pick its own
+    # `now_ms()` otherwise, and the components block below would resolve
+    # against a different one — a difference of milliseconds, but the point is
+    # that every number here describes the same moment.
+    at_ms = now_ms()
+    prices = await model_prices(session, at_ms=at_ms)
 
     priced: list[ModelPrice] = []
     unpriced: list[str] = []
@@ -1786,13 +1791,21 @@ async def pricing_models(
     if unpriced:
         log.warning("no usable price for models: %s", ", ".join(unpriced))
 
+    # Effective-dated exactly like the headline price. A plain
+    # `select(CostRate)` returns every generation of a component's rate, so a
+    # future-dated Cartesia rise would be served as today's STT/TTS price
+    # while `per_minute` still reflected the old one — and with two rows in
+    # play the comprehension would silently keep whichever row came back last.
+    current_components = current_rows(CostRate, CostRate.component, at_ms)
     component_costs = {
         row.component: float(row.unit_price_usd)
         for row in (
             await session.execute(
-                select(CostRate).where(CostRate.component.in_(_PRICED_COMPONENTS))
+                select(current_components.c.component, current_components.c.unit_price_usd).where(
+                    current_components.c.component.in_(_PRICED_COMPONENTS)
+                )
             )
-        ).scalars()
+        ).all()
     }
     global_priced = next(
         (p for p in priced if p.rule_source == "global"),

@@ -54,8 +54,13 @@ async def load_assumptions(session: AsyncSession) -> dict[str, float]:
     return {key: float(value) for key, value in rows}
 
 
-def _current(model: Any, key_column: Any, at_ms: int | ColumnElement[Any]) -> Any:
+def current_rows(model: Any, key_column: Any, at_ms: int | ColumnElement[Any]) -> Any:
     """The row in force at `at_ms` for each key.
+
+    Public because effective-dating is not just this module's business: any
+    consumer that reads a rate table alongside these prices has to select the
+    same row, or it will serve a future-dated rate as today's while the
+    headline price still reflects the old one.
 
     row_number() over a descending effective_from_ms, rather than a max()
     subquery join: it keeps the whole row without a self-join and renders on
@@ -99,9 +104,9 @@ def model_price_select(
     out_tokens = assumptions["output_tokens_per_turn"]
     in_tokens = assumptions["display_input_tokens_per_turn"]
 
-    rates = _current(ModelCostRate, ModelCostRate.model_id, at_ms)
-    rules = _current(PriceRule, PriceRule.scope, at_ms)
-    components = _current(CostRate, CostRate.component, at_ms)
+    rates = current_rows(ModelCostRate, ModelCostRate.model_id, at_ms)
+    rules = current_rows(PriceRule, PriceRule.scope, at_ms)
+    components = current_rows(CostRate, CostRate.component, at_ms)
 
     def component(name: str) -> ColumnElement[Any]:
         return (
