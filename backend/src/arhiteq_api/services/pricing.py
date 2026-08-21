@@ -49,11 +49,6 @@ class ModelPrice(NamedTuple):
     output_per_1m_cost: float
 
 
-async def load_assumptions(session: AsyncSession) -> dict[str, float]:
-    rows = (await session.execute(select(PricingAssumption.key, PricingAssumption.value))).all()
-    return {key: float(value) for key, value in rows}
-
-
 def current_rows(model: Any, key_column: Any, at_ms: int | ColumnElement[Any]) -> Any:
     """The row in force at `at_ms` for each key.
 
@@ -86,9 +81,26 @@ def current_rows(model: Any, key_column: Any, at_ms: int | ColumnElement[Any]) -
     return select(ranked).where(ranked.c.rn == 1).subquery()
 
 
-def model_price_select(
-    assumptions: dict[str, float], at_ms: int | ColumnElement[Any]
-) -> Select[Any]:
+def assumption(key: str) -> ColumnElement[Any]:
+    """One `pricing_assumptions` value, as a subquery rather than a number.
+
+    Reading these into Python and folding them into the arithmetic would bake
+    them into the compiled view as literals, so an edited assumption reached
+    the API on the next request and Grafana only on the next API restart —
+    two dashboards describing the same call differently in between. A scalar
+    subquery re-evaluates per query, exactly as `at_ms` already does, and
+    renders on SQLite as well as Postgres so the API keeps executing the same
+    Select the view is compiled from.
+
+    A missing key reads as NULL and propagates: the model's cost, and so its
+    price, become unknown. That is the module's standing rule (see the module
+    docstring) and the right one here too — a deleted assumption must not
+    quietly re-price the catalog off a coalesced zero.
+    """
+    return select(PricingAssumption.value).where(PricingAssumption.key == key).scalar_subquery()
+
+
+def model_price_select(at_ms: int | ColumnElement[Any]) -> Select[Any]:
     """Build the cost -> price select.
 
     `at_ms` is normally an int (a request's "as of" instant). The
@@ -98,11 +110,11 @@ def model_price_select(
     query rather than freezing whichever rate happened to be current at
     CREATE VIEW time.
     """
-    tokens_per_min = assumptions["audio_tokens_per_sec"] * 60.0
-    talk = assumptions["agent_talk_ratio"]
-    turns = assumptions["turns_per_min"]
-    out_tokens = assumptions["output_tokens_per_turn"]
-    in_tokens = assumptions["display_input_tokens_per_turn"]
+    tokens_per_min = assumption("audio_tokens_per_sec") * 60.0
+    talk = assumption("agent_talk_ratio")
+    turns = assumption("turns_per_min")
+    out_tokens = assumption("output_tokens_per_turn")
+    in_tokens = assumption("display_input_tokens_per_turn")
 
     rates = current_rows(ModelCostRate, ModelCostRate.model_id, at_ms)
     rules = current_rows(PriceRule, PriceRule.scope, at_ms)
@@ -125,15 +137,15 @@ def model_price_select(
     # not two rates — applying the text formula to a Live model under-prices an
     # audio minute by roughly 6x.
     audio_cost = cast(
-        literal(tokens_per_min / 1e6) * rates.c.input_per_1m_usd
-        + literal(talk * tokens_per_min / 1e6) * rates.c.output_per_1m_usd,
+        tokens_per_min / 1e6 * rates.c.input_per_1m_usd
+        + talk * tokens_per_min / 1e6 * rates.c.output_per_1m_usd,
         Float,
     )
     text_cost = cast(
-        literal(turns)
+        turns
         * (
-            literal(in_tokens / 1e6) * rates.c.input_per_1m_usd
-            + literal(out_tokens / 1e6) * rates.c.output_per_1m_usd
+            in_tokens / 1e6 * rates.c.input_per_1m_usd
+            + out_tokens / 1e6 * rates.c.output_per_1m_usd
         ),
         Float,
     )
@@ -208,8 +220,7 @@ def model_price_select(
 
 async def model_prices(session: AsyncSession, at_ms: int | None = None) -> list[ModelPrice]:
     at = now_ms() if at_ms is None else at_ms
-    assumptions = await load_assumptions(session)
-    rows = (await session.execute(model_price_select(assumptions, at))).all()
+    rows = (await session.execute(model_price_select(at))).all()
     out: list[ModelPrice] = []
     for row in rows:
         stack = None if row.cost_per_min_stack is None else float(row.cost_per_min_stack)

@@ -172,19 +172,16 @@ numbers, kept in four Postgres tables and seeded on first boot:
 | `model_cost_rates` | per-model token cost — what we pay the model provider |
 | `cost_rates` | STT, TTS, telephony and fixed-infrastructure cost |
 | `price_rules` | how a price is derived from a cost, per scope: explicit price > per-model markup/adder > global markup/adder |
-| `pricing_assumptions` | talk ratio, tokens/turn and friends, shared by the SQL view below and by the frontend's `estimates.ts` |
+| `pricing_assumptions` | talk ratio, tokens/turn and friends — cost inputs, read by the price select and so by the SQL view below; deliberately never served to the dashboard |
 
 The rule that turns a cost into a price has exactly one implementation
 (`backend/src/arhiteq_api/services/pricing.py`), compiled at API boot into
 the Postgres view `pricing.model_price` so the pricing endpoint and
 Grafana's margin panels can never quote different numbers for the same
-model. The rate and rule tables are re-read on every query against that
-view, so a new rate takes effect for Grafana with no redeploy — but
-`pricing_assumptions` is inlined into the view as literals at boot, because
-a view can't carry bind parameters. Editing an assumption reaches the API
-immediately and reaches Grafana only after the API restarts and re-creates
-the view; expect the two to disagree in between, and restart (or just
-redeploy) the API after changing one, not just after changing a rate.
+model. Nothing is frozen into that view: the rate, rule and assumption
+tables are all re-read on every query against it, so any edit to any of the
+four tables takes effect for Grafana at the same instant it takes effect
+for the API, with no restart and no redeploy.
 
 Every one of those tables starts out seeded with a placeholder rather than
 a real number. The one that matters most is the global markup,
@@ -211,7 +208,17 @@ INSERT INTO price_rules (scope, markup_pct, effective_from_ms, note)
 VALUES ('*', 250, (EXTRACT(EPOCH FROM now()) * 1000)::bigint, 'set 2026-08-21');
 ```
 
-Check what it resolved to before anyone sees it:
+`markup_pct` is a PERCENT: 250 means 250%, i.e. a price 3.5x cost. It is not
+a multiplier and not a fraction — `markup_pct = 0.3` is a 0.3% markup, not
+"30% margin", and prices the minute a rounding error above cost. The
+database rejects the rules that can only ever land below cost (a negative
+markup or adder, a non-positive explicit price), and the pricing endpoint
+refuses to serve any model whose resolved price fails to clear that model's
+own cost — it drops the model into `unpriced` and logs both numbers. So the
+symptom of a mistyped markup is a model missing from the agent editor's
+picker plus a `refusing to serve … at or below cost` line in the API log,
+not a customer quoted at cost. Check the resolved price before anyone sees
+it either way:
 
 ```sql
 SELECT model_id, cost_per_min_stack, price_per_min, rule_source
