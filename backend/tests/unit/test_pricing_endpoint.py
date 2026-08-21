@@ -4,6 +4,7 @@ from sqlalchemy import delete
 
 from arhiteq_api.db import session_factory
 from arhiteq_api.models import CostRate, PriceRule
+from arhiteq_api.services.pricing import model_prices
 from tests.conftest import AUTH_HEADERS
 
 LIVE = "gemini-live-2.5-flash-native-audio"
@@ -37,6 +38,22 @@ async def test_never_serialises_a_cost(client):
     assert "cost" not in blob.lower()
     # The seeded Live stack cost, to 4dp — must not appear anywhere.
     assert "0.0135" not in blob
+
+    # The literal above only ever proved Live's cost was absent. Every other
+    # model's stack cost must be absent too, or a bug that serialises
+    # `cost_per_min_stack` instead of `price_per_min` for one of the five
+    # TEXT models would pass silently. Query each model's cost independently
+    # via `model_prices()` -- the same select the endpoint runs -- rather
+    # than hardcoding a second table of numbers next to the one already
+    # above.
+    async with session_factory()() as session:
+        costs = await model_prices(session)
+    assert {c.model_id for c in costs} == ALL_MODEL_IDS
+    for cost in costs:
+        assert cost.cost_per_min_stack is not None, cost.model_id
+        needle = f"{cost.cost_per_min_stack:.4f}"
+        assert needle not in blob, (cost.model_id, needle)
+
     for model in body["models"]:
         assert set(model) == {
             "model_id",
@@ -53,6 +70,26 @@ async def test_prices_are_marked_up_above_the_seeded_cost(client):
     live = next(m for m in body["models"] if m["model_id"] == LIVE)
     assert live["per_minute"] > 0.0135
     assert live["input_per_1m"] > 3.0
+
+    # The check above only ever exercised the Live model. Every OTHER model
+    # must clear the same bar too, or serving a text model's cost instead of
+    # its price -- or dropping `* effective_multiplier` for a single entry in
+    # the list comprehension -- would emit a plausible float this test never
+    # looks at. Derive each model's bound from `model_prices()` (the same
+    # query the endpoint itself runs) rather than a hardcoded table of
+    # numbers copied out of the implementation, so the assertion still means
+    # something if the seeded markup or cost inputs ever change.
+    async with session_factory()() as session:
+        costs = {p.model_id: p for p in await model_prices(session)}
+
+    served = {m["model_id"]: m for m in body["models"]}
+    assert served  # a passing loop over nothing would prove nothing
+    for model_id, served_model in served.items():
+        cost = costs[model_id]
+        assert cost.cost_per_min_stack is not None, model_id
+        assert served_model["per_minute"] > cost.cost_per_min_stack, model_id
+        assert served_model["input_per_1m"] > cost.input_per_1m_cost, model_id
+        assert served_model["output_per_1m"] > cost.output_per_1m_cost, model_id
 
 
 async def test_returns_the_assumptions_the_view_used(client):
