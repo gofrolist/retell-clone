@@ -395,7 +395,20 @@ export function estimateCost(
   // for every model in FALLBACK_PRICES. The clamp only guards a live card
   // whose components outrun its model prices, where a negative row on screen
   // would be worse than a flat one.
-  const llmRow = Math.max(headline - stt - tts, 0);
+  const unclamped = headline - stt - tts;
+  if (unclamped < 0) {
+    // The clamp is silent by design (a flat $0 row beats a negative one), but
+    // a live backend card that reaches it is a pricing-data bug: the row will
+    // read "$0.000/min" to a customer, which looks like a deliberate free
+    // tier rather than the error it is. Surface it so it's caught in the
+    // field instead of silently under-billing.
+    console.warn(
+      `[estimateCost] LLM row clamped to $0 for model "${input.model}": ` +
+        `headline $${headline.toFixed(6)}/min - stt $${stt.toFixed(6)}/min - ` +
+        `tts $${tts.toFixed(6)}/min = $${unclamped.toFixed(6)}/min`,
+    );
+  }
+  const llmRow = Math.max(unclamped, 0);
   rows.push({ label: `LLM: ${input.model}`, min: llmRow, max: llmRow });
   rows.push({ label: "STT: cartesia ink-whisper", min: stt, max: stt });
   rows.push({ label: "TTS: cartesia sonic-2", min: tts, max: tts });

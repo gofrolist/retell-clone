@@ -9,11 +9,11 @@ import {
   estimateCost,
   estimateLatency,
   estimateTokens,
-  FALLBACK_PRICES,
   formatTokenValue,
   formatUsdPerMin,
   TOKEN_WARNING_THRESHOLD,
 } from "@/lib/estimates";
+import { usePricing } from "@/lib/usePricing";
 
 const msRange = (min: number, max: number) =>
   `${Math.round(min)}-${Math.round(max)}ms`;
@@ -116,9 +116,9 @@ export default function MetaRow({
    */
   stacked?: boolean;
 }) {
+  const prices = usePricing();
   const tokens = estimateTokens(input);
-  // FALLBACK_PRICES until this component fetches the live price card.
-  const cost = estimateCost(input, tokens, FALLBACK_PRICES);
+  const cost = estimateCost(input, tokens, prices);
   const latency = estimateLatency(input);
   // Sum the rows as displayed (each rounded to $0.001) so the breakdown
   // always adds up to the total shown on screen.

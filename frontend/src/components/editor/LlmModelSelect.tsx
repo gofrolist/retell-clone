@@ -1,7 +1,8 @@
 "use client";
 
-import { FALLBACK_PRICES, formatUsdPerMin, llmDisplayCostPerMin } from "@/lib/estimates";
+import { formatUsdPerMin, llmDisplayCostPerMin } from "@/lib/estimates";
 import { isLiveModel, LLM_MODELS, type LlmModel } from "@/lib/models";
+import { usePricing } from "@/lib/usePricing";
 import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronUp, Radio } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
@@ -60,6 +61,7 @@ export default function LlmModelSelect({
   /** Render as the left segment of a grouped control (border comes from the wrapper). */
   attached?: boolean;
 }) {
+  const prices = usePricing();
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const noteId = useId();
@@ -216,8 +218,7 @@ export default function LlmModelSelect({
                   {m.suggested && <Pill>Suggested</Pill>}
                   {live && <Pill tone="live">Live</Pill>}
                   <span className="ml-auto pl-2 text-[12px] tabular-nums text-faint">
-                    {/* FALLBACK_PRICES until this component fetches the live price card. */}
-                    {formatUsdPerMin(llmDisplayCostPerMin(m.id, FALLBACK_PRICES))}
+                    {formatUsdPerMin(llmDisplayCostPerMin(m.id, prices))}
                   </span>
                 </button>
               );

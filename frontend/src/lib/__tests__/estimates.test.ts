@@ -1,5 +1,5 @@
 /// <reference types="bun" />
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 
 import type { RawConversationFlow, RawLlm } from "@/lib/api";
 import {
@@ -12,6 +12,7 @@ import {
   llmEstimateInput,
 } from "@/lib/estimates";
 import { RUNTIME_DEFAULT_MODEL } from "@/lib/models";
+import type { PriceCard } from "@/lib/types";
 
 /**
  * Agent-details estimates for both agent shapes.
@@ -418,6 +419,44 @@ describe("price card", () => {
             COMPONENT_COSTS.cartesia_tts;
         expect(modelRow.min).toBeGreaterThan(modelOnlyCost);
       }
+    }
+  });
+
+  test("warns when a live card's components outrun the model's price, clamping the LLM row", () => {
+    // FALLBACK_PRICES can never breach the clamp (proved above), so build a
+    // card that can: inflate the shared STT/TTS legs past gemini-2.5-flash-
+    // lite's own per-minute price. The clamp still floors the row at zero —
+    // this only proves the warning fires alongside it, naming the model and
+    // the numbers so the under-billing is caught in the field.
+    const breached: PriceCard = {
+      ...FALLBACK_PRICES,
+      components: { cartesia_stt: 0.05, cartesia_tts: 0.05, kb_overhead: 0.004 },
+    };
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const input = llmEstimateInput(llm({ model: "gemini-2.5-flash-lite" }));
+      const cost = estimateCost(input, estimateTokens(input), breached);
+
+      const modelRow = cost.rows.find((r) => r.label === "LLM: gemini-2.5-flash-lite")!;
+      expect(modelRow.min).toBe(0); // the clamp itself is unchanged
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = warn.mock.calls[0]!.join(" ");
+      expect(message).toContain("gemini-2.5-flash-lite");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("does not warn on the normal, self-consistent path", () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      for (const m of FALLBACK_PRICES.models) {
+        const input = llmEstimateInput(llm({ model: m.model_id }));
+        estimateCost(input, estimateTokens(input), FALLBACK_PRICES);
+      }
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
     }
   });
 
