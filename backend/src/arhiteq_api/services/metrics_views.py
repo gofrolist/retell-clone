@@ -38,7 +38,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import Agent, AgentVersion, Call, PhoneNumber, Workspace, WorkspaceMember
-from .view_ddl import apply_views, render_view_sql
+from .view_ddl import apply_views
 
 SCHEMA = "metrics"
 
@@ -203,10 +203,5 @@ VIEWS: tuple[tuple[str, Callable[[], Select[Any]]], ...] = (
 async def apply_metrics_views(session: AsyncSession) -> bool:
     """Install every metrics view. Idempotent; a no-op off Postgres."""
     return await apply_views(
-        session,
-        SCHEMA,
-        [
-            (f"{SCHEMA}.{name}", render_view_sql(f"{SCHEMA}.{name}", build()))
-            for name, build in VIEWS
-        ],
+        session, SCHEMA, [(f"{SCHEMA}.{name}", build()) for name, build in VIEWS]
     )

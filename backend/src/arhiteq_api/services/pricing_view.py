@@ -49,4 +49,4 @@ async def apply_pricing_view(session: AsyncSession) -> bool:
     The DROP-then-CREATE contract, the concurrent-boot races and the lock
     timeout all live in services/view_ddl.py, which the metrics schema shares.
     """
-    return await apply_views(session, "pricing", [(VIEW_NAME, render_pricing_view_sql())])
+    return await apply_views(session, "pricing", [(VIEW_NAME, model_price_select(at_ms=_NOW_MS))])

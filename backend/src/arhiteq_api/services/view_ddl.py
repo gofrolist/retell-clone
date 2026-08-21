@@ -66,8 +66,10 @@ def render_view_sql(qualified_name: str, stmt: Select[Any]) -> str:
     return f"CREATE VIEW {qualified_name} AS {compiled}"
 
 
-async def apply_views(session: AsyncSession, schema: str, views: Sequence[tuple[str, str]]) -> bool:
-    """Install `views` (qualified_name, create_sql) into `schema`. Idempotent.
+async def apply_views(
+    session: AsyncSession, schema: str, views: Sequence[tuple[str, Select[Any]]]
+) -> bool:
+    """Install `views` (qualified_name, select) into `schema`. Idempotent.
 
     DROP-then-CREATE, not CREATE OR REPLACE: Postgres refuses to replace a view
     whose column names, types or order changed (42P16 invalid_object_definition),
@@ -81,15 +83,19 @@ async def apply_views(session: AsyncSession, schema: str, views: Sequence[tuple[
     Grants survive this only because the operator sets ALTER DEFAULT PRIVILEGES
     (see infra/sql/grafana_ro.sql); a plain GRANT is dropped along with the view
     and would come back missing on the next boot.
+
+    Selects rather than SQL strings, so nothing is compiled until we know we
+    are on Postgres: the test suite boots the app hundreds of times against
+    SQLite, where every one of these renders would be thrown away.
     """
     if session.get_bind().dialect.name != "postgresql":
         return False
     try:
         await session.execute(text(_SET_LOCK_TIMEOUT_SQL))
         await session.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
-        for qualified_name, create_sql in views:
+        for qualified_name, stmt in views:
             await session.execute(text(f"DROP VIEW IF EXISTS {qualified_name}"))
-            await session.execute(text(create_sql))
+            await session.execute(text(render_view_sql(qualified_name, stmt)))
         await session.commit()
     except DBAPIError as error:
         state = _sqlstate(error)

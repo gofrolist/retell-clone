@@ -77,6 +77,8 @@ async def test_apply_pricing_view_installs_the_view_through_the_shared_installer
 
     assert await apply_pricing_view(object()) is True
     assert seen["schema"] == "pricing"
-    [(name, sql)] = seen["views"]
+    [(name, stmt)] = seen["views"]
     assert name == "pricing.model_price"
-    assert sql.startswith("CREATE VIEW pricing.model_price AS")
+    # The select, not rendered SQL: apply_views compiles it only once it knows
+    # it is on Postgres. render_pricing_view_sql covers the rendering.
+    assert "price_per_min" in str(stmt)

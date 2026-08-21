@@ -1,9 +1,9 @@
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, literal, select
 
 from arhiteq_api.db import session_factory
-from arhiteq_api.models import CostRate, ModelCostRate, PriceRule
-from arhiteq_api.services.pricing import model_prices
+from arhiteq_api.models import CostRate, ModelCostRate, PriceRule, now_ms
+from arhiteq_api.services.pricing import model_prices, price_columns, scalar_sources
 from arhiteq_api.services.pricing_seed import seed_pricing_defaults
 
 LIVE = "gemini-live-2.5-flash-native-audio"
@@ -269,3 +269,97 @@ async def test_effective_multiplier_is_none_when_there_is_nothing_to_scale():
     assert p.cost_per_min_stack == pytest.approx(0.0)
     assert p.price_per_min == pytest.approx(0.09)
     assert p.effective_multiplier is None
+
+
+async def test_scalar_sources_price_a_model_the_same_way_the_view_does():
+    """The two lookup strategies must be one implementation, not two.
+
+    `model_price_select` reads the rate card as joined relations;
+    `scalar_sources` reads it as correlated scalar subqueries so a call can be
+    priced at its own start. If these ever disagree, the price endpoint and
+    the margin dashboard describe the same minute differently.
+    """
+    async with session_factory()() as session:
+        await seed_pricing_defaults(session)
+        at_ms = now_ms()
+        from_view = {p.model_id: p for p in await model_prices(session, at_ms=at_ms)}
+        assert from_view, "the seed must produce something to compare against"
+
+        for model_id, expected in from_view.items():
+            cols = price_columns(scalar_sources(literal(model_id), literal(at_ms)))
+            row = (
+                (
+                    await session.execute(
+                        select(
+                            cols.cost_per_min_model.label("cost_model"),
+                            cols.cost_per_min_stack.label("cost_stack"),
+                            cols.price_per_min.label("price"),
+                            cols.rule_source.label("rule_source"),
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+
+            assert row["cost_model"] == pytest.approx(expected.cost_per_min_model), model_id
+            assert row["cost_stack"] == pytest.approx(expected.cost_per_min_stack), model_id
+            assert row["price"] == pytest.approx(expected.price_per_min), model_id
+            assert row["rule_source"] == expected.rule_source, model_id
+
+
+async def test_scalar_sources_use_the_rate_in_force_at_that_instant():
+    """A call is priced at its own start, not at the newest rate card."""
+    async with session_factory()() as session:
+        session.add_all(
+            [
+                ModelCostRate(
+                    model_id="gemini-test-repriced",
+                    input_per_1m_usd=1.0,
+                    output_per_1m_usd=1.0,
+                    is_audio=True,
+                    effective_from_ms=0,
+                ),
+                ModelCostRate(
+                    model_id="gemini-test-repriced",
+                    input_per_1m_usd=10.0,
+                    output_per_1m_usd=10.0,
+                    is_audio=True,
+                    effective_from_ms=5_000,
+                ),
+            ]
+        )
+        await session.commit()
+
+        def cost_at(at_ms: int):
+            cols = price_columns(scalar_sources(literal("gemini-test-repriced"), literal(at_ms)))
+            return select(cols.cost_per_min_model.label("cost"))
+
+        before = (await session.execute(cost_at(1_000))).scalar_one()
+        after = (await session.execute(cost_at(9_000))).scalar_one()
+
+        assert before > 0
+        assert after == pytest.approx(before * 10)
+
+
+async def test_scalar_sources_yield_null_for_a_model_with_no_rate():
+    """Unknown must stay unknown: a 0 here would claim the model is free."""
+    async with session_factory()() as session:
+        cols = price_columns(
+            scalar_sources(literal("model-that-does-not-exist"), literal(now_ms()))
+        )
+        row = (
+            (
+                await session.execute(
+                    select(
+                        cols.cost_per_min_stack.label("cost"),
+                        cols.price_per_min.label("price"),
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+
+        assert row["cost"] is None
+        assert row["price"] is None

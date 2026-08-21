@@ -8,7 +8,9 @@ from arhiteq_api.db import session_factory
 from arhiteq_api.services import view_ddl
 from arhiteq_api.services.view_ddl import apply_views, render_view_sql
 
-_ONE_VIEW = [("metrics.example", "CREATE VIEW metrics.example AS SELECT 1")]
+# A select, not SQL: apply_views compiles only after it knows it is on
+# Postgres, so nothing is rendered on a SQLite boot.
+_ONE_VIEW = [("metrics.example", select(literal(1).label("one")))]
 
 
 def test_render_view_sql_is_a_plain_create_view_with_no_bind_params():
@@ -119,19 +121,17 @@ async def test_apply_installs_every_view_in_one_transaction():
     """
     session = _FakeSession()
     views = [
-        ("metrics.first", "CREATE VIEW metrics.first AS SELECT 1"),
-        ("metrics.second", "CREATE VIEW metrics.second AS SELECT 2"),
+        ("metrics.first", select(literal(1).label("one"))),
+        ("metrics.second", select(literal(2).label("two"))),
     ]
 
     assert await apply_views(session, "metrics", views) is True
 
     assert session.committed is True
-    assert session.calls[2:] == [
-        "DROP VIEW IF EXISTS metrics.first",
-        "CREATE VIEW metrics.first AS SELECT 1",
-        "DROP VIEW IF EXISTS metrics.second",
-        "CREATE VIEW metrics.second AS SELECT 2",
-    ]
+    assert session.calls[2] == "DROP VIEW IF EXISTS metrics.first"
+    assert session.calls[3].startswith("CREATE VIEW metrics.first AS")
+    assert session.calls[4] == "DROP VIEW IF EXISTS metrics.second"
+    assert session.calls[5].startswith("CREATE VIEW metrics.second AS")
 
 
 @pytest.mark.parametrize("sqlstate", sorted(view_ddl._RACE_SQLSTATES))
