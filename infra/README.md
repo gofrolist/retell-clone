@@ -90,6 +90,7 @@ then applies the alert rules and the egress PodMonitor. Keys it needs in
 | `GRAFANA_ADMIN_EMAILS` | space/comma separated; full access, incl. editing dashboards |
 | `GRAFANA_VIEWER_EMAILS` | space/comma separated, may be empty; read-only |
 | `GRAFANA_DB_PASSWORD` | `grafana_ro` Postgres password — see § Grafana database access |
+| `ARHITEQ_DB_HOST` | Cloud SQL private IP, `terraform output -raw db_private_ip` |
 | `TELEGRAM_BOT_TOKEN` | from @BotFather; never enters a values file |
 | `TELEGRAM_CHAT_ID` | negative for groups/channels, positive for a DM |
 
@@ -187,7 +188,11 @@ conversation content. A Postgres view executes with its owner's privileges
 (`security_invoker` is off by default), so the view reaches the base table and
 the caller does not.
 
-Create the role once per database, as a superuser:
+Create the role, as a superuser. The script is idempotent — re-running it is
+also how `GRAFANA_DB_PASSWORD` is rotated, and how a run that failed halfway is
+recovered. It creates the `metrics` and `pricing` schemas itself (owned by
+`arhiteq`, so the API can still install views into them), so it does not have
+to wait for an API boot:
 
 ```bash
 # Cloud SQL has no superuser shell; connect through the proxy as `postgres`.
@@ -214,9 +219,11 @@ only reason the grants come back. If those were skipped, the dashboard keeps
 working until the next deploy and then breaks with no deploy in the blast
 radius.
 
-Set `GRAFANA_DB_PASSWORD` in `infra/private/prod.env` before running
-`gen-values.sh`; the datasource reads it from a Secret, never from the values
-file.
+Set `GRAFANA_DB_PASSWORD` and `ARHITEQ_DB_HOST` in `infra/private/prod.env`
+before running `gen-values.sh`; the datasource reads the password from a Secret,
+never from the values file, and the host from `terraform output -raw
+db_private_ip` — re-run `gen-values.sh` after any apply that recreates the
+Cloud SQL instance, or the dashboard keeps dialling the old private IP.
 
 ### Pricing
 

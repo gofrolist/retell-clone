@@ -1,6 +1,7 @@
 import logging
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import literal, select
 from sqlalchemy.exc import DBAPIError
 
@@ -201,3 +202,30 @@ async def test_apply_re_raises_a_genuine_ddl_error(fail_on):
     session = _FakeSession(_fake_dbapi_error("42601"), fail_on=fail_on)
     with pytest.raises(DBAPIError):
         await apply_views(session, "metrics", _ONE_VIEW)
+
+
+async def test_a_broken_view_does_not_stop_the_api_from_serving(monkeypatch, caplog):
+    """A SQL error in a read-model view must not crashloop every replica.
+
+    apply_views re-raises anything that is not a concurrent-DDL race, and it is
+    right to: a silently-missing view means the dashboard reads absent data with
+    no signal. But the lifespan is a different decision. Nothing the API serves
+    reads these views -- they exist for Grafana -- so letting the error out of
+    startup means no pod reaches ready and the whole voice control plane is down
+    for a dashboard. The suite executes these selects against SQLite only, which
+    is exactly why a Postgres-only failure has to degrade instead of crash.
+    """
+    from arhiteq_api import main as main_module
+
+    async def boom(_session):
+        raise DBAPIError("CREATE VIEW metrics.tenancy AS ...", None, Exception("syntax error"))
+
+    monkeypatch.setattr(main_module, "apply_metrics_views", boom)
+
+    with caplog.at_level(logging.ERROR):
+        async with main_module.lifespan(main_module.app):
+            transport = ASGITransport(app=main_module.app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                assert (await client.get("/healthz")).status_code == 200
+
+    assert "views failed to install" in caplog.text

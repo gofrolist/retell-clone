@@ -1,5 +1,5 @@
 {
-  "title": "Arhiteq — Business",
+  "title": "Arhiteq \u2014 Business",
   "uid": "arhiteq-business",
   "schemaVersion": 39,
   "version": 1,
@@ -170,14 +170,14 @@
         {
           "refId": "A",
           "format": "time_series",
-          "rawSql": "SELECT to_timestamp(created_at_ms / 1000) AS time,\n       entity AS metric,\n       count(*) OVER (PARTITION BY entity ORDER BY created_at_ms) AS \"created\"\nFROM metrics.tenancy\nWHERE created_at_ms IS NOT NULL\n  AND created_at_ms BETWEEN $__unixEpochFrom()::bigint * 1000 AND $__unixEpochTo()::bigint * 1000\nORDER BY created_at_ms",
+          "rawSql": "SELECT time, metric, \"created\"\nFROM (\n  SELECT to_timestamp(created_at_ms / 1000) AS time,\n         entity                             AS metric,\n         created_at_ms,\n         count(*) OVER (PARTITION BY entity ORDER BY created_at_ms) AS \"created\"\n  FROM metrics.tenancy\n  WHERE created_at_ms IS NOT NULL\n) s\nWHERE created_at_ms BETWEEN $__unixEpochFrom()::bigint * 1000 AND $__unixEpochTo()::bigint * 1000\nORDER BY created_at_ms",
           "datasource": {
             "type": "postgres",
             "uid": "arhiteq-db"
           }
         }
       ],
-      "description": "Phone numbers are absent on purpose: the schema records no creation time for them, only a last-modified timestamp, and drawing a curve from an edit would invent history. Their total is the tile above."
+      "description": "Cumulative over all history, then filtered to the window \u2014 the running count is computed inside the subquery so a 30-day view shows the real total at each point rather than restarting at 1. Phone numbers are absent on purpose: the schema records no creation time for them, only a last-modified timestamp, and drawing a curve from an edit would invent history. Their total is the tile above."
     },
     {
       "id": 7,
@@ -282,14 +282,14 @@
         {
           "refId": "A",
           "format": "time_series",
-          "rawSql": "SELECT to_timestamp(hour_ms / 1000) AS time, max(peak_concurrent) AS \"peak\"\nFROM metrics.concurrency_hourly\nWHERE hour_ms BETWEEN $__unixEpochFrom()::bigint * 1000 AND $__unixEpochTo()::bigint * 1000\nGROUP BY hour_ms\nORDER BY hour_ms",
+          "rawSql": "SELECT to_timestamp(hour_ms / 1000) AS time, peak_concurrent AS \"peak\"\nFROM metrics.concurrency_hourly_total\nWHERE hour_ms BETWEEN $__unixEpochFrom()::bigint * 1000 AND $__unixEpochTo()::bigint * 1000\nORDER BY hour_ms",
           "datasource": {
             "type": "postgres",
             "uid": "arhiteq-db"
           }
         }
       ],
-      "description": "Overlapping calls, from call start/end times. Prometheus cannot answer this beyond 15 days; the calls table keeps everything. Calls still in flight are excluded — they have no end event."
+      "description": "Overlapping calls across the whole platform, from call start/end times. Reads concurrency_hourly_total and not max() over the per-workspace view: that returns the largest single-workspace peak, so five accounts each peaking at 3 at once would read 3 instead of 15. Prometheus cannot answer this beyond 15 days; the calls table keeps everything. Calls still in flight are excluded \u2014 they have no end event."
     },
     {
       "id": 11,
@@ -320,7 +320,7 @@
           }
         }
       ],
-      "description": "Why 'calls' and 'minutes' disagree. A dial that was never answered consumed no audio, so it contributes no minutes — but it is still a call that happened, and hiding it would make the gap look like a bug."
+      "description": "Why 'calls' and 'minutes' disagree. A dial that was never answered consumed no audio, so it contributes no minutes \u2014 but it is still a call that happened, and hiding it would make the gap look like a bug."
     },
     {
       "id": 12,
@@ -472,12 +472,12 @@
           }
         }
       ],
-      "description": "Variable cost only, and NULL-safe: minutes whose model has no rate row are excluded from both halves rather than counted as free."
+      "description": "Per-call cost \u2014 the model stack plus the trunk, which is everything that varies with the call; allocated fixed infrastructure is kept out of it and shown in its own column below. NULL-safe: minutes whose model has no rate row are excluded from both halves rather than counted as free."
     },
     {
       "id": 18,
       "type": "stat",
-      "title": "Variable cost (window)",
+      "title": "Call cost (window)",
       "datasource": {
         "type": "postgres",
         "uid": "arhiteq-db"
@@ -537,7 +537,7 @@
           }
         }
       ],
-      "description": "Margin here is IMPLIED, not earned: there is no billing system and nobody is charged. It is what this traffic would have earned at the list price the pricing rule computes. Cost is duration x rate, not metered consumption — a call with an unusually long prompt costs the same here as a quiet one of equal length."
+      "description": "Margin here is IMPLIED, not earned: there is no billing system and nobody is charged. It is what this traffic would have earned at the list price the pricing rule computes. Cost is duration x rate, not metered consumption \u2014 a call with an unusually long prompt costs the same here as a quiet one of equal length."
     },
     {
       "id": 20,
@@ -561,14 +561,14 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "WITH window_calls AS (\n  SELECT * FROM metrics.call_cost\n  WHERE day_ms BETWEEN $__unixEpochFrom()::bigint * 1000 AND $__unixEpochTo()::bigint * 1000\n), totals AS (\n  SELECT sum(minutes) AS all_minutes FROM window_calls\n), infra AS (\n  -- metrics.fixed_cost, not cost_rates: grafana_ro holds no grant on the rate\n  -- tables, and granting one would also hand over the per-minute rates our\n  -- margin is derived from.\n  SELECT monthly_usd\n         * (($__unixEpochTo()::bigint - $__unixEpochFrom()::bigint)::numeric / 86400 / 30)\n           AS window_usd\n  FROM metrics.fixed_cost\n  WHERE component = 'infra_fixed_monthly'\n    AND effective_from_ms <= $__unixEpochTo()::bigint * 1000\n  ORDER BY effective_from_ms DESC\n  LIMIT 1\n)\nSELECT c.workspace_id                                              AS \"workspace\",\n       count(*)                                                    AS \"calls\",\n       round(sum(c.minutes)::numeric, 1)                           AS \"minutes\",\n       round(sum(c.total_cost_usd)::numeric, 4)                    AS \"variable cost\",\n       round((i.window_usd * sum(c.minutes) / nullif(t.all_minutes, 0))::numeric, 2)\n                                                                   AS \"allocated infra\",\n       round((sum(c.total_cost_usd) / nullif(sum(c.minutes), 0))::numeric, 5)\n                                                                   AS \"cost/min\",\n       round(sum(c.implied_margin_usd)::numeric, 4)                AS \"implied margin\"\nFROM window_calls c\nCROSS JOIN totals t\nCROSS JOIN infra i\nGROUP BY c.workspace_id, i.window_usd, t.all_minutes\nORDER BY sum(c.minutes) DESC NULLS LAST",
+          "rawSql": "WITH window_calls AS (\n  SELECT * FROM metrics.call_cost\n  WHERE day_ms BETWEEN $__unixEpochFrom()::bigint * 1000 AND $__unixEpochTo()::bigint * 1000\n), totals AS (\n  SELECT sum(minutes) AS all_minutes FROM window_calls\n), infra AS (\n  -- metrics.fixed_cost, not cost_rates: grafana_ro holds no grant on the rate\n  -- tables, and granting one would also hand over the per-minute rates our\n  -- margin is derived from.\n  SELECT monthly_usd\n         * (($__unixEpochTo()::bigint - $__unixEpochFrom()::bigint)::numeric / 86400 / 30)\n           AS window_usd\n  FROM metrics.fixed_cost\n  WHERE component = 'infra_fixed_monthly'\n    AND effective_from_ms <= $__unixEpochTo()::bigint * 1000\n  ORDER BY effective_from_ms DESC\n  LIMIT 1\n)\nSELECT c.workspace_id                                              AS \"workspace\",\n       count(*)                                                    AS \"calls\",\n       round(sum(c.minutes)::numeric, 1)                           AS \"minutes\",\n       round(sum(c.total_cost_usd)::numeric, 4)                    AS \"call cost\",\n       round((i.window_usd * sum(c.minutes) / nullif(t.all_minutes, 0))::numeric, 2)\n                                                                   AS \"allocated infra\",\n       round((sum(c.total_cost_usd) / nullif(sum(c.minutes), 0))::numeric, 5)\n                                                                   AS \"cost/min\",\n       round(sum(c.implied_margin_usd)::numeric, 4)                AS \"implied margin\"\nFROM window_calls c\nCROSS JOIN totals t\nLEFT JOIN infra i ON true\nGROUP BY c.workspace_id, i.window_usd, t.all_minutes\nORDER BY sum(c.minutes) DESC NULLS LAST",
           "datasource": {
             "type": "postgres",
             "uid": "arhiteq-db"
           }
         }
       ],
-      "description": "Margin here is IMPLIED, not earned: there is no billing system and nobody is charged. It is what this traffic would have earned at the list price the pricing rule computes. Cost is duration x rate, not metered consumption — a call with an unusually long prompt costs the same here as a quiet one of equal length. Fixed infrastructure is allocated by minute share and kept in its own column: folding a fixed cost into a per-minute one produces a number that falls as volume rises and looks like an efficiency gain that is really just division."
+      "description": "Margin here is IMPLIED, not earned: there is no billing system and nobody is charged. It is what this traffic would have earned at the list price the pricing rule computes. Cost is duration x rate, not metered consumption \u2014 a call with an unusually long prompt costs the same here as a quiet one of equal length. 'call cost' is the model stack plus the trunk: everything that varies with the call. Fixed infrastructure is allocated by minute share and kept in its own column: folding a fixed cost into a per-minute one produces a number that falls as volume rises and looks like an efficiency gain that is really just division."
     },
     {
       "id": 21,
@@ -599,7 +599,7 @@
           }
         }
       ],
-      "description": "'priced by' is which pricing rule produced the price — an explicit per-model price, a per-model markup, the global rule, or none at all — so an oddly-priced model shows its cause instead of leaving you to reconstruct it from three tables. A blank cost or price means the model has no rate row: unknown, not free."
+      "description": "'priced by' is which pricing rule produced the price \u2014 an explicit per-model price, a per-model markup, the global rule, or none at all \u2014 so an oddly-priced model shows its cause instead of leaving you to reconstruct it from three tables. A blank cost or price means the model has no rate row: unknown, not free."
     }
   ]
 }

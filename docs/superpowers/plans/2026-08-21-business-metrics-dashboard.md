@@ -2030,3 +2030,57 @@ CI can reach any of this:
   *after* `grafana_ro.sql` ran and never received an explicit `GRANT`, and
   `grafana_ro` reads it — which is `ALTER DEFAULT PRIVILEGES` doing the job the
   spec's plain `GRANT` would have failed at on the first deploy.
+
+## Corrected after review
+
+Ten findings from a review of the branch; all ten are fixed. The four that
+changed numbers on the dashboard, rather than just the code around them:
+
+1. **`concurrency_hourly` undercounted, and dropped hours outright.** The
+   running total was only ever sampled at events falling *inside* an hour, so
+   the level carried in from the previous hour was never observed — three calls
+   running 09:50→10:20 reported a peak of 2 for an hour whose real peak was 3.
+   An hour a call spanned end to end produced no row at all. The event stream
+   now also carries a 0-delta event at every hour boundary a call crosses
+   (`_hour_offsets`, a UNION ALL of literals, since generate_series is
+   Postgres-only), bounded at `_MAX_SPANNED_HOURS = 24`. A 0 does not move the
+   running sum, so it reads exactly the level carried into its hour.
+
+2. **The concurrency panel could not show platform load.** It took
+   `max(peak_concurrent)` across workspaces, which is the largest *single*
+   workspace's peak — five accounts each peaking at 3 simultaneously read 3,
+   not 15 — and no aggregate over a per-workspace-partitioned running sum can
+   give the platform number. Hence `metrics.concurrency_hourly_total`, the same
+   stream summed unpartitioned; the panel reads it directly.
+
+3. **"Variable cost" named two different things.** The panels meant *per-call*
+   cost, as opposed to allocated fixed infrastructure — which is what
+   `total_cost_usd` is, so no panel was computing the wrong number. But the
+   view's `variable_cost_usd` column meant *model* cost, as opposed to
+   telephony, and the trunk is per-minute too. The column is now
+   `model_cost_usd` and the panels say "call cost".
+
+4. **A missing `infra_fixed_monthly` row blanked the whole "Per workspace"
+   table.** `CROSS JOIN infra i` against a CTE that returns no row drops every
+   workspace instead of leaving one column empty. `LEFT JOIN infra i ON true`.
+
+And the six around them: a failing view install no longer crashloops every API
+replica (nothing the API *serves* reads these views — a broken one is a stale
+dashboard, and the lifespan logs and carries on); the adoption curve computes
+its running count over all history and filters afterwards, instead of
+restarting at 1 inside the window; `pricing._latest` carries the same `id`
+tiebreak `current_rows` does, so three separate lookups against one rate table
+cannot resolve to different rows; `ix_calls_day_ms` indexes the `day_ms`
+expression the economics panels filter on (verified matched by the planner —
+the per-row rate lookups remain the scaling limit); `grafana_ro.sql` is
+re-runnable, which is now also how the password rotates and how a half-applied
+run recovers, and it creates both schemas itself so there is no API-boot
+ordering to get right; and the Cloud SQL private IP is a `CHANGE_ME_*`
+placeholder filled from `terraform output -raw db_private_ip` rather than
+pinned in a committed values file.
+
+Re-verified against the `postgres:18` container: all six views install through
+the real boot path and again on a second boot, every panel's SQL executes with
+zero errors, `grafana_ro` reads the new view and is still refused on `calls`,
+`grafana_ro.sql` exits 0 twice in a row, and the carried-in and
+spanned-hour cases produce the peaks the new unit tests assert.

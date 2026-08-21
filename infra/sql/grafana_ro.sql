@@ -1,5 +1,6 @@
--- Grafana's read-only role. Run once per database, as a superuser (the
--- `postgres` user on Cloud SQL), from infra/README.md § Grafana database access.
+-- Grafana's read-only role. Run as a superuser (the `postgres` user on Cloud
+-- SQL), from infra/README.md § Grafana database access. Safe to re-run: that
+-- is how the password is rotated and how a half-applied run is recovered.
 --
 -- The application deliberately cannot do this: creating roles and granting
 -- privileges is exactly the authority a compromised API should not hold.
@@ -14,19 +15,46 @@
 -- their owner's privileges: the view reaches the base table and the caller does
 -- not. Leaving that default in place is load-bearing.
 
+-- Re-runnable, on purpose. Under ON_ERROR_STOP a bare CREATE ROLE aborts the
+-- whole script the second time it is run -- including the second time after a
+-- *partial* first run, which is the easy way to get here: if the grants below
+-- fail because the API has not yet booted with these schemas, the role already
+-- exists and the retry dies on line one with the grants still unapplied. Same
+-- trap on a GRAFANA_DB_PASSWORD rotation.
 \set ON_ERROR_STOP on
+
+-- The schemas the API will create at boot, created here first and owned by the
+-- API's role so it can still install views into them. Without this the grants
+-- below depend on the API having booted at least once with the metrics schema,
+-- and the run order becomes something an operator has to get right.
+CREATE SCHEMA IF NOT EXISTS metrics AUTHORIZATION arhiteq;
+CREATE SCHEMA IF NOT EXISTS pricing AUTHORIZATION arhiteq;
+
+-- psql does not interpolate :'pw' inside a dollar-quoted body, so the role is
+-- created without a password here and given one by the ALTER below -- which is
+-- also what makes a password rotation just another run of this script.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'grafana_ro') THEN
+    CREATE ROLE grafana_ro;
+  END IF;
+END
+$$;
 
 -- The password comes from the environment so it never lands in this file or in
 -- shell history:
 --   psql -v pw="$GRAFANA_DB_PASSWORD" -f infra/sql/grafana_ro.sql
-CREATE ROLE grafana_ro LOGIN PASSWORD :'pw';
+ALTER ROLE grafana_ro LOGIN PASSWORD :'pw';
 
 GRANT CONNECT ON DATABASE arhiteq TO grafana_ro;
 GRANT USAGE ON SCHEMA metrics, pricing TO grafana_ro;
 
--- The views that exist right now.
+-- The views that exist right now -- none, on a database whose API has not
+-- booted yet, which ALL TABLES handles and a named `pricing.model_price`
+-- would not. Same scope as the ALTER DEFAULT PRIVILEGES below, deliberately:
+-- one statement for what exists, one for what the next boot creates.
 GRANT SELECT ON ALL TABLES IN SCHEMA metrics TO grafana_ro;
-GRANT SELECT ON pricing.model_price TO grafana_ro;
+GRANT SELECT ON ALL TABLES IN SCHEMA pricing TO grafana_ro;
 
 -- ...and the ones the next API boot will replace them with. The API installs
 -- these views by DROP-then-CREATE on every boot (services/view_ddl.py), which

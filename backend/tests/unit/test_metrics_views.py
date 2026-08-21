@@ -13,6 +13,7 @@ from arhiteq_api.services.metrics_views import (
     apply_metrics_views,
     call_cost_select,
     concurrency_hourly_select,
+    concurrency_hourly_total_select,
     fixed_cost_select,
     tenancy_select,
     workspace_daily_select,
@@ -20,6 +21,8 @@ from arhiteq_api.services.metrics_views import (
 from arhiteq_api.services.pricing_seed import seed_pricing_defaults
 
 _MS_PER_DAY = 86_400_000
+_MS_PER_HOUR = 3_600_000
+_MS_PER_MINUTE = 60_000
 
 
 @pytest.fixture
@@ -276,6 +279,103 @@ async def test_concurrency_ignores_a_call_that_never_ended(session):
     rows = (await session.execute(concurrency_hourly_select())).mappings().all()
 
     assert [r for r in rows if r["workspace_id"] == "ws_inflight"] == []
+
+
+def _call(call_id, workspace_id, start, end):
+    return Call(
+        call_id=call_id,
+        workspace_id=workspace_id,
+        agent_id="ag",
+        direction="inbound",
+        start_timestamp=start,
+        end_timestamp=end,
+        duration_ms=end - start,
+    )
+
+
+async def test_concurrency_counts_calls_carried_in_from_the_previous_hour(session):
+    """An hour's peak includes what was already running when it began.
+
+    Three calls spanning 09:50 -> 10:20 put hour 10's peak at 3, but the only
+    events *inside* hour 10 are the three hangups — running values 2, 1, 0. An
+    hour sampled at its own events alone therefore reports 2, and does so
+    exactly when concurrency is highest, which is the number capacity planning
+    reads.
+    """
+    session.add(Workspace(id="ws_carried", name="Carried"))
+    hour = 50 * _MS_PER_DAY
+    session.add_all(
+        [
+            _call(
+                f"call_carried_{n}",
+                "ws_carried",
+                hour - 10 * _MS_PER_MINUTE,
+                hour + 20 * _MS_PER_MINUTE,
+            )
+            for n in range(3)
+        ]
+    )
+    await session.commit()
+
+    rows = (await session.execute(concurrency_hourly_select())).mappings().all()
+    mine = {r["hour_ms"]: r["peak_concurrent"] for r in rows if r["workspace_id"] == "ws_carried"}
+
+    assert mine[hour] == 3
+
+
+async def test_concurrency_reports_an_hour_a_call_spans_end_to_end(session):
+    """A call longer than an hour must not leave that hour with no row at all.
+
+    Nothing starts or ends inside it, so an event-only stream has nothing to
+    group — and the panel draws a gap through the middle of a busy stretch
+    rather than a line at the level that was actually running.
+    """
+    session.add(Workspace(id="ws_spanning", name="Spanning"))
+    hour = 51 * _MS_PER_DAY
+    session.add(
+        _call(
+            "call_spanning",
+            "ws_spanning",
+            hour - 10 * _MS_PER_MINUTE,
+            hour + _MS_PER_HOUR + 10 * _MS_PER_MINUTE,
+        )
+    )
+    await session.commit()
+
+    rows = (await session.execute(concurrency_hourly_select())).mappings().all()
+    mine = {r["hour_ms"]: r["peak_concurrent"] for r in rows if r["workspace_id"] == "ws_spanning"}
+
+    assert mine == {
+        hour - _MS_PER_HOUR: 1,
+        hour: 1,
+        hour + _MS_PER_HOUR: 1,
+    }
+
+
+async def test_concurrency_total_adds_workspaces_that_overlap(session):
+    """Platform load is the sum of what overlapped, not the biggest account.
+
+    Two workspaces each running two calls at the same instant put four on the
+    platform. max() over the per-workspace view returns 2 and cannot be made to
+    return 4 — the running sum it maxes is partitioned per workspace — which is
+    the whole reason the unpartitioned view exists.
+    """
+    session.add_all([Workspace(id="ws_plat_a", name="A"), Workspace(id="ws_plat_b", name="B")])
+    hour = 52 * _MS_PER_DAY
+    session.add_all(
+        [
+            _call(f"call_plat_{ws}_{n}", ws, hour + 10 * _MS_PER_MINUTE, hour + 20 * _MS_PER_MINUTE)
+            for ws in ("ws_plat_a", "ws_plat_b")
+            for n in range(2)
+        ]
+    )
+    await session.commit()
+
+    per_workspace = (await session.execute(concurrency_hourly_select())).mappings().all()
+    assert [r["peak_concurrent"] for r in per_workspace if r["hour_ms"] == hour] == [2, 2]
+
+    total = (await session.execute(concurrency_hourly_total_select())).mappings().all()
+    assert next(r["peak_concurrent"] for r in total if r["hour_ms"] == hour) == 4
 
 
 async def test_call_cost_prices_a_call_from_the_version_that_ran(session):

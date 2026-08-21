@@ -284,7 +284,7 @@ def relation_sources(rates: Any, rules: Any, components: Any) -> PriceSources:
 
 
 def _latest(
-    column: Any, key_column: Any, key: Any, effective: Any, at_ms: Any
+    column: Any, key_column: Any, key: Any, effective: Any, at_ms: Any, tiebreak: Any
 ) -> ColumnElement[Any]:
     """The value of `column` on the row in force at `at_ms`.
 
@@ -292,11 +292,20 @@ def _latest(
     row without LATERAL and renders identically on both dialects. This is the
     effective-dating `current_rows` does with a window function, in the shape a
     per-row lookup needs.
+
+    `tiebreak` carries the same descending `id` that `current_rows` orders by,
+    and for a sharper reason here: this is one lookup per *column*, so
+    `scalar_sources` issues three separate ones against `model_cost_rates` for
+    is_audio, input_per_1m and output_per_1m. Without the tiebreak two tied rows
+    can resolve differently between them and price a text model's rates through
+    the audio formula. The unique constraint on (key, effective_from_ms) makes
+    the tie unreachable today; matching `current_rows` is what keeps it that way
+    if the constraint is ever relaxed.
     """
     return (
         select(column)
         .where(key_column == key, effective <= at_ms)
-        .order_by(effective.desc())
+        .order_by(effective.desc(), tiebreak.desc())
         .limit(1)
         .scalar_subquery()
     )
@@ -320,6 +329,7 @@ def scalar_sources(model_id: ColumnElement[Any], at_ms: ColumnElement[Any]) -> P
             model_id,
             ModelCostRate.effective_from_ms,
             at_ms,
+            ModelCostRate.id,
         ),
         input_per_1m=_latest(
             ModelCostRate.input_per_1m_usd,
@@ -327,6 +337,7 @@ def scalar_sources(model_id: ColumnElement[Any], at_ms: ColumnElement[Any]) -> P
             model_id,
             ModelCostRate.effective_from_ms,
             at_ms,
+            ModelCostRate.id,
         ),
         output_per_1m=_latest(
             ModelCostRate.output_per_1m_usd,
@@ -334,6 +345,7 @@ def scalar_sources(model_id: ColumnElement[Any], at_ms: ColumnElement[Any]) -> P
             model_id,
             ModelCostRate.effective_from_ms,
             at_ms,
+            ModelCostRate.id,
         ),
         component=lambda name: _latest(
             CostRate.unit_price_usd,
@@ -341,12 +353,18 @@ def scalar_sources(model_id: ColumnElement[Any], at_ms: ColumnElement[Any]) -> P
             name,
             CostRate.effective_from_ms,
             at_ms,
+            CostRate.id,
         ),
         model_rule=lambda column: _latest(
-            column, PriceRule.scope, model_id, PriceRule.effective_from_ms, at_ms
+            column, PriceRule.scope, model_id, PriceRule.effective_from_ms, at_ms, PriceRule.id
         ),
         global_rule=lambda column: _latest(
-            column, PriceRule.scope, literal("*"), PriceRule.effective_from_ms, at_ms
+            column,
+            PriceRule.scope,
+            literal("*"),
+            PriceRule.effective_from_ms,
+            at_ms,
+            PriceRule.id,
         ),
     )
 

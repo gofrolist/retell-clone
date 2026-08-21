@@ -57,6 +57,13 @@ _MS_PER_DAY = 86_400_000
 _MS_PER_HOUR = 3_600_000
 _MS_PER_MINUTE = 60_000.0
 
+# How far the concurrency views will follow a single call across hour
+# boundaries. It bounds the offset list `_hour_offsets` unrolls, so it is a
+# cost as well as a limit: every ranged call is matched against this many
+# integers. A day is far past any real voice call -- a session that outlives it
+# is a stuck worker, and its hours past the 24th go back to being gaps.
+_MAX_SPANNED_HOURS = 24
+
 
 def _bucket(column: Any, size: int) -> Any:
     """Epoch-ms truncated down to a bucket boundary.
@@ -151,21 +158,37 @@ def workspace_daily_select() -> Select[Any]:
     ).group_by(Call.workspace_id, day_ms)
 
 
-def concurrency_hourly_select() -> Select[Any]:
-    """Peak overlapping calls per workspace per hour.
+def _hour_offsets() -> Any:
+    """1..`_MAX_SPANNED_HOURS` as rows, without generate_series.
 
-    An event stream, not an interval join: +1 at each start, -1 at each end, a
-    running total over the merged stream, and the max of that total per hour.
-    The obvious alternative -- join every call to every hour it spans -- needs
-    generate_series, which SQLite does not have.
+    A UNION ALL of integer literals, because the boundary events below need a
+    small series and generate_series is Postgres-only -- these selects are
+    executed against SQLite by the suite.
+    """
+    return union_all(*[select(literal(n).label("n")) for n in range(1, _MAX_SPANNED_HOURS + 1)])
+
+
+def _concurrency_events() -> Any:
+    """The +1/-1/0 event stream every concurrency view is a running sum over.
+
+    +1 at each start, -1 at each end, and a 0 at every hour boundary a call
+    crosses. The zeroes are what make an hour's peak correct rather than merely
+    plausible: without them the running total is only ever sampled at events
+    that fall *inside* the hour, so concurrency carried in from the previous
+    hour is never observed. Three calls running 09:50->10:20 would leave hour 10
+    with only the three -1 events -- running values 2, 1, 0 -- and report a peak
+    of 2 for an hour whose real peak was 3. An hour a call spans end to end
+    would produce no row at all, drawing a gap in the busiest stretch.
+
+    A 0-delta event does not change the running total, so it reads the level
+    carried into its hour and nothing else. Ordering by (at_ms, delta) puts it
+    after any -1 and before any +1 at the same instant, which is the same
+    tie-break convention the rest of this view uses.
 
     Ties order -1 before +1, so a call ending exactly as the next starts reads
     as one concurrent call rather than two. Calls with no end are excluded
     entirely: their +1 would never be balanced and every later hour would
     inherit the leak.
-
-    This is the load answer Prometheus structurally cannot give -- it keeps 15
-    days, and the calls table keeps everything.
     """
     ranged = and_(
         Call.start_timestamp.isnot(None),
@@ -182,26 +205,73 @@ def concurrency_hourly_select() -> Select[Any]:
         Call.end_timestamp,
         literal(-1),
     ).where(ranged)
-    events = union_all(starts, ends).subquery("events")
+    # An implicit cross join with the offset rows: one boundary event per hour
+    # the call is still running at. `< end_timestamp` and not `<=`, because a
+    # call that ends exactly on the boundary is not running during the hour
+    # that boundary opens.
+    offsets = _hour_offsets().subquery("offsets")
+    boundary_ms = _bucket(Call.start_timestamp, _MS_PER_HOUR) + offsets.c.n * _MS_PER_HOUR
+    boundaries = select(
+        Call.workspace_id,
+        boundary_ms,
+        literal(0),
+    ).where(and_(ranged, boundary_ms < Call.end_timestamp))
+    return union_all(starts, ends, boundaries).subquery("events")
 
-    running = select(
-        events.c.workspace_id.label("workspace_id"),
-        events.c.at_ms.label("at_ms"),
-        func.sum(events.c.delta)
-        .over(
-            partition_by=events.c.workspace_id,
-            order_by=(events.c.at_ms, events.c.delta),
-            rows=(None, 0),
-        )
-        .label("concurrent"),
-    ).subquery("running")
+
+def _concurrency_hourly(per_workspace: bool) -> Select[Any]:
+    """Peak overlapping calls per hour, optionally split by workspace.
+
+    An event stream, not an interval join: a running total over the merged
+    stream, and the max of that total per hour. The obvious alternative -- join
+    every call to every hour it spans -- answers a different question (calls
+    *overlapping* the hour, which 60 back-to-back one-minute calls inflate to
+    60) and needs generate_series besides.
+
+    `per_workspace` is not cosmetic. Partitioning the running sum by workspace
+    answers "how hard is one account pushing us"; the unpartitioned sum answers
+    "how much load is on the platform", and no aggregate over the first gives
+    the second -- max() across workspaces returns the largest single-workspace
+    peak, and summing them adds peaks that never coincided.
+
+    This is the load answer Prometheus structurally cannot give -- it keeps 15
+    days, and the calls table keeps everything.
+    """
+    events = _concurrency_events()
+    running_total = func.sum(events.c.delta).over(
+        partition_by=events.c.workspace_id if per_workspace else None,
+        order_by=(events.c.at_ms, events.c.delta),
+        rows=(None, 0),
+    )
+    columns = [events.c.at_ms.label("at_ms"), running_total.label("concurrent")]
+    if per_workspace:
+        columns.insert(0, events.c.workspace_id.label("workspace_id"))
+    running = select(*columns).subquery("running")
 
     hour_ms = _bucket(running.c.at_ms, _MS_PER_HOUR).label("hour_ms")
+    peak = func.max(running.c.concurrent).label("peak_concurrent")
+    if not per_workspace:
+        return select(hour_ms, peak).group_by(hour_ms)
     return select(
         running.c.workspace_id.label("workspace_id"),
         hour_ms,
-        func.max(running.c.concurrent).label("peak_concurrent"),
+        peak,
     ).group_by(running.c.workspace_id, hour_ms)
+
+
+def concurrency_hourly_select() -> Select[Any]:
+    """Peak overlapping calls per workspace per hour."""
+    return _concurrency_hourly(per_workspace=True)
+
+
+def concurrency_hourly_total_select() -> Select[Any]:
+    """Peak overlapping calls across the whole platform, per hour.
+
+    The capacity-planning number, and the one `concurrency_hourly` cannot be
+    aggregated into: five workspaces each peaking at 3 simultaneously put 15
+    calls on the platform, while max() over their per-workspace peaks reads 3.
+    """
+    return _concurrency_hourly(per_workspace=False)
 
 
 def call_cost_select() -> Select[Any]:
@@ -310,8 +380,12 @@ def call_cost_select() -> Select[Any]:
     ).subquery("costed")
 
     rule = price_from_cost(costed.c.cost_per_min, scalar_sources(costed.c.model_id, costed.c.at_ms))
-    variable_cost = costed.c.minutes * costed.c.cost_per_min
-    total_cost = variable_cost + costed.c.telephony_cost_usd
+    # `model_cost` and not `variable_cost`: the trunk is per-minute and varies
+    # with the call too, so "variable" would name both this and the total. The
+    # split the dashboard actually draws is per-call cost (this + telephony)
+    # against allocated fixed infrastructure.
+    model_cost = costed.c.minutes * costed.c.cost_per_min
+    total_cost = model_cost + costed.c.telephony_cost_usd
     implied_price = costed.c.minutes * rule.price_per_min
 
     return select(
@@ -326,7 +400,7 @@ def call_cost_select() -> Select[Any]:
         costed.c.cost_per_min.label("cost_per_min"),
         rule.price_per_min.label("price_per_min"),
         rule.rule_source.label("rule_source"),
-        variable_cost.label("variable_cost_usd"),
+        model_cost.label("model_cost_usd"),
         costed.c.telephony_cost_usd.label("telephony_cost_usd"),
         total_cost.label("total_cost_usd"),
         implied_price.label("implied_price_usd"),
@@ -360,6 +434,7 @@ VIEWS: tuple[tuple[str, Callable[[], Select[Any]]], ...] = (
     ("call_cost", call_cost_select),
     ("fixed_cost", fixed_cost_select),
     ("concurrency_hourly", concurrency_hourly_select),
+    ("concurrency_hourly_total", concurrency_hourly_total_select),
 )
 
 

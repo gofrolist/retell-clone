@@ -146,7 +146,12 @@ grafana:
       # every business panel read "Datasource not found".
       uid: arhiteq-db
       type: postgres
-      url: 10.145.0.2:5432
+      # The Cloud SQL private IP, from `terraform output -raw db_private_ip` --
+      # not pinned here, because a recreated instance gets a new one and every
+      # other consumer already reads it from Terraform. Hardcoded, the API
+      # would reconnect on the next apply and the dashboard would fail with a
+      # connection error on every panel and no deploy in the blast radius.
+      url: CHANGE_ME_ARHITEQ_DB_HOST:5432
       database: arhiteq
       # Reads the metrics views and pricing.model_price and nothing else; it
       # holds no grant on any base table, so transcripts are unreachable rather
