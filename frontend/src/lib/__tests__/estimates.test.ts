@@ -348,6 +348,21 @@ const MODEL_COSTS_PER_1M: Record<string, { input: number; output: number }> = {
 /** COMPONENT_COSTS from the same seed. */
 const COMPONENT_COSTS = { cartesia_stt: 0.0022, cartesia_tts: 0.014, kb_overhead: 0.001 };
 
+/**
+ * ASSUMPTIONS from the same seed. Held here rather than read off the price
+ * card for the same reason as MODEL_COSTS_PER_1M: these are the inputs to our
+ * COST, and the endpoint deliberately no longer discloses them (published
+ * per-token rates plus these values reconstruct the cost behind any quoted
+ * price). Update alongside pricing_seed.py's ASSUMPTIONS.
+ */
+const ASSUMPTIONS = {
+  audio_tokens_per_sec: 25,
+  agent_talk_ratio: 0.5,
+  turns_per_min: 4,
+  output_tokens_per_turn: 150,
+  display_input_tokens_per_turn: 1500,
+};
+
 /** Live audio minute at seed cost: 1500 in + 750 out tokens at $3/$12 per 1M. */
 const LIVE_AUDIO_COST_PER_MIN = 0.0135;
 
@@ -357,7 +372,7 @@ const LIVE_AUDIO_COST_PER_MIN = 0.0135;
  * stream, a text model bills turns and carries the Cartesia legs.
  */
 function costPerMin(modelId: string, isAudio: boolean): number {
-  const a = FALLBACK_PRICES.assumptions;
+  const a = ASSUMPTIONS;
   const { input, output } = MODEL_COSTS_PER_1M[modelId];
   const tokensPerMin = a.audio_tokens_per_sec * 60;
   if (isAudio) {
@@ -385,9 +400,6 @@ describe("price card", () => {
       expect(MODEL_COSTS_PER_1M[m.model_id]).toBeDefined();
       const cost = costPerMin(m.model_id, m.is_audio);
       expect(llmDisplayCostPerMin(m.model_id, FALLBACK_PRICES)).toBeGreaterThan(cost);
-      // The per-token figures are prices too, and the picker shows them.
-      expect(m.input_per_1m).toBeGreaterThan(MODEL_COSTS_PER_1M[m.model_id].input);
-      expect(m.output_per_1m).toBeGreaterThan(MODEL_COSTS_PER_1M[m.model_id].output);
     }
   });
 
@@ -516,15 +528,15 @@ describe("price card", () => {
     expect(kbCost.max).toBeGreaterThan(cost.max);
   });
 
-  test("adds the fixed per-minute adder after the token math", () => {
-    const withAdder: typeof FALLBACK_PRICES = {
-      ...FALLBACK_PRICES,
-      models: FALLBACK_PRICES.models.map((m) =>
-        m.model_id === LIVE ? { ...m, per_minute_adder: 0.05 } : m,
-      ),
-    };
-    expect(llmDisplayCostPerMin(LIVE, withAdder)).toBeCloseTo(
-      llmDisplayCostPerMin(LIVE, FALLBACK_PRICES) + 0.05,
-    );
+  test("carries no field that could reconstruct our cost", () => {
+    // The compiled-in card mirrors the endpoint's shape, and the endpoint
+    // serves per-minute PRICES only: a marked-up per-token rate divided by the
+    // provider's published rate is our markup, and the pricing assumptions are
+    // the rest of the recipe. Neither may reappear here by way of a refreshed
+    // capture from a future endpoint response.
+    expect("assumptions" in FALLBACK_PRICES).toBe(false);
+    for (const m of FALLBACK_PRICES.models) {
+      expect(Object.keys(m).sort()).toEqual(["is_audio", "model_id", "per_minute"]);
+    }
   });
 });

@@ -58,7 +58,7 @@ from ..models import (
 from ..schemas import CompatModel, TestWebhookRequest
 from ..services import webhooks
 from ..services.gemini import build_genai_client, genai_credentials_available
-from ..services.pricing import ModelPrice, current_rows, load_assumptions, model_prices
+from ..services.pricing import ModelPrice, current_rows, model_prices
 from ..sessions import email_from_authorization
 from ._deps import apply_patch, get_owned
 from .auth_google import _email_allowed
@@ -1745,10 +1745,16 @@ async def pricing_models(
     A model is omitted from `models` (and named in `unpriced` instead) when
     `price_per_min` is unknown — no rule resolves it — when
     `effective_multiplier` is unknown (nothing to scale, or nothing to scale
-    to), or when the resolved price fails to clear the model's own cost. A
-    $0.00, blank, or zero-margin price must never reach a customer; the
-    frontend falls back to its compiled-in price for a model missing from
-    this list, so omission degrades gracefully.
+    to, which also means there is no known cost to check the price against),
+    or when the resolved price fails to clear the model's own cost. A $0.00,
+    blank, or zero-margin price must never reach a customer; the frontend
+    falls back to its compiled-in price for a model missing from this list,
+    so omission degrades gracefully.
+
+    Per-minute prices only. The per-token rates and the `pricing_assumptions`
+    values used to be served alongside them; between them they reconstruct our
+    cost, since the provider's own per-token rates are public — see
+    `test_never_serialises_a_cost`. Nothing read them.
 
     `components` (the shared STT/TTS/KB legs) is priced using the multiplier
     of a model actually priced by the global rule — those components cannot
@@ -1756,7 +1762,6 @@ async def pricing_models(
     entirely when no such model exists, rather than ever serialising the raw,
     unmarked-up (i.e. cost) component rates.
     """
-    assumptions = await load_assumptions(session)
     # One instant for the whole response. `model_prices` would pick its own
     # `now_ms()` otherwise, and the components block below would resolve
     # against a different one — a difference of milliseconds, but the point is
@@ -1813,19 +1818,11 @@ async def pricing_models(
     )
 
     body: dict[str, Any] = {
-        "assumptions": assumptions,
         "models": [
             {
                 "model_id": p.model_id,
                 "is_audio": p.is_audio,
-                # Marked up so the estimator's existing token math operates on
-                # prices without changing shape.
-                "input_per_1m": p.input_per_1m_cost * p.effective_multiplier,
-                "output_per_1m": p.output_per_1m_cost * p.effective_multiplier,
                 "per_minute": p.price_per_min,
-                # A fixed adder cannot be folded into a per-token rate, so it
-                # rides separately and is added after the token math.
-                "per_minute_adder": 0.0,
             }
             for p in priced
         ],

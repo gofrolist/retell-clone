@@ -57,21 +57,26 @@ async def test_never_serialises_a_cost(client):
         assert needle not in blob, (cost.model_id, needle)
 
     for model in body["models"]:
-        assert set(model) == {
-            "model_id",
-            "is_audio",
-            "input_per_1m",
-            "output_per_1m",
-            "per_minute",
-            "per_minute_adder",
-        }
+        assert set(model) == {"model_id", "is_audio", "per_minute"}
+
+    # Not a cost VALUE, but equivalent to publishing one. Google's per-token
+    # rates are public, so a marked-up `input_per_1m`/`output_per_1m` divided
+    # by the published rate is our exact markup, and the `pricing_assumptions`
+    # (audio_tokens_per_sec, agent_talk_ratio, turns_per_min, ...) are the rest
+    # of the recipe: with them, `per_minute` reduces to our cost stack. The
+    # greps above would never catch that — the leaked numbers are prices, and
+    # the arithmetic happens on the reader's side. So the keys themselves must
+    # be absent, and no frontend code reads them.
+    assert "assumptions" not in body
+    for model in body["models"]:
+        assert "input_per_1m" not in model
+        assert "output_per_1m" not in model
 
 
 async def test_prices_are_marked_up_above_the_seeded_cost(client):
     body = (await client.get("/dashboard/pricing/models", headers=AUTH_HEADERS)).json()
     live = next(m for m in body["models"] if m["model_id"] == LIVE)
     assert live["per_minute"] > 0.0135
-    assert live["input_per_1m"] > 3.0
 
     # The check above only ever exercised the Live model. Every OTHER model
     # must clear the same bar too, or serving a text model's cost instead of
@@ -90,14 +95,6 @@ async def test_prices_are_marked_up_above_the_seeded_cost(client):
         cost = costs[model_id]
         assert cost.cost_per_min_stack is not None, model_id
         assert served_model["per_minute"] > cost.cost_per_min_stack, model_id
-        assert served_model["input_per_1m"] > cost.input_per_1m_cost, model_id
-        assert served_model["output_per_1m"] > cost.output_per_1m_cost, model_id
-
-
-async def test_returns_the_assumptions_the_view_used(client):
-    body = (await client.get("/dashboard/pricing/models", headers=AUTH_HEADERS)).json()
-    assert body["assumptions"]["audio_tokens_per_sec"] == 25.0
-    assert body["assumptions"]["agent_talk_ratio"] == 0.5
 
 
 async def test_requires_authentication(client):

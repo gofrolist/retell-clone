@@ -228,21 +228,14 @@ function getLlmLatency(model: string): LlmLatency {
  * surprise.
  */
 export const FALLBACK_PRICES = {
-  assumptions: {
-    audio_tokens_per_sec: 25,
-    agent_talk_ratio: 0.5,
-    turns_per_min: 4,
-    output_tokens_per_turn: 150,
-    display_input_tokens_per_turn: 1500,
-  },
   models: [
-    { model_id: "gemini-3.5-flash", is_audio: false, input_per_1m: 6.0, output_per_1m: 36.0, per_minute: 0.1224, per_minute_adder: 0 },
-    { model_id: "gemini-3.1-flash-lite", is_audio: false, input_per_1m: 1.0, output_per_1m: 6.0, per_minute: 0.0744, per_minute_adder: 0 },
-    { model_id: "gemini-2.5-pro", is_audio: false, input_per_1m: 5.0, output_per_1m: 40.0, per_minute: 0.1188, per_minute_adder: 0 },
-    { model_id: "gemini-2.5-flash", is_audio: false, input_per_1m: 1.2, output_per_1m: 10.0, per_minute: 0.078, per_minute_adder: 0 },
-    { model_id: "gemini-2.5-flash-lite", is_audio: false, input_per_1m: 0.4, output_per_1m: 1.6, per_minute: 0.06816, per_minute_adder: 0 },
-    { model_id: "gemini-3.1-flash-live-preview", is_audio: true, input_per_1m: 12.0, output_per_1m: 48.0, per_minute: 0.054, per_minute_adder: 0 },
-    { model_id: "gemini-live-2.5-flash-native-audio", is_audio: true, input_per_1m: 12.0, output_per_1m: 48.0, per_minute: 0.054, per_minute_adder: 0 },
+    { model_id: "gemini-3.5-flash", is_audio: false, per_minute: 0.1224 },
+    { model_id: "gemini-3.1-flash-lite", is_audio: false, per_minute: 0.0744 },
+    { model_id: "gemini-2.5-pro", is_audio: false, per_minute: 0.1188 },
+    { model_id: "gemini-2.5-flash", is_audio: false, per_minute: 0.078 },
+    { model_id: "gemini-2.5-flash-lite", is_audio: false, per_minute: 0.06816 },
+    { model_id: "gemini-3.1-flash-live-preview", is_audio: true, per_minute: 0.054 },
+    { model_id: "gemini-live-2.5-flash-native-audio", is_audio: true, per_minute: 0.054 },
   ],
   components: { cartesia_stt: 0.0088, cartesia_tts: 0.056, kb_overhead: 0.004 },
   unpriced: [],
@@ -375,8 +368,7 @@ export function estimateCost(
   // `per_minute` whenever a model carries an explicit price or a fixed adder,
   // neither of which is expressible as a per-token markup — and a breakdown
   // that does not add up is worse than no breakdown.
-  const p = priced(input.model, prices);
-  const headline = p.per_minute + p.per_minute_adder;
+  const headline = priced(input.model, prices).per_minute;
 
   // Gemini Live is one speech-to-speech model: no separate Cartesia STT/TTS,
   // and it's billed per audio minute rather than per text turn. Its stack has
@@ -457,13 +449,12 @@ export function estimateLatency(input: EstimateInput | null): Estimate {
  * Prompt-independent per-minute LLM price for the model picker badge (mirrors
  * Retell's "$0.08/min" hint). This is the model's own price only — the real
  * per-agent figure (with STT/TTS/KB) is `estimateCost`. `per_minute` is
- * already prompt-independent (the backend prices it off a fixed display
- * token budget — see `assumptions.display_input_tokens_per_turn`), so this
- * is a thin wrapper over `priced()` for both text and Live models alike.
+ * already prompt-independent (the backend prices it off a fixed display token
+ * budget it does not disclose), so this is a thin wrapper over `priced()` for
+ * both text and Live models alike.
  */
 export function llmDisplayCostPerMin(model: string, prices: PriceCard): number {
-  const p = priced(model, prices);
-  return p.per_minute + p.per_minute_adder;
+  return priced(model, prices).per_minute;
 }
 
 export function formatUsdPerMin(v: number): string {
