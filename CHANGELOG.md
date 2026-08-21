@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.29.0](https://github.com/gofrolist/retell-clone/compare/v0.28.0...v0.29.0) (2026-08-21)
+
+
+### Features
+
+* **metrics:** add the business metrics dashboard ([#286](https://github.com/gofrolist/retell-clone/issues/286)) ([2d8f3cb](https://github.com/gofrolist/retell-clone/commit/2d8f3cb37a3de70d8a4ecdbeb2db5d2d8a5d70b9))
+
 ## [0.28.0](https://github.com/gofrolist/retell-clone/compare/v0.27.4...v0.28.0) (2026-08-21)
 
 
