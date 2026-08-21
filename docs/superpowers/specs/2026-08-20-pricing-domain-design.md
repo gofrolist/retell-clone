@@ -134,8 +134,11 @@ global default:
 ```sql
 price_per_min = COALESCE(
   model_rule.explicit_per_minute_usd,
+  -- only when the model rule has a usable knob; an all-NULL rule falls through
   cost_per_min * (1 + model_rule.markup_pct/100) + COALESCE(model_rule.fixed_per_minute_usd, 0),
-  cost_per_min * (1 + global_rule.markup_pct/100) + COALESCE(global_rule.fixed_per_minute_usd, 0)
+  global_rule.explicit_per_minute_usd,
+  cost_per_min * (1 + global_rule.markup_pct/100) + COALESCE(global_rule.fixed_per_minute_usd, 0),
+  NULL  -- rule_source 'none'; never fall back to cost
 )
 ```
 
