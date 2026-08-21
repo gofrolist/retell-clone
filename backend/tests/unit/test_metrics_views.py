@@ -11,6 +11,7 @@ from arhiteq_api.db import session_factory
 from arhiteq_api.models import Agent, AgentVersion, Call, Workspace, WorkspaceMember
 from arhiteq_api.services.metrics_views import (
     apply_metrics_views,
+    concurrency_hourly_select,
     tenancy_select,
     workspace_daily_select,
 )
@@ -179,3 +180,96 @@ async def test_workspace_daily_counts_turns_only_where_latency_was_recorded(sess
     assert row["calls"] == 2
     assert row["calls_with_turns"] == 1
     assert row["llm_turns"] == 7
+
+
+async def test_concurrency_counts_an_overlapping_pair_as_two(session):
+    session.add(Workspace(id="ws_overlap", name="Overlap"))
+    base = 30 * _MS_PER_DAY
+    session.add_all(
+        [
+            Call(
+                call_id="call_overlap_a",
+                workspace_id="ws_overlap",
+                agent_id="ag",
+                direction="inbound",
+                start_timestamp=base,
+                end_timestamp=base + 60_000,
+                duration_ms=60_000,
+            ),
+            Call(
+                call_id="call_overlap_b",
+                workspace_id="ws_overlap",
+                agent_id="ag",
+                direction="inbound",
+                start_timestamp=base + 30_000,
+                end_timestamp=base + 90_000,
+                duration_ms=60_000,
+            ),
+        ]
+    )
+    await session.commit()
+
+    rows = (await session.execute(concurrency_hourly_select())).mappings().all()
+    peak = max(r["peak_concurrent"] for r in rows if r["workspace_id"] == "ws_overlap")
+
+    assert peak == 2
+
+
+async def test_concurrency_counts_an_adjacent_pair_as_one(session):
+    """One call ending exactly as the next starts is one call at a time.
+
+    This is what decides the tie-break: at a shared instant the -1 must be
+    applied before the +1, or a busy sequential queue reads as double the
+    concurrency it actually had.
+    """
+    session.add(Workspace(id="ws_adjacent", name="Adjacent"))
+    base = 31 * _MS_PER_DAY
+    session.add_all(
+        [
+            Call(
+                call_id="call_adjacent_a",
+                workspace_id="ws_adjacent",
+                agent_id="ag",
+                direction="inbound",
+                start_timestamp=base,
+                end_timestamp=base + 60_000,
+                duration_ms=60_000,
+            ),
+            Call(
+                call_id="call_adjacent_b",
+                workspace_id="ws_adjacent",
+                agent_id="ag",
+                direction="inbound",
+                start_timestamp=base + 60_000,
+                end_timestamp=base + 120_000,
+                duration_ms=60_000,
+            ),
+        ]
+    )
+    await session.commit()
+
+    rows = (await session.execute(concurrency_hourly_select())).mappings().all()
+    peak = max(r["peak_concurrent"] for r in rows if r["workspace_id"] == "ws_adjacent")
+
+    assert peak == 1
+
+
+async def test_concurrency_ignores_a_call_that_never_ended(session):
+    """An in-flight call has no end event, so it would never be decremented."""
+    session.add(Workspace(id="ws_inflight", name="In flight"))
+    session.add(
+        Call(
+            call_id="call_in_flight",
+            workspace_id="ws_inflight",
+            agent_id="ag",
+            direction="inbound",
+            start_timestamp=32 * _MS_PER_DAY,
+            end_timestamp=None,
+            duration_ms=None,
+        )
+    )
+    await session.commit()
+
+    rows = (await session.execute(concurrency_hourly_select())).mappings().all()
+
+    assert [r for r in rows if r["workspace_id"] == "ws_inflight"] == []

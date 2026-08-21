@@ -26,6 +26,7 @@ from sqlalchemy import (
     Float,
     Select,
     String,
+    and_,
     case,
     cast,
     func,
@@ -139,9 +140,63 @@ def workspace_daily_select() -> Select[Any]:
     ).group_by(Call.workspace_id, day_ms)
 
 
+def concurrency_hourly_select() -> Select[Any]:
+    """Peak overlapping calls per workspace per hour.
+
+    An event stream, not an interval join: +1 at each start, -1 at each end, a
+    running total over the merged stream, and the max of that total per hour.
+    The obvious alternative -- join every call to every hour it spans -- needs
+    generate_series, which SQLite does not have.
+
+    Ties order -1 before +1, so a call ending exactly as the next starts reads
+    as one concurrent call rather than two. Calls with no end are excluded
+    entirely: their +1 would never be balanced and every later hour would
+    inherit the leak.
+
+    This is the load answer Prometheus structurally cannot give -- it keeps 15
+    days, and the calls table keeps everything.
+    """
+    ranged = and_(
+        Call.start_timestamp.isnot(None),
+        Call.end_timestamp.isnot(None),
+        Call.end_timestamp > Call.start_timestamp,
+    )
+    starts = select(
+        Call.workspace_id.label("workspace_id"),
+        Call.start_timestamp.label("at_ms"),
+        literal(1).label("delta"),
+    ).where(ranged)
+    ends = select(
+        Call.workspace_id,
+        Call.end_timestamp,
+        literal(-1),
+    ).where(ranged)
+    events = union_all(starts, ends).subquery("events")
+
+    running = select(
+        events.c.workspace_id.label("workspace_id"),
+        events.c.at_ms.label("at_ms"),
+        func.sum(events.c.delta)
+        .over(
+            partition_by=events.c.workspace_id,
+            order_by=(events.c.at_ms, events.c.delta),
+            rows=(None, 0),
+        )
+        .label("concurrent"),
+    ).subquery("running")
+
+    hour_ms = _bucket(running.c.at_ms, _MS_PER_HOUR).label("hour_ms")
+    return select(
+        running.c.workspace_id.label("workspace_id"),
+        hour_ms,
+        func.max(running.c.concurrent).label("peak_concurrent"),
+    ).group_by(running.c.workspace_id, hour_ms)
+
+
 VIEWS: tuple[tuple[str, Callable[[], Select[Any]]], ...] = (
     ("tenancy", tenancy_select),
     ("workspace_daily", workspace_daily_select),
+    ("concurrency_hourly", concurrency_hourly_select),
 )
 
 
