@@ -165,7 +165,7 @@ what SQL used.
 | `model_id` | |
 | `cost_per_min` | audio models: `tokens_per_min/1e6 × in + talk_ratio × tokens_per_min/1e6 × out`; text models: the turn model, plus `cartesia_stt + cartesia_tts` |
 | `price_per_min` | the COALESCE above |
-| `rule_source` | `explicit` \| `model` \| `global` — so a panel can show *why* |
+| `rule_source` | `explicit` \| `model` \| `global` \| `none` — so a panel can show *why* |
 
 The API selects from it and so do the Grafana margin panels. Implemented twice
 — once in Python for the endpoint, once in SQL for the dashboard — the two
@@ -175,6 +175,18 @@ tell different stories about the same call.
 `rule_source` is in the view because "why is this model priced at $0.09?" is a
 question that gets asked, and reconstructing the answer from three tables by
 hand is how wrong prices survive.
+
+**When no usable rule resolves, `price_per_min` is NULL and `rule_source` is
+`none` — never a price equal to cost.** The first implementation coalesced a
+missing markup to zero, which priced every model at exactly cost: a 4x
+under-charge that raised no error and looked like a working price list. A
+missing component rate nulls `cost_per_min_stack` the same way rather than
+costing zero. One rule underneath both: a missing input reads as *unknown*,
+never as *free*, because a silent zero looks like a complete number.
+
+Consumers must therefore render NULL as "unpriced", never as `$0.00` — the
+endpoint below fails loudly instead of serving one, and the dashboard's NULL
+rule already covers the panels.
 
 ## Endpoint
 

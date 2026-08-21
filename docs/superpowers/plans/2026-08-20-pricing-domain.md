@@ -11,6 +11,7 @@
 ## Global Constraints
 
 - Spec: `docs/superpowers/specs/2026-08-20-pricing-domain-design.md`. Read it before Task 1.
+- **A missing input is NULL, never zero.** `model_prices()` returns `price_per_min = None` with `rule_source = "none"` when no usable rule resolves, and `cost_per_min_stack = None` when a component rate is missing. `effective_multiplier` is `None` in both cases. Consumers must render these as "unpriced" — a `$0.00` or a cost-equal price is the exact bug this project exists to remove.
 - **No cost value may ever leave the API.** The response model has no field for one. Task 4 enforces this with a test.
 - Schema changes ship via `Base.metadata.create_all` + idempotent boot statements in `main.py`. This repo has **no Alembic** — do not add it.
 - Money columns use the `MONEY` type from Task 1: `Numeric(12, 6)` on Postgres, `Float` on SQLite. Never bare `Numeric` (SQLite raises `SAWarning` and the suite runs on SQLite).
