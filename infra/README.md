@@ -89,6 +89,7 @@ then applies the alert rules and the egress PodMonitor. Keys it needs in
 | `GRAFANA_OAUTH_CLIENT_SECRET` | same client's secret; never enters a values file |
 | `GRAFANA_ADMIN_EMAILS` | space/comma separated; full access, incl. editing dashboards |
 | `GRAFANA_VIEWER_EMAILS` | space/comma separated, may be empty; read-only |
+| `GRAFANA_DB_PASSWORD` | `grafana_ro` Postgres password — see § Grafana database access |
 | `TELEGRAM_BOT_TOKEN` | from @BotFather; never enters a values file |
 | `TELEGRAM_CHAT_ID` | negative for groups/channels, positive for a DM |
 
@@ -175,6 +176,47 @@ kubectl -n monitoring port-forward svc/monitoring-grafana 3001:80
 ```
 
 Dashboards land in the "Arhiteq" folder.
+
+### Grafana database access
+
+The business-metrics dashboard reads Cloud SQL directly through a dedicated
+role, so its panels are SQL rather than PromQL. `grafana_ro` can read the
+`metrics` views and `pricing.model_price` and **nothing else** — in particular
+not `calls`, whose `transcript` and `transcript_object` columns hold customer
+conversation content. A Postgres view executes with its owner's privileges
+(`security_invoker` is off by default), so the view reaches the base table and
+the caller does not.
+
+Create the role once per database, as a superuser:
+
+```bash
+# Cloud SQL has no superuser shell; connect through the proxy as `postgres`.
+cloud-sql-proxy usan-retirement:us-east1:arhiteq-pg &
+psql "host=127.0.0.1 user=postgres dbname=arhiteq" \
+  -v pw="$GRAFANA_DB_PASSWORD" -f infra/sql/grafana_ro.sql
+```
+
+Then verify the isolation actually holds — the point of the role is what it
+*cannot* do, and an ungranted intention looks identical to a granted one until
+someone tries:
+
+```bash
+psql "host=127.0.0.1 user=grafana_ro dbname=arhiteq" \
+  -c 'SELECT count(*) FROM metrics.workspace_daily'   # -> a number
+psql "host=127.0.0.1 user=grafana_ro dbname=arhiteq" \
+  -c 'SELECT transcript FROM calls LIMIT 1'           # -> permission denied for table calls
+```
+
+Re-run the first check after any deploy that changes the views. The API
+recreates all of them by DROP-then-CREATE on every boot, which takes their
+grants with them; the `ALTER DEFAULT PRIVILEGES` lines in the script are the
+only reason the grants come back. If those were skipped, the dashboard keeps
+working until the next deploy and then breaks with no deploy in the blast
+radius.
+
+Set `GRAFANA_DB_PASSWORD` in `infra/private/prod.env` before running
+`gen-values.sh`; the datasource reads it from a Secret, never from the values
+file.
 
 ### Pricing
 
