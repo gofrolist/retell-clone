@@ -152,12 +152,18 @@ grafana:
       # would reconnect on the next apply and the dashboard would fail with a
       # connection error on every panel and no deploy in the blast radius.
       url: CHANGE_ME_ARHITEQ_DB_HOST:5432
-      database: arhiteq
       # Reads the metrics views and pricing.model_price and nothing else; it
       # holds no grant on any base table, so transcripts are unreachable rather
       # than merely unselected. infra/sql/grafana_ro.sql creates it.
       user: grafana_ro
       jsonData:
+        # jsonData.database, NOT a top-level `database:` key -- Grafana's SQL
+        # datasources stopped reading the top-level field, and it fails in the
+        # least obvious way: provisioning logs the datasource as inserted,
+        # every panel renders, and each one reports "No data" with the real
+        # cause ("no default database configured") only visible by clicking
+        # the panel's error badge.
+        database: arhiteq
         sslmode: require
         postgresVersion: 1600
       secureJsonData:
