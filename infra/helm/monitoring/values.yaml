@@ -156,12 +156,19 @@ grafana:
       api_url: https://openidconnect.googleapis.com/v1/userinfo
       use_pkce: true
 
-      # The allowlist. `allowed_domains`/`hosted_domain` are the usual filter,
-      # but they only mean something for a Workspace domain — for @gmail.com
-      # accounts they would admit the entire internet. So the filter is the
-      # role mapping instead: an email that is not listed maps to no role, and
+      # The allowlist, and the role split with it: gen-values.sh renders
+      # GRAFANA_ADMIN_EMAILS and GRAFANA_VIEWER_EMAILS into one JMESPath
+      # expression that maps each address to Admin or Viewer.
+      # `allowed_domains`/`hosted_domain` are the usual filter, but they only
+      # mean something for a Workspace domain — for @gmail.com accounts they
+      # would admit the entire internet. So the filter is the role mapping
+      # itself: an email on neither list maps to no role, and
       # role_attribute_strict turns "no role" into a denied login rather than
       # a default Viewer account.
+      #
+      # The mapping is re-applied at every login, so demoting or removing
+      # somebody takes effect the next time they sign in — not the moment
+      # this deploys, and not for a session they already hold.
       role_attribute_path: CHANGE_ME_GRAFANA_ROLE_ATTRIBUTE_PATH
       role_attribute_strict: true
 

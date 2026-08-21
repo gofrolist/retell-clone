@@ -87,7 +87,8 @@ then applies the alert rules and the egress PodMonitor. Keys it needs in
 | `GRAFANA_HOST` | public hostname, `grafana.<domain>` |
 | `GRAFANA_OAUTH_CLIENT_ID` | Google OAuth web client — see § Grafana access |
 | `GRAFANA_OAUTH_CLIENT_SECRET` | same client's secret; never enters a values file |
-| `GRAFANA_ALLOWED_EMAILS` | space/comma separated; exactly who may sign in |
+| `GRAFANA_ADMIN_EMAILS` | space/comma separated; full access, incl. editing dashboards |
+| `GRAFANA_VIEWER_EMAILS` | space/comma separated, may be empty; read-only |
 | `TELEGRAM_BOT_TOKEN` | from @BotFather; never enters a values file |
 | `TELEGRAM_CHAT_ID` | negative for groups/channels, positive for a DM |
 
@@ -121,12 +122,24 @@ cluster access rather than a password:
       disable_login_form: false
 ```
 
-Who gets in is `GRAFANA_ALLOWED_EMAILS`, rendered into a JMESPath
-`role_attribute_path` that maps a listed address to `Admin` and everything
-else to no role at all; `role_attribute_strict = true` turns "no role" into a
-refused login. The usual `allowed_domains`/`hosted_domain` filter is not used
-on purpose — it is only meaningful for a Workspace domain, and against
-`@gmail.com` it would admit every Google account there is.
+Who gets in, and as what, is `GRAFANA_ADMIN_EMAILS` and
+`GRAFANA_VIEWER_EMAILS`, rendered into a single JMESPath
+`role_attribute_path`:
+
+```
+contains(['admin@…'], email) && 'Admin' || contains(['viewer@…'], email) && 'Viewer' || ''
+```
+
+An address on neither list maps to no role at all, and
+`role_attribute_strict = true` turns "no role" into a refused login. The usual
+`allowed_domains`/`hosted_domain` filter is not used on purpose — it is only
+meaningful for a Workspace domain, and against `@gmail.com` it would admit
+every Google account there is.
+
+Grafana re-evaluates the expression at each login, so an edit here reaches
+someone the next time they sign in. Removing a leaver is therefore not
+immediate: revoke the session too (Administration → Users → their account →
+Sessions → force logout), or they keep the tab they already have.
 
 One-time setup of the OAuth client (console only — gcloud cannot create a
 plain web client):
@@ -138,8 +151,9 @@ plain web client):
    builds it from `root_url`, and a mismatch is a `redirect_uri_mismatch`
    error at login.
 3. If the consent screen is External and still in Testing, add every address
-   in `GRAFANA_ALLOWED_EMAILS` as a test user or Google blocks them before
-   Grafana ever sees the login.
+   from both lists as a test user or Google blocks them before Grafana ever
+   sees the login. The address also has to *be* a Google account — a Workspace
+   mailbox on a domain that does not use Google will never reach the callback.
 4. Put the id and secret in `prod.env`, then re-run `gen-values.sh`.
 
 The managed certificate needs `grafana.<domain>` already resolving to the
