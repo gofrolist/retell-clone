@@ -5,7 +5,7 @@
 -- privileges is exactly the authority a compromised API should not hold.
 --
 -- What this grants, and what it very deliberately does not: `grafana_ro` can
--- read the four `metrics` views and the `pricing.model_price` view, and holds
+-- read the `metrics` views and the `pricing.model_price` view, and holds
 -- no privilege on any base table. That is what makes call transcripts
 -- unreachable rather than merely unselected -- `calls.transcript` and
 -- `calls.transcript_object` hold customer conversation content, and a role

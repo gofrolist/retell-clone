@@ -13,6 +13,7 @@ from arhiteq_api.services.metrics_views import (
     apply_metrics_views,
     call_cost_select,
     concurrency_hourly_select,
+    fixed_cost_select,
     tenancy_select,
     workspace_daily_select,
 )
@@ -425,3 +426,21 @@ async def test_call_cost_gives_an_unconnected_call_no_minutes(session):
 
     assert row["minutes"] == pytest.approx(0.0)
     assert row["telephony_cost_usd"] == pytest.approx(0.0)
+
+
+async def test_fixed_cost_exposes_monthly_rates_without_the_per_minute_ones(session):
+    """The dashboard allocates fixed cost; it must not need `cost_rates`.
+
+    A grant on that table would also hand over the per-minute STT, TTS and
+    telephony rates our margin is derived from, which the pricing domain keeps
+    unreachable on purpose.
+    """
+    await seed_pricing_defaults(session)
+
+    rows = (await session.execute(fixed_cost_select())).mappings().all()
+    components = {r["component"] for r in rows}
+
+    assert "infra_fixed_monthly" in components
+    assert components.isdisjoint({"cartesia_stt", "cartesia_tts", "telnyx_inbound"})
+    infra = next(r for r in rows if r["component"] == "infra_fixed_monthly")
+    assert infra["monthly_usd"] > 0

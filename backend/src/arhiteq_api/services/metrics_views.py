@@ -42,6 +42,7 @@ from ..models import (
     AgentVersion,
     Call,
     ConversationFlow,
+    CostRate,
     PhoneNumber,
     RetellLLM,
     Workspace,
@@ -333,10 +334,31 @@ def call_cost_select() -> Select[Any]:
     )
 
 
+def fixed_cost_select() -> Select[Any]:
+    """The monthly costs that are not per-call: infrastructure, DID rental.
+
+    Exists so the dashboard can allocate fixed cost without `grafana_ro`
+    holding a grant on `cost_rates` -- that table also carries the per-minute
+    STT/TTS/telephony rates our margin is computed from, and the pricing domain
+    deliberately keeps those unreachable.
+
+    Every effective-dated row is exposed rather than just the current one, and
+    the caller picks: a view cannot ask Postgres for "now" without a now()
+    expression that SQLite has no answer for, and the panel already knows which
+    instant its window ends at.
+    """
+    return select(
+        CostRate.component.label("component"),
+        CostRate.unit_price_usd.label("monthly_usd"),
+        CostRate.effective_from_ms.label("effective_from_ms"),
+    ).where(CostRate.unit == "per_month")
+
+
 VIEWS: tuple[tuple[str, Callable[[], Select[Any]]], ...] = (
     ("tenancy", tenancy_select),
     ("workspace_daily", workspace_daily_select),
     ("call_cost", call_cost_select),
+    ("fixed_cost", fixed_cost_select),
     ("concurrency_hourly", concurrency_hourly_select),
 )
 

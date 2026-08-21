@@ -1,0 +1,605 @@
+{
+  "title": "Arhiteq — Business",
+  "uid": "arhiteq-business",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "timezone": "browser",
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "refresh": "5m",
+  "tags": [
+    "arhiteq",
+    "business"
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Adoption",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Workspaces",
+      "datasource": {
+        "type": "postgres",
+        "uid": "arhiteq-db"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT count(*) AS \"Workspaces\"\nFROM metrics.tenancy\nWHERE entity = 'workspace'",
+          "datasource": {
+            "type": "postgres",
+            "uid": "arhiteq-db"
+          }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Members",
+      "datasource": {
+        "type": "postgres",
+        "uid": "arhiteq-db"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT count(*) AS \"Members\"\nFROM metrics.tenancy\nWHERE entity = 'member'",
+          "datasource": {
+            "type": "postgres",
+            "uid": "arhiteq-db"
+          }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Agents",
+      "datasource": {
+        "type": "postgres",
+        "uid": "arhiteq-db"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT count(*) AS \"Agents\"\nFROM metrics.tenancy\nWHERE entity = 'agent'",
+          "datasource": {
+            "type": "postgres",
+            "uid": "arhiteq-db"
+          }
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Phone numbers",
+      "datasource": {
+        "type": "postgres",
+        "uid": "arhiteq-db"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT count(*) AS \"Phone numbers\"\nFROM metrics.tenancy\nWHERE entity = 'phone_number'",
+          "datasource": {
+            "type": "postgres",
+            "uid": "arhiteq-db"
+          }
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Accounts and agents created (cumulative)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "arhiteq-db"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT to_timestamp(created_at_ms / 1000) AS time,\n       entity AS metric,\n       count(*) OVER (PARTITION BY entity ORDER BY created_at_ms) AS \"created\"\nFROM metrics.tenancy\nWHERE created_at_ms IS NOT NULL\n  AND created_at_ms BETWEEN $__unixEpochFrom()::bigint * 1000 AND $__unixEpochTo()::bigint * 1000\nORDER BY created_at_ms",
+          "datasource": {
+            "type": "postgres",
+            "uid": "arhiteq-db"
+          }
+        }
+      ],
+      "description": "Phone numbers are absent on purpose: the schema records no creation time for them, only a last-modified timestamp, and drawing a curve from an edit would invent history. Their total is the tile above."
+    },
+    {
+      "id": 7,
+      "type": "row",
+      "title": "Load",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Calls per day, by direction",
+      "datasource": {
+        "type": "postgres",
+        "uid": "arhiteq-db"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 15
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT to_timestamp(day_ms / 1000) AS time,\n       sum(inbound_calls) AS \"inbound\",\n       sum(outbound_calls) AS \"outbound\"\nFROM metrics.workspace_daily\nWHERE day_ms BETWEEN $__unixEpochFrom()::bigint * 1000 AND $__unixEpochTo()::bigint * 1000\nGROUP BY day_ms\nORDER BY day_ms",
+          "datasource": {
+            "type": "postgres",
+            "uid": "arhiteq-db"
+          }
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Talk minutes per day",
+      "datasource": {
+        "type": "postgres",
+        "uid": "arhiteq-db"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 15
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "m"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT to_timestamp(day_ms / 1000) AS time, sum(minutes) AS \"minutes\"\nFROM metrics.workspace_daily\nWHERE day_ms BETWEEN $__unixEpochFrom()::bigint * 1000 AND $__unixEpochTo()::bigint * 1000\nGROUP BY day_ms\nORDER BY day_ms",
+          "datasource": {
+            "type": "postgres",
+            "uid": "arhiteq-db"
+          }
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Peak concurrent calls, per hour",
+      "datasource": {
+        "type": "postgres",
+        "uid": "arhiteq-db"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 23
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT to_timestamp(hour_ms / 1000) AS time, max(peak_concurrent) AS \"peak\"\nFROM metrics.concurrency_hourly\nWHERE hour_ms BETWEEN $__unixEpochFrom()::bigint * 1000 AND $__unixEpochTo()::bigint * 1000\nGROUP BY hour_ms\nORDER BY hour_ms",
+          "datasource": {
+            "type": "postgres",
+            "uid": "arhiteq-db"
+          }
+        }
+      ],
+      "description": "Overlapping calls, from call start/end times. Prometheus cannot answer this beyond 15 days; the calls table keeps everything. Calls still in flight are excluded — they have no end event."
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Calls that never connected (excluded from minutes)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "arhiteq-db"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 23
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT to_timestamp(day_ms / 1000) AS time,\n       sum(unconnected_calls) AS \"never connected\",\n       sum(error_calls) AS \"errored\"\nFROM metrics.workspace_daily\nWHERE day_ms BETWEEN $__unixEpochFrom()::bigint * 1000 AND $__unixEpochTo()::bigint * 1000\nGROUP BY day_ms\nORDER BY day_ms",
+          "datasource": {
+            "type": "postgres",
+            "uid": "arhiteq-db"
+          }
+        }
+      ],
+      "description": "Why 'calls' and 'minutes' disagree. A dial that was never answered consumed no audio, so it contributes no minutes — but it is still a call that happened, and hiding it would make the gap look like a bug."
+    },
+    {
+      "id": 12,
+      "type": "row",
+      "title": "Model usage",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "LLM turns per day",
+      "datasource": {
+        "type": "postgres",
+        "uid": "arhiteq-db"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 32
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT to_timestamp(day_ms / 1000) AS time, sum(llm_turns) AS \"turns\"\nFROM metrics.workspace_daily\nWHERE day_ms BETWEEN $__unixEpochFrom()::bigint * 1000 AND $__unixEpochTo()::bigint * 1000\nGROUP BY day_ms\nORDER BY day_ms",
+          "datasource": {
+            "type": "postgres",
+            "uid": "arhiteq-db"
+          }
+        }
+      ],
+      "description": "Turn counts begin at #261, which fixed realtime sessions recording no latency samples at all. Earlier calls report no turns rather than zero turns; the coverage panel beside this one says how much of the window that affects."
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Turn data coverage",
+      "datasource": {
+        "type": "postgres",
+        "uid": "arhiteq-db"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 32
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT sum(calls_with_turns) AS \"calls with turn data\", sum(calls) AS \"calls\"\nFROM metrics.workspace_daily\nWHERE day_ms BETWEEN $__unixEpochFrom()::bigint * 1000 AND $__unixEpochTo()::bigint * 1000",
+          "datasource": {
+            "type": "postgres",
+            "uid": "arhiteq-db"
+          }
+        }
+      ],
+      "description": "Turn counts begin at #261, which fixed realtime sessions recording no latency samples at all. Earlier calls report no turns rather than zero turns; the coverage panel beside this one says how much of the window that affects."
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Turns per connected call",
+      "datasource": {
+        "type": "postgres",
+        "uid": "arhiteq-db"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 32
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT to_timestamp(day_ms / 1000) AS time,\n       sum(llm_turns)::numeric / nullif(sum(calls_with_turns), 0) AS \"turns/call\"\nFROM metrics.workspace_daily\nWHERE day_ms BETWEEN $__unixEpochFrom()::bigint * 1000 AND $__unixEpochTo()::bigint * 1000\nGROUP BY day_ms\nORDER BY day_ms",
+          "datasource": {
+            "type": "postgres",
+            "uid": "arhiteq-db"
+          }
+        }
+      ],
+      "description": "Turn counts begin at #261, which fixed realtime sessions recording no latency samples at all. Earlier calls report no turns rather than zero turns; the coverage panel beside this one says how much of the window that affects."
+    },
+    {
+      "id": 16,
+      "type": "row",
+      "title": "Economics",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 17,
+      "type": "stat",
+      "title": "Cost per minute",
+      "datasource": {
+        "type": "postgres",
+        "uid": "arhiteq-db"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 41
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT sum(total_cost_usd)\n       / nullif(sum(CASE WHEN total_cost_usd IS NOT NULL THEN minutes END), 0) AS \"cost/min\"\nFROM metrics.call_cost\nWHERE day_ms BETWEEN $__unixEpochFrom()::bigint * 1000 AND $__unixEpochTo()::bigint * 1000",
+          "datasource": {
+            "type": "postgres",
+            "uid": "arhiteq-db"
+          }
+        }
+      ],
+      "description": "Variable cost only, and NULL-safe: minutes whose model has no rate row are excluded from both halves rather than counted as free."
+    },
+    {
+      "id": 18,
+      "type": "stat",
+      "title": "Variable cost (window)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "arhiteq-db"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 41
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT sum(total_cost_usd) AS \"cost\"\nFROM metrics.call_cost\nWHERE day_ms BETWEEN $__unixEpochFrom()::bigint * 1000 AND $__unixEpochTo()::bigint * 1000",
+          "datasource": {
+            "type": "postgres",
+            "uid": "arhiteq-db"
+          }
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "Cost and implied margin per day",
+      "datasource": {
+        "type": "postgres",
+        "uid": "arhiteq-db"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 41
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT to_timestamp(day_ms / 1000) AS time,\n       sum(total_cost_usd) AS \"cost\",\n       sum(implied_margin_usd) AS \"implied margin\"\nFROM metrics.call_cost\nWHERE day_ms BETWEEN $__unixEpochFrom()::bigint * 1000 AND $__unixEpochTo()::bigint * 1000\nGROUP BY day_ms\nORDER BY day_ms",
+          "datasource": {
+            "type": "postgres",
+            "uid": "arhiteq-db"
+          }
+        }
+      ],
+      "description": "Margin here is IMPLIED, not earned: there is no billing system and nobody is charged. It is what this traffic would have earned at the list price the pricing rule computes. Cost is duration x rate, not metered consumption — a call with an unusually long prompt costs the same here as a quiet one of equal length."
+    },
+    {
+      "id": 20,
+      "type": "table",
+      "title": "Per workspace",
+      "datasource": {
+        "type": "postgres",
+        "uid": "arhiteq-db"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 47
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH window_calls AS (\n  SELECT * FROM metrics.call_cost\n  WHERE day_ms BETWEEN $__unixEpochFrom()::bigint * 1000 AND $__unixEpochTo()::bigint * 1000\n), totals AS (\n  SELECT sum(minutes) AS all_minutes FROM window_calls\n), infra AS (\n  -- metrics.fixed_cost, not cost_rates: grafana_ro holds no grant on the rate\n  -- tables, and granting one would also hand over the per-minute rates our\n  -- margin is derived from.\n  SELECT monthly_usd\n         * (($__unixEpochTo()::bigint - $__unixEpochFrom()::bigint)::numeric / 86400 / 30)\n           AS window_usd\n  FROM metrics.fixed_cost\n  WHERE component = 'infra_fixed_monthly'\n    AND effective_from_ms <= $__unixEpochTo()::bigint * 1000\n  ORDER BY effective_from_ms DESC\n  LIMIT 1\n)\nSELECT c.workspace_id                                              AS \"workspace\",\n       count(*)                                                    AS \"calls\",\n       round(sum(c.minutes)::numeric, 1)                           AS \"minutes\",\n       round(sum(c.total_cost_usd)::numeric, 4)                    AS \"variable cost\",\n       round((i.window_usd * sum(c.minutes) / nullif(t.all_minutes, 0))::numeric, 2)\n                                                                   AS \"allocated infra\",\n       round((sum(c.total_cost_usd) / nullif(sum(c.minutes), 0))::numeric, 5)\n                                                                   AS \"cost/min\",\n       round(sum(c.implied_margin_usd)::numeric, 4)                AS \"implied margin\"\nFROM window_calls c\nCROSS JOIN totals t\nCROSS JOIN infra i\nGROUP BY c.workspace_id, i.window_usd, t.all_minutes\nORDER BY sum(c.minutes) DESC NULLS LAST",
+          "datasource": {
+            "type": "postgres",
+            "uid": "arhiteq-db"
+          }
+        }
+      ],
+      "description": "Margin here is IMPLIED, not earned: there is no billing system and nobody is charged. It is what this traffic would have earned at the list price the pricing rule computes. Cost is duration x rate, not metered consumption — a call with an unusually long prompt costs the same here as a quiet one of equal length. Fixed infrastructure is allocated by minute share and kept in its own column: folding a fixed cost into a per-minute one produces a number that falls as volume rises and looks like an efficiency gain that is really just division."
+    },
+    {
+      "id": 21,
+      "type": "table",
+      "title": "Spread by model",
+      "datasource": {
+        "type": "postgres",
+        "uid": "arhiteq-db"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 56
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT coalesce(model_id, '(unresolved)')          AS \"model\",\n       rule_source                                 AS \"priced by\",\n       count(*)                                    AS \"calls\",\n       round(sum(minutes)::numeric, 1)             AS \"minutes\",\n       round(avg(cost_per_min)::numeric, 5)        AS \"cost/min\",\n       round(avg(price_per_min)::numeric, 5)       AS \"price/min\",\n       round(sum(implied_margin_usd)::numeric, 4)  AS \"implied margin\"\nFROM metrics.call_cost\nWHERE day_ms BETWEEN $__unixEpochFrom()::bigint * 1000 AND $__unixEpochTo()::bigint * 1000\nGROUP BY model_id, rule_source\nORDER BY sum(minutes) DESC NULLS LAST",
+          "datasource": {
+            "type": "postgres",
+            "uid": "arhiteq-db"
+          }
+        }
+      ],
+      "description": "'priced by' is which pricing rule produced the price — an explicit per-model price, a per-model markup, the global rule, or none at all — so an oddly-priced model shows its cause instead of leaving you to reconstruct it from three tables. A blank cost or price means the model has no rate row: unknown, not free."
+    }
+  ]
+}
