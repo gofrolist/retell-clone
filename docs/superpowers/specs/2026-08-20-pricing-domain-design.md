@@ -197,26 +197,31 @@ rule already covers the panels.
 
 ```json
 {
-  "assumptions": { "audio_tokens_per_sec": 25, "agent_talk_ratio": 0.5,
-                   "turns_per_min": 4, "output_tokens_per_turn": 150 },
   "models": [
     { "model_id": "gemini-live-2.5-flash-native-audio", "is_audio": true,
-      "input_per_1m": 12.0, "output_per_1m": 48.0,
-      "per_minute": 0.054, "per_minute_adder": 0.0 }
+      "per_minute": 0.054 }
   ],
+  "unpriced": ["gemini-3.1-flash-live-preview"],
   "components": { "cartesia_stt": 0.0088, "cartesia_tts": 0.056 }
 }
 ```
 
 **Every number in that payload is a price. No cost field is ever serialised.**
 The response shape has no place to put one, which is the point: a leak has to
-be a deliberate schema change, not an accidental field.
+be a deliberate schema change, not an accidental field. `assumptions`,
+`input_per_1m`, `output_per_1m` and `per_minute_adder` were in an earlier draft
+of this shape and were deliberately removed before ship: the provider's own
+per-token rates are public, so serving our marked-up per-token rates alongside
+the assumptions that turn them into a per-minute figure lets anyone divide the
+two out and reconstruct our exact cost and markup. `per_minute` is computed
+and marked up entirely server-side, and it is the only number a consumer gets.
 
-Percentage markup is folded into the per-1M rates, so the estimator's existing
-token math is untouched and simply operates on price rates. A fixed per-minute
-adder cannot be expressed as a per-token rate, so it rides separately as
-`per_minute_adder` and is added after the token math. An explicit price
-overrides both and arrives as `per_minute` with `per_minute_adder: 0`.
+A model whose price is unknown — no rule resolves it, or the resolved price
+does not clear the model's own cost — is omitted from `models` and named in
+`unpriced` instead, so the frontend falls back to its compiled-in price rather
+than rendering `$0.00`. `components` (the shared STT/TTS legs, priced at the
+multiplier of whichever model resolves through the global rule) is present
+only when such a model exists.
 
 ## Frontend
 

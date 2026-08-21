@@ -811,11 +811,18 @@ class PriceRule(Base):
 
 
 class PricingAssumption(Base):
-    """Constants the SQL price view and estimates.ts must agree on.
+    """Constants the Python price computation and the compiled Postgres view
+    must agree on.
 
-    They live in a table because the alternative is a copy in Python and a copy
-    in TypeScript, which lets the model picker and the cost estimate disagree
-    while both look correct.
+    They live in a table because the alternative is a copy in the API's
+    Select and a copy in the SQL compiled into `pricing.model_price`, which
+    lets the pricing endpoint and the Grafana margin panels disagree while
+    both look correct. (They used to also be shared with the frontend's
+    estimates.ts; the endpoint stopped serving them — see
+    services/pricing.py's module docstring and docs/superpowers/specs/
+    2026-08-20-pricing-domain-design.md — because combined with the
+    provider's public per-token rates they would let a reader reconstruct our
+    cost and markup.)
     """
 
     __tablename__ = "pricing_assumptions"
