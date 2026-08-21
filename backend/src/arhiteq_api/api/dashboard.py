@@ -7,6 +7,7 @@ changes the public Retell-compatible surface.
 """
 
 import asyncio
+import logging
 import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -38,6 +39,7 @@ from ..models import (
     Chat,
     Contact,
     ConversationFlow,
+    CostRate,
     KnowledgeBase,
     KnowledgeBaseFile,
     PhoneNumber,
@@ -56,12 +58,14 @@ from ..models import (
 from ..schemas import CompatModel, TestWebhookRequest
 from ..services import webhooks
 from ..services.gemini import build_genai_client, genai_credentials_available
+from ..services.pricing import ModelPrice, current_rows, model_prices
 from ..sessions import email_from_authorization
 from ._deps import apply_patch, get_owned
 from .auth_google import _email_allowed
 from .concurrency import BASE_CONCURRENCY, CONCURRENCY_PURCHASE_LIMIT
 from .workspaces import WORKSPACE_TYPES
 
+log = logging.getLogger(__name__)
 router = APIRouter(tags=["dashboard"])
 
 # Everything a workspace owns, ordered children-first so DELETE /workspace holds
@@ -1721,3 +1725,112 @@ async def delete_workspace(
         )
     await session.delete(ws)
     await session.commit()
+
+
+# --------------------------------------------------------------- pricing
+# List prices for the agent editor. PRICES ONLY — the response model has no
+# field a cost could occupy, so leaking one would take a deliberate schema
+# change rather than a slip.
+
+_PRICED_COMPONENTS = ("cartesia_stt", "cartesia_tts", "kb_overhead")
+
+
+@router.get("/dashboard/pricing/models")
+async def pricing_models(
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Prices for the agent editor's model picker — never costs.
+
+    A model is omitted from `models` (and named in `unpriced` instead) when
+    `price_per_min` is unknown — no rule resolves it — when
+    `effective_multiplier` is unknown (nothing to scale, or nothing to scale
+    to, which also means there is no known cost to check the price against),
+    or when the resolved price fails to clear the model's own cost. A $0.00,
+    blank, or zero-margin price must never reach a customer; the frontend
+    falls back to its compiled-in price for a model missing from this list,
+    so omission degrades gracefully.
+
+    Per-minute prices only. The per-token rates and the `pricing_assumptions`
+    values used to be served alongside them; between them they reconstruct our
+    cost, since the provider's own per-token rates are public — see
+    `test_never_serialises_a_cost`. Nothing read them.
+
+    `components` (the shared STT/TTS/KB legs) is priced using the multiplier
+    of a model actually priced by the global rule — those components cannot
+    carry a per-model multiplier of their own — and the key is left off
+    entirely when no such model exists, rather than ever serialising the raw,
+    unmarked-up (i.e. cost) component rates.
+    """
+    # One instant for the whole response. `model_prices` would pick its own
+    # `now_ms()` otherwise, and the components block below would resolve
+    # against a different one — a difference of milliseconds, but the point is
+    # that every number here describes the same moment.
+    at_ms = now_ms()
+    prices = await model_prices(session, at_ms=at_ms)
+
+    priced: list[ModelPrice] = []
+    unpriced: list[str] = []
+    for p in prices:
+        if p.price_per_min is None or p.effective_multiplier is None:
+            unpriced.append(p.model_id)
+            continue
+        # A price that does not clear its own cost is not a price. The rule
+        # tables cannot catch this on their own: `markup_pct = 0.3` (an
+        # operator who meant 30%) is a valid non-negative markup that resolves
+        # to cost + 0.3%, and only the cost this model actually carries says
+        # whether that clears. Treated exactly like an unresolved price —
+        # omitted and named in `unpriced` — so the frontend falls back to its
+        # compiled-in price instead of quoting a zero-margin minute.
+        if p.cost_per_min_stack is not None and p.price_per_min <= p.cost_per_min_stack:
+            log.warning(
+                "refusing to serve %s at or below cost: price %.6f <= cost %.6f (rule_source=%s)",
+                p.model_id,
+                p.price_per_min,
+                p.cost_per_min_stack,
+                p.rule_source,
+            )
+            unpriced.append(p.model_id)
+            continue
+        priced.append(p)
+    if unpriced:
+        log.warning("no usable price for models: %s", ", ".join(unpriced))
+
+    # Effective-dated exactly like the headline price. A plain
+    # `select(CostRate)` returns every generation of a component's rate, so a
+    # future-dated Cartesia rise would be served as today's STT/TTS price
+    # while `per_minute` still reflected the old one — and with two rows in
+    # play the comprehension would silently keep whichever row came back last.
+    current_components = current_rows(CostRate, CostRate.component, at_ms)
+    component_costs = {
+        row.component: float(row.unit_price_usd)
+        for row in (
+            await session.execute(
+                select(current_components.c.component, current_components.c.unit_price_usd).where(
+                    current_components.c.component.in_(_PRICED_COMPONENTS)
+                )
+            )
+        ).all()
+    }
+    global_priced = next(
+        (p for p in priced if p.rule_source == "global"),
+        None,
+    )
+
+    body: dict[str, Any] = {
+        "models": [
+            {
+                "model_id": p.model_id,
+                "is_audio": p.is_audio,
+                "per_minute": p.price_per_min,
+            }
+            for p in priced
+        ],
+        "unpriced": unpriced,
+    }
+    if global_priced is not None:
+        body["components"] = {
+            name: value * global_priced.effective_multiplier
+            for name, value in component_costs.items()
+        }
+    return body

@@ -162,6 +162,88 @@ kubectl -n monitoring port-forward svc/monitoring-grafana 3001:80
 
 Dashboards land in the "Arhiteq" folder.
 
+### Pricing
+
+What a call costs Arhiteq and what a customer is billed for it are separate
+numbers, kept in four Postgres tables and seeded on first boot:
+
+| table | holds |
+| --- | --- |
+| `model_cost_rates` | per-model token cost — what we pay the model provider |
+| `cost_rates` | STT, TTS, telephony and fixed-infrastructure cost |
+| `price_rules` | how a price is derived from a cost, per scope: explicit price > per-model markup/adder > global markup/adder |
+| `pricing_assumptions` | talk ratio, tokens/turn and friends — cost inputs, read by the price select and so by the SQL view below; deliberately never served to the dashboard |
+
+The rule that turns a cost into a price has exactly one implementation
+(`backend/src/arhiteq_api/services/pricing.py`), compiled at API boot into
+the Postgres view `pricing.model_price` so the pricing endpoint and
+Grafana's margin panels can never quote different numbers for the same
+model. Nothing is frozen into that view: the rate, rule and assumption
+tables are all re-read on every query against it, so any edit to any of the
+four tables takes effect for Grafana at the same instant it takes effect
+for the API, with no restart and no redeploy.
+
+Every one of those tables starts out seeded with a placeholder rather than
+a real number. The one that matters most is the global markup,
+`markup_pct = 300` — deliberately not a recommendation. `cost_per_min_stack`
+for a Live model is just the audio-token cost (there's no separate STT/TTS
+leg), so at the seeded rates that's $0.0135/min, and the 300% markup puts
+the price at $0.054/min — exactly 4x, under Retell's own published range of
+$0.07–$0.31/min. That multiplier never touches telephony or
+`infra_fixed_monthly`: `telnyx_outbound`/`telnyx_inbound` are rows in
+`cost_rates` but not part of `cost_per_min_stack`, so a real outbound minute
+runs closer to $0.0185 all-in ($0.0135 audio + $0.005 trunk) against that
+same $0.054 price — a smaller margin than the headline 4x, and one that
+narrows further as trunk or infra rates rise. **Set the real number before
+the pricing UI reaches a customer** — that call belongs to an operator, not
+to this codebase.
+
+Rules are effective-dated, so set the markup with an insert, never an
+`UPDATE` — an update would rewrite the margin a call already billed under,
+where an insert leaves that history alone and only changes what applies
+going forward:
+
+```sql
+INSERT INTO price_rules (scope, markup_pct, effective_from_ms, note)
+VALUES ('*', 250, (EXTRACT(EPOCH FROM now()) * 1000)::bigint, 'set 2026-08-21');
+```
+
+`markup_pct` is a PERCENT: 250 means 250%, i.e. a price 3.5x cost. It is not
+a multiplier and not a fraction — `markup_pct = 0.3` is a 0.3% markup, not
+"30% margin", and prices the minute a rounding error above cost. The
+database rejects the rules that can only ever land below cost (a negative
+markup or adder, a non-positive explicit price), and the pricing endpoint
+refuses to serve any model whose resolved price fails to clear that model's
+own cost — it drops the model into `unpriced` and logs both numbers. So the
+symptom of a mistyped markup is a model missing from the agent editor's
+picker plus a `refusing to serve … at or below cost` line in the API log,
+not a customer quoted at cost. Check the resolved price before anyone sees
+it either way:
+
+```sql
+SELECT model_id, cost_per_min_stack, price_per_min, rule_source
+FROM pricing.model_price ORDER BY 1;
+```
+
+`rule_source` is `explicit`, `model`, `global`, or `none`. `none` means no
+usable rule resolved for that model at all, and it comes with a NULL
+`price_per_min` — never a price that happens to equal cost. The same is
+true of `cost_per_min_stack`: NULL means a component rate is missing (a
+typo'd or retired `cost_rates` row), not that the component is free. In
+either case, NULL is a sign to go find the missing or misnamed row, not a
+real price.
+
+The pricing endpoint (`GET /dashboard/pricing/models`) only ever serves
+prices: a model it can't price is dropped from `models` and named in
+`unpriced` instead, rather than shipped at $0.00 or at cost. The dashboard
+falls back to its own compiled-in prices (`FALLBACK_PRICES` in
+`frontend/src/lib/estimates.ts`) for anything in `unpriced`, and for
+everything if the API itself is unreachable — so a model quietly
+disappearing from the agent editor's model picker is what a missing or
+mis-scoped rule looks like from the frontend. Refresh `FALLBACK_PRICES`
+after any markup change, or an API outage will quietly serve customers the
+old prices.
+
 ### Alerting
 
 Alert rules live in `infra/helm/monitoring/rules/`; Alertmanager delivers them

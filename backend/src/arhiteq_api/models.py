@@ -5,11 +5,13 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Float,
     ForeignKey,
     Index,
     Integer,
     LargeBinary,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -730,3 +732,101 @@ class TestCaseJob(Base):
     metric_results: Mapped[list[Any]] = mapped_column(JSON, default=list)
     creation_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms, index=True)
     user_modified_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+
+
+# Exact decimal in Postgres; SQLite has no numeric type and SQLAlchemy warns
+# on every Decimal round-trip, so the test dialect gets a float. Prices are
+# summed across thousands of call rows and compared against provider invoices,
+# which is why prod stays exact.
+MONEY = Numeric(12, 6).with_variant(Float(), "sqlite")
+
+
+class ModelCostRate(Base):
+    """What one model's tokens cost us. Mirrors LLM_RATES in estimates.ts."""
+
+    __tablename__ = "model_cost_rates"
+    __table_args__ = (UniqueConstraint("model_id", "effective_from_ms"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    model_id: Mapped[str] = mapped_column(String(64), index=True)
+    input_per_1m_usd: Mapped[float] = mapped_column(MONEY)
+    output_per_1m_usd: Mapped[float] = mapped_column(MONEY)
+    # Live models bill audio tokens (25/sec), not text turns — a different cost
+    # formula entirely, not a different rate.
+    is_audio: Mapped[bool] = mapped_column(Boolean, default=False)
+    effective_from_ms: Mapped[int] = mapped_column(BigInteger, default=0)
+    note: Mapped[str | None] = mapped_column(String(255))
+
+
+class CostRate(Base):
+    """Costs not priced per token: STT, TTS, telephony, fixed infrastructure."""
+
+    __tablename__ = "cost_rates"
+    __table_args__ = (UniqueConstraint("component", "effective_from_ms"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    component: Mapped[str] = mapped_column(String(64), index=True)
+    unit: Mapped[str] = mapped_column(String(16))  # per_minute | per_call | per_month
+    unit_price_usd: Mapped[float] = mapped_column(MONEY)
+    effective_from_ms: Mapped[int] = mapped_column(BigInteger, default=0)
+    note: Mapped[str | None] = mapped_column(String(255))
+
+
+class PriceRule(Base):
+    """How a customer price is derived from a cost.
+
+    Evaluated explicit > per-model > global; see services/pricing.py, which is
+    the only place that ordering is implemented.
+
+    The CHECK constraints are what keep a rule from pricing at or below cost.
+    infra/README.md tells an operator to set the markup with a raw INSERT, and
+    an operator who means "30% margin" writes `markup_pct = 0.3` — which is a
+    0.3% markup, not 30%, and lands the price a rounding error above cost. A
+    negative markup or adder is worse still: a structurally valid rule that
+    sells every minute below cost with `rule_source = "model"`, indistinguishable
+    from a deliberate price. The database refuses those outright; the endpoint
+    (api/dashboard.py) additionally refuses to serve any price that does not
+    clear its own cost, since 0 <= markup <= tiny is still a bad price and no
+    constraint can know a model's cost.
+
+    NULL passes a CHECK by design: an unset knob means "this rule does not use
+    this lever", which services/pricing.py already reads as not-a-price.
+    """
+
+    __tablename__ = "price_rules"
+    __table_args__ = (
+        UniqueConstraint("scope", "effective_from_ms"),
+        CheckConstraint("markup_pct >= 0", name="ck_price_rules_markup_non_negative"),
+        CheckConstraint("fixed_per_minute_usd >= 0", name="ck_price_rules_fixed_non_negative"),
+        CheckConstraint("explicit_per_minute_usd > 0", name="ck_price_rules_explicit_positive"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scope: Mapped[str] = mapped_column(String(64), index=True)  # model_id | "*"
+    explicit_per_minute_usd: Mapped[float | None] = mapped_column(MONEY)
+    markup_pct: Mapped[float | None] = mapped_column(MONEY)
+    fixed_per_minute_usd: Mapped[float | None] = mapped_column(MONEY)
+    effective_from_ms: Mapped[int] = mapped_column(BigInteger, default=0)
+    note: Mapped[str | None] = mapped_column(String(255))
+
+
+class PricingAssumption(Base):
+    """Constants the Python price computation and the compiled Postgres view
+    must agree on.
+
+    They live in a table because the alternative is a copy in the API's
+    Select and a copy in the SQL compiled into `pricing.model_price`, which
+    lets the pricing endpoint and the Grafana margin panels disagree while
+    both look correct. (They used to also be shared with the frontend's
+    estimates.ts; the endpoint stopped serving them — see
+    services/pricing.py's module docstring and docs/superpowers/specs/
+    2026-08-20-pricing-domain-design.md — because combined with the
+    provider's public per-token rates they would let a reader reconstruct our
+    cost and markup.)
+    """
+
+    __tablename__ = "pricing_assumptions"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[float] = mapped_column(Float)
+    note: Mapped[str | None] = mapped_column(String(255))

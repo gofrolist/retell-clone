@@ -1,15 +1,18 @@
 /// <reference types="bun" />
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 
 import type { RawConversationFlow, RawLlm } from "@/lib/api";
 import {
   estimateCost,
   estimateLatency,
   estimateTokens,
+  FALLBACK_PRICES,
   flowEstimateInput,
+  llmDisplayCostPerMin,
   llmEstimateInput,
 } from "@/lib/estimates";
 import { RUNTIME_DEFAULT_MODEL } from "@/lib/models";
+import type { PriceCard } from "@/lib/types";
 
 /**
  * Agent-details estimates for both agent shapes.
@@ -53,15 +56,15 @@ describe("flow agents price off the flow's own model", () => {
     const input = flowEstimateInput(
       flow({ model_choice: { model: "gemini-live-2.5-flash-native-audio" } }),
     );
-    const cost = estimateCost(input, estimateTokens(input));
+    const cost = estimateCost(input, estimateTokens(input), FALLBACK_PRICES);
 
-    expect(labels(cost.rows)).toEqual([
-      "Gemini Live: gemini-live-2.5-flash-native-audio",
-      "Voice Infra",
-    ]);
+    expect(labels(cost.rows)).toEqual(["Gemini Live: gemini-live-2.5-flash-native-audio"]);
     expect(labels(cost.rows).join()).not.toContain("cartesia");
-    // 1,500 audio tokens/min in at $3/1M + 750 out at $12/1M + $0.001 infra.
-    expect(cost.max).toBeCloseTo(0.0135 + 0.001, 6);
+    // Derived here, not read back out of the card: an audio minute is
+    // 25 tok/s x 60 = 1500 input tokens plus 50% of that spoken back, at
+    // $3/$12 per 1M, = $0.0135 cost, x4 markup = $0.054 PRICE. Computing the
+    // expectation with `llmDisplayCostPerMin` would pass for any card.
+    expect(cost.max).toBeCloseTo(0.054, 6);
   });
 
   test("a Gemini Live flow reports one speech-to-speech latency band", () => {
@@ -77,13 +80,16 @@ describe("flow agents price off the flow's own model", () => {
     const input = flowEstimateInput(
       flow({ model_choice: { model: "gemini-3.1-flash-live-preview" } }),
     );
-    const cost = estimateCost(input, estimateTokens(input));
+    const cost = estimateCost(input, estimateTokens(input), FALLBACK_PRICES);
 
-    expect(labels(cost.rows)).toEqual([
-      "Gemini Live: gemini-3.1-flash-live-preview",
-      "Voice Infra",
-    ]);
-    expect(cost.max).toBeCloseTo(0.0135 + 0.001, 6);
+    expect(labels(cost.rows)).toEqual(["Gemini Live: gemini-3.1-flash-live-preview"]);
+    // The property is "same rate card as 2.5", so compare the two Live ids to
+    // each other. Comparing 3.1 against its own price would hold whatever the
+    // card said 3.1 cost.
+    expect(cost.max).toBeCloseTo(
+      llmDisplayCostPerMin("gemini-live-2.5-flash-native-audio", FALLBACK_PRICES),
+      6,
+    );
   });
 
   // Live ids are marker-matched, so an id newer than the rate card still lands
@@ -93,10 +99,14 @@ describe("flow agents price off the flow's own model", () => {
     const input = flowEstimateInput(
       flow({ model_choice: { model: "gemini-9.9-flash-live-preview" } }),
     );
-    const cost = estimateCost(input, estimateTokens(input));
+    const cost = estimateCost(input, estimateTokens(input), FALLBACK_PRICES);
 
-    expect(labels(cost.rows)).toEqual(["Gemini Live: gemini-9.9-flash-live-preview", "Voice Infra"]);
-    expect(cost.max).toBeCloseTo(0.0135 + 0.001, 6);
+    expect(labels(cost.rows)).toEqual(["Gemini Live: gemini-9.9-flash-live-preview"]);
+    // No rate for this id, so it must fall back to a Live rate, not text.
+    expect(cost.max).toBeCloseTo(
+      llmDisplayCostPerMin("gemini-3.1-flash-live-preview", FALLBACK_PRICES),
+      6,
+    );
   });
 
   test("a pipeline flow keeps Cartesia and prices its chosen model", () => {
@@ -107,15 +117,14 @@ describe("flow agents price off the flow's own model", () => {
       flow({ model_choice: { model: "gemini-2.5-pro" } }),
     );
 
-    expect(labels(estimateCost(cheap, estimateTokens(cheap)).rows)).toEqual([
+    expect(labels(estimateCost(cheap, estimateTokens(cheap), FALLBACK_PRICES).rows)).toEqual([
       "LLM: gemini-2.5-flash-lite",
       "STT: cartesia ink-whisper",
       "TTS: cartesia sonic-2",
-      "Voice Infra",
     ]);
     // The reported bug: switching the model changed nothing on screen.
-    expect(estimateCost(dear, estimateTokens(dear)).max).toBeGreaterThan(
-      estimateCost(cheap, estimateTokens(cheap)).max,
+    expect(estimateCost(dear, estimateTokens(dear), FALLBACK_PRICES).max).toBeGreaterThan(
+      estimateCost(cheap, estimateTokens(cheap), FALLBACK_PRICES).max,
     );
   });
 
@@ -264,8 +273,13 @@ describe("flow agents price off the flow's own model", () => {
 
   test("an attached knowledge base adds its rows", () => {
     const input = flowEstimateInput(flow({ knowledge_base_ids: ["kb_1"] }));
-    expect(labels(estimateCost(input, estimateTokens(input)).rows)).toContain(
-      "Knowledge Base",
+    const bare = flowEstimateInput(flow());
+    expect(
+      labels(estimateCost(input, estimateTokens(input), FALLBACK_PRICES).rows),
+    ).toContain("Knowledge Base");
+    // A row that does not move the total is decoration. It used to be one.
+    expect(estimateCost(input, estimateTokens(input), FALLBACK_PRICES).max).toBeGreaterThan(
+      estimateCost(bare, estimateTokens(bare), FALLBACK_PRICES).max,
     );
     expect(labels(estimateLatency(input).rows)).toContain("Knowledge Base");
     expect(labels(estimateTokens(input)!.rows)).toContain("Knowledge Base");
@@ -275,11 +289,10 @@ describe("flow agents price off the flow's own model", () => {
 describe("single-prompt agents are unchanged", () => {
   test("a pipeline LLM keeps the STT -> LLM -> TTS card", () => {
     const input = llmEstimateInput(llm());
-    expect(labels(estimateCost(input, estimateTokens(input)).rows)).toEqual([
+    expect(labels(estimateCost(input, estimateTokens(input), FALLBACK_PRICES).rows)).toEqual([
       "LLM: gemini-2.5-flash",
       "STT: cartesia ink-whisper",
       "TTS: cartesia sonic-2",
-      "Voice Infra",
     ]);
     expect(labels(estimateTokens(input)!.rows)).toEqual([
       "System Prompt",
@@ -298,17 +311,232 @@ describe("single-prompt agents are unchanged", () => {
     const input = llmEstimateInput(
       llm({ model: "gemini-live-2.5-flash-native-audio" }),
     );
-    expect(labels(estimateCost(input, estimateTokens(input)).rows).join()).not.toContain(
-      "cartesia",
-    );
+    expect(
+      labels(estimateCost(input, estimateTokens(input), FALLBACK_PRICES).rows).join(),
+    ).not.toContain("cartesia");
   });
 
   test("a null config still yields the bare pipeline card", () => {
     expect(estimateTokens(null)).toBeNull();
-    expect(labels(estimateCost(null, null).rows)).toEqual([
+    expect(labels(estimateCost(null, null, FALLBACK_PRICES).rows)).toEqual([
       "STT: cartesia ink-whisper",
       "TTS: cartesia sonic-2",
-      "Voice Infra",
     ]);
+  });
+});
+
+const LIVE = "gemini-live-2.5-flash-native-audio";
+const TEXT = "gemini-2.5-flash-lite";
+
+/**
+ * Our real per-1M-token COSTS, from backend/src/arhiteq_api/services/
+ * pricing_seed.py MODEL_COSTS. Every number compiled into FALLBACK_PRICES is
+ * a marked-up price; these are the floor those prices must clear. Kept as a
+ * literal map (not derived from the card) so that a card edited down to cost
+ * has nothing to hide behind.
+ */
+const MODEL_COSTS_PER_1M: Record<string, { input: number; output: number }> = {
+  "gemini-3.5-flash": { input: 1.5, output: 9.0 },
+  "gemini-3.1-flash-lite": { input: 0.25, output: 1.5 },
+  "gemini-2.5-pro": { input: 1.25, output: 10.0 },
+  "gemini-2.5-flash": { input: 0.3, output: 2.5 },
+  "gemini-2.5-flash-lite": { input: 0.1, output: 0.4 },
+  "gemini-3.1-flash-live-preview": { input: 3.0, output: 12.0 },
+  "gemini-live-2.5-flash-native-audio": { input: 3.0, output: 12.0 },
+};
+
+/** COMPONENT_COSTS from the same seed. */
+const COMPONENT_COSTS = { cartesia_stt: 0.0022, cartesia_tts: 0.014, kb_overhead: 0.001 };
+
+/**
+ * ASSUMPTIONS from the same seed. Held here rather than read off the price
+ * card for the same reason as MODEL_COSTS_PER_1M: these are the inputs to our
+ * COST, and the endpoint deliberately no longer discloses them (published
+ * per-token rates plus these values reconstruct the cost behind any quoted
+ * price). Update alongside pricing_seed.py's ASSUMPTIONS.
+ */
+const ASSUMPTIONS = {
+  audio_tokens_per_sec: 25,
+  agent_talk_ratio: 0.5,
+  turns_per_min: 4,
+  output_tokens_per_turn: 150,
+  display_input_tokens_per_turn: 1500,
+};
+
+/** Live audio minute at seed cost: 1500 in + 750 out tokens at $3/$12 per 1M. */
+const LIVE_AUDIO_COST_PER_MIN = 0.0135;
+
+/**
+ * Our cost for one call minute of `model`, using the same two formulas the
+ * backend uses (services/pricing.py `cost_stack`): an audio model bills the
+ * stream, a text model bills turns and carries the Cartesia legs.
+ */
+function costPerMin(modelId: string, isAudio: boolean): number {
+  const a = ASSUMPTIONS;
+  const { input, output } = MODEL_COSTS_PER_1M[modelId];
+  const tokensPerMin = a.audio_tokens_per_sec * 60;
+  if (isAudio) {
+    return (
+      (tokensPerMin / 1e6) * input + ((a.agent_talk_ratio * tokensPerMin) / 1e6) * output
+    );
+  }
+  const model =
+    a.turns_per_min *
+    ((a.display_input_tokens_per_turn / 1e6) * input +
+      (a.output_tokens_per_turn / 1e6) * output);
+  return model + COMPONENT_COSTS.cartesia_stt + COMPONENT_COSTS.cartesia_tts;
+}
+
+describe("price card", () => {
+  test("quotes above cost for every model in the fallback", () => {
+    // A stale fallback must never quote below cost — it is what renders when
+    // the pricing endpoint is unreachable. Driven off the card's own model
+    // list, so all seven are covered and a newly added model with no cost
+    // entry here fails rather than slipping through unchecked.
+    expect(FALLBACK_PRICES.models.length).toBe(
+      Object.keys(MODEL_COSTS_PER_1M).length,
+    );
+    for (const m of FALLBACK_PRICES.models) {
+      expect(MODEL_COSTS_PER_1M[m.model_id]).toBeDefined();
+      const cost = costPerMin(m.model_id, m.is_audio);
+      expect(llmDisplayCostPerMin(m.model_id, FALLBACK_PRICES)).toBeGreaterThan(cost);
+    }
+  });
+
+  test("quotes the components above cost too", () => {
+    // STT/TTS/KB are billed to the customer as their own rows, so a cost-level
+    // component would sell the pipeline at cost even with every model marked up.
+    for (const [name, cost] of Object.entries(COMPONENT_COSTS)) {
+      const price = FALLBACK_PRICES.components[name as keyof typeof COMPONENT_COSTS];
+      expect(price).toBeGreaterThan(cost);
+    }
+  });
+
+  test("the LLM row never clamps to zero, with or without a knowledge base", () => {
+    // The regression: the KB price used to be subtracted from a headline that
+    // never contained it, driving gemini-2.5-flash-lite's LLM row negative and
+    // rendering "$0.000/min". The row must now be the model's own marked-up
+    // price — strictly above its model-only cost — for every model, KB or not.
+    for (const m of FALLBACK_PRICES.models) {
+      for (const hasKb of [false, true]) {
+        const input = llmEstimateInput(
+          llm({ model: m.model_id, knowledge_base_ids: hasKb ? ["kb_1"] : [] }),
+        );
+        const cost = estimateCost(input, estimateTokens(input), FALLBACK_PRICES);
+        const modelRow = cost.rows.find((r) => r.label.endsWith(m.model_id))!;
+        const modelOnlyCost = m.is_audio
+          ? LIVE_AUDIO_COST_PER_MIN
+          : costPerMin(m.model_id, false) -
+            COMPONENT_COSTS.cartesia_stt -
+            COMPONENT_COSTS.cartesia_tts;
+        expect(modelRow.min).toBeGreaterThan(modelOnlyCost);
+      }
+    }
+  });
+
+  test("warns when a live card's components outrun the model's price, clamping the LLM row", () => {
+    // FALLBACK_PRICES can never breach the clamp (proved above), so build a
+    // card that can: inflate the shared STT/TTS legs past gemini-2.5-flash-
+    // lite's own per-minute price. The clamp still floors the row at zero —
+    // this only proves the warning fires alongside it, naming the model and
+    // the numbers so the under-billing is caught in the field.
+    const breached: PriceCard = {
+      ...FALLBACK_PRICES,
+      components: { cartesia_stt: 0.05, cartesia_tts: 0.05, kb_overhead: 0.004 },
+    };
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const input = llmEstimateInput(llm({ model: "gemini-2.5-flash-lite" }));
+      const cost = estimateCost(input, estimateTokens(input), breached);
+
+      const modelRow = cost.rows.find((r) => r.label === "LLM: gemini-2.5-flash-lite")!;
+      expect(modelRow.min).toBe(0); // the clamp itself is unchanged
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = warn.mock.calls[0]!.join(" ");
+      expect(message).toContain("gemini-2.5-flash-lite");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("does not warn on the normal, self-consistent path", () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      for (const m of FALLBACK_PRICES.models) {
+        const input = llmEstimateInput(llm({ model: m.model_id }));
+        estimateCost(input, estimateTokens(input), FALLBACK_PRICES);
+      }
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("a knowledge base costs extra — the headline never contained it", () => {
+    // The backend's cost_per_min_stack is model + stt + tts, with no KB term,
+    // so KB is charged on top. Before the fix the two totals were identical
+    // for every model and attaching a knowledge base was free.
+    const kbPrice = FALLBACK_PRICES.components.kb_overhead;
+    for (const model of [TEXT, LIVE]) {
+      const bare = llmEstimateInput(llm({ model }));
+      const withKb = llmEstimateInput(llm({ model, knowledge_base_ids: ["kb_1"] }));
+      const bareCost = estimateCost(bare, estimateTokens(bare), FALLBACK_PRICES);
+      const kbCost = estimateCost(withKb, estimateTokens(withKb), FALLBACK_PRICES);
+
+      expect(kbCost.max).toBeGreaterThan(bareCost.max);
+      expect(kbCost.max - bareCost.max).toBeCloseTo(kbPrice, 6);
+      // …and above the headline, which priced no retrieval at all.
+      expect(kbCost.max).toBeGreaterThan(llmDisplayCostPerMin(model, FALLBACK_PRICES));
+    }
+  });
+
+  test("uses the supplied price card rather than the fallback", () => {
+    const doubled: typeof FALLBACK_PRICES = {
+      ...FALLBACK_PRICES,
+      models: FALLBACK_PRICES.models.map((m) => ({ ...m, per_minute: m.per_minute * 2 })),
+    };
+    expect(llmDisplayCostPerMin(LIVE, doubled)).toBeCloseTo(
+      llmDisplayCostPerMin(LIVE, FALLBACK_PRICES) * 2,
+    );
+  });
+
+  test("falls back for a model missing from the card", () => {
+    // `> 0` would be satisfied by our raw cost, which is exactly what must
+    // never reach a customer — so pin it above the Live audio minute's cost.
+    const empty = { ...FALLBACK_PRICES, models: [] };
+    expect(llmDisplayCostPerMin(LIVE, empty)).toBeGreaterThan(LIVE_AUDIO_COST_PER_MIN);
+  });
+
+  test("breaks the headline down into rows that sum back to it", () => {
+    // The TEXT path, where the subtraction actually happens: LLM + STT + TTS
+    // must land back on the headline. A Live model has a single row, so it
+    // would only assert that a total equals itself.
+    const input = llmEstimateInput({ llm_id: "llm_1", model: TEXT } as RawLlm);
+    const cost = estimateCost(input, estimateTokens(input), FALLBACK_PRICES);
+    expect(cost.rows).toHaveLength(3);
+    expect(cost.max).toBeCloseTo(llmDisplayCostPerMin(TEXT, FALLBACK_PRICES), 6);
+
+    // The KB path is the exception: it is charged on top of the headline.
+    const kbInput = llmEstimateInput(
+      llm({ model: TEXT, knowledge_base_ids: ["kb_1"] }),
+    );
+    const kbCost = estimateCost(kbInput, estimateTokens(kbInput), FALLBACK_PRICES);
+    expect(kbCost.max).toBeCloseTo(
+      llmDisplayCostPerMin(TEXT, FALLBACK_PRICES) + FALLBACK_PRICES.components.kb_overhead,
+      6,
+    );
+    expect(kbCost.max).toBeGreaterThan(cost.max);
+  });
+
+  test("carries no field that could reconstruct our cost", () => {
+    // The compiled-in card mirrors the endpoint's shape, and the endpoint
+    // serves per-minute PRICES only: a marked-up per-token rate divided by the
+    // provider's published rate is our markup, and the pricing assumptions are
+    // the rest of the recipe. Neither may reappear here by way of a refreshed
+    // capture from a future endpoint response.
+    expect("assumptions" in FALLBACK_PRICES).toBe(false);
+    for (const m of FALLBACK_PRICES.models) {
+      expect(Object.keys(m).sort()).toEqual(["is_audio", "model_id", "per_minute"]);
+    }
   });
 });

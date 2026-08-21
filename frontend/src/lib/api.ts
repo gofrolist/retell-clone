@@ -24,6 +24,7 @@ import type {
   ListCallsResponse,
   LiveCallsSnapshot,
   PhoneNumber,
+  PriceCard,
   QaCohort,
   TranscriptItem,
   Voice,
@@ -1162,6 +1163,10 @@ export const api = {
 
   // ------------------------------------------------------------- voices
   listVoices: () => request<Voice[]>("/list-voices"),
+
+  // ------------------------------------------------------------- pricing
+  /** Marked-up model/component prices for the agent editor's cost estimator. */
+  getPricing: () => request<PriceCard>("/dashboard/pricing/models"),
 
   // ------------------------------------------------------------- calls
   // Retell shape: POST /v2/list-calls returns a bare array; the last item's

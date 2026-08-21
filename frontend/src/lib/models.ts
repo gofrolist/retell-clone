@@ -3,10 +3,12 @@
 // and add provider dispatch in the worker). The backend stores the id as a
 // free-form Retell-compatible string; the worker runs conversation on
 // Gemini only and maps unknown ids to its default Gemini model.
-// Cost/latency estimates for these ids live in lib/estimates.ts (LLM_RATES);
-// LLM_RATES is checked against LlmModelId at compile time, so adding a model
-// here without a rate there is a type error (unknown wire ids still fall back
-// to a default rate at runtime).
+// Cost estimates for these ids come from the backend's pricing endpoint
+// (GET /dashboard/pricing/models), with a compiled-in FALLBACK_PRICES in
+// lib/estimates.ts for when it's unreachable; latency estimates still live
+// there in LLM_LATENCY. Both are checked against LlmModelId at compile time,
+// so adding a model here without an entry there is a type error (unknown
+// wire ids still fall back to a default at runtime).
 export type LlmProvider = "google";
 
 export interface LlmModel {

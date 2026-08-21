@@ -66,6 +66,14 @@ The control plane. Owns all persistent state and the public API.
   the transcript to produce `call_analysis` (`summary`, `user_sentiment`
   (`Positive|Negative|Neutral`), `in_voicemail`, `call_successful`), then
   emits `call_analyzed`.
+- **Pricing**: what a call costs Arhiteq (model tokens, STT/TTS, telephony,
+  fixed infra) and what a customer is charged for it are separate concerns,
+  kept in separate Postgres tables and joined by one price rule. That rule
+  has a single implementation, `services/pricing.py`, which is also compiled
+  at boot into the `pricing.model_price` Postgres view so Grafana's margin
+  panels read the same arithmetic the API serves. The API (`GET
+  /dashboard/pricing/models`) serves prices only — never a cost — and drops
+  any model it cannot price rather than guess.
 
 ### arhiteq-worker (worker/)
 LiveKit Agents worker; one job per call.
