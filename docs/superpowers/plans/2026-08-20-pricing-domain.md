@@ -27,6 +27,7 @@
 - Modify: `backend/src/arhiteq_api/models.py` (append after `TestCaseJob`, end of file)
 - Create: `backend/src/arhiteq_api/services/pricing_seed.py`
 - Modify: `backend/src/arhiteq_api/main.py:118-126` (lifespan)
+- Modify: `backend/tests/conftest.py:54-80` (`_fresh_db` fixture)
 - Test: `backend/tests/unit/test_pricing_seed.py`
 
 **Interfaces:**
@@ -309,16 +310,44 @@ from .services.pricing_seed import seed_pricing_defaults
 
 (`get_engine` is already imported; extend the existing line rather than duplicating it.)
 
-- [ ] **Step 7: Run the full backend suite**
+- [ ] **Step 7: Seed pricing in the test fixture too**
+
+`conftest.py` has no `LifespanManager` — the `client` fixture drives the app
+through `ASGITransport`, which does **not** run startup events. So the boot seed
+added in Step 6 never executes under test, and every later task that reads a
+price would query empty tables. `_fresh_db` builds the schema itself, so it must
+seed the same way prod boot does.
+
+In `backend/tests/conftest.py`, inside `_fresh_db`, after the existing
+`session.add(...)` calls and before the commit, add:
+
+```python
+        # Mirrors what lifespan does in prod: ASGITransport does not run
+        # startup events, so without this the pricing catalog is empty in
+        # every test and prices silently read as missing.
+        await seed_pricing_defaults(session)
+```
+
+and import it at the top of `conftest.py`:
+
+```python
+from arhiteq_api.services.pricing_seed import seed_pricing_defaults
+```
+
+If `seed_pricing_defaults` commits internally and the surrounding fixture also
+commits, keep both — the function is idempotent by construction.
+
+- [ ] **Step 8: Run the full backend suite**
 
 Run: `cd backend && uv run pytest -q`
 Expected: all pass. If `test_settings.py` or contract tests fail, the seed is running where it should not — check that it is inside `lifespan` and not at import time.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add backend/src/arhiteq_api/models.py backend/src/arhiteq_api/services/pricing_seed.py \
-        backend/src/arhiteq_api/main.py backend/tests/unit/test_pricing_seed.py
+        backend/src/arhiteq_api/main.py backend/tests/conftest.py \
+        backend/tests/unit/test_pricing_seed.py
 git commit -m "feat(pricing): cost, price-rule and assumption tables with first-boot seeds"
 ```
 
