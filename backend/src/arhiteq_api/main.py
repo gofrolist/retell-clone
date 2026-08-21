@@ -36,6 +36,7 @@ from .security import (
     UnhandledErrorMiddleware,
 )
 from .services import simulation
+from .services.metrics_views import apply_metrics_views
 from .services.pricing_seed import seed_pricing_defaults
 from .services.pricing_view import apply_pricing_view
 
@@ -129,6 +130,10 @@ async def lifespan(app: FastAPI):
     async with session_factory()() as session:
         await seed_pricing_defaults(session)
         await apply_pricing_view(session)
+        # After the pricing view, not before: metrics.call_cost prices each
+        # call through the same rule, and the dashboard's economics panels
+        # read both schemas as one picture.
+        await apply_metrics_views(session)
     yield
     # Simulation batches run detached from any request; cancel them (and mark
     # their rows finished, so the dashboard stops polling) before the engine
