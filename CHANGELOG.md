@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.29.1](https://github.com/gofrolist/retell-clone/compare/v0.29.0...v0.29.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* **infra:** put the datasource's database in jsonData ([#288](https://github.com/gofrolist/retell-clone/issues/288)) ([0b7d345](https://github.com/gofrolist/retell-clone/commit/0b7d3455957d1072946541cd9198a476b9e63ac3))
+
 ## [0.29.0](https://github.com/gofrolist/retell-clone/compare/v0.28.0...v0.29.0) (2026-08-21)
 
 
