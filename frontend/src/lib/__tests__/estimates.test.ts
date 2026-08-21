@@ -6,7 +6,9 @@ import {
   estimateCost,
   estimateLatency,
   estimateTokens,
+  FALLBACK_PRICES,
   flowEstimateInput,
+  llmDisplayCostPerMin,
   llmEstimateInput,
 } from "@/lib/estimates";
 import { RUNTIME_DEFAULT_MODEL } from "@/lib/models";
@@ -53,15 +55,16 @@ describe("flow agents price off the flow's own model", () => {
     const input = flowEstimateInput(
       flow({ model_choice: { model: "gemini-live-2.5-flash-native-audio" } }),
     );
-    const cost = estimateCost(input, estimateTokens(input));
+    const cost = estimateCost(input, estimateTokens(input), FALLBACK_PRICES);
 
-    expect(labels(cost.rows)).toEqual([
-      "Gemini Live: gemini-live-2.5-flash-native-audio",
-      "Voice Infra",
-    ]);
+    expect(labels(cost.rows)).toEqual(["Gemini Live: gemini-live-2.5-flash-native-audio"]);
     expect(labels(cost.rows).join()).not.toContain("cartesia");
-    // 1,500 audio tokens/min in at $3/1M + 750 out at $12/1M + $0.001 infra.
-    expect(cost.max).toBeCloseTo(0.0135 + 0.001, 6);
+    // The fallback card's marked-up Live price (see FALLBACK_PRICES) — a
+    // single headline row, no separate infra line item.
+    expect(cost.max).toBeCloseTo(
+      llmDisplayCostPerMin("gemini-live-2.5-flash-native-audio", FALLBACK_PRICES),
+      6,
+    );
   });
 
   test("a Gemini Live flow reports one speech-to-speech latency band", () => {
@@ -77,13 +80,13 @@ describe("flow agents price off the flow's own model", () => {
     const input = flowEstimateInput(
       flow({ model_choice: { model: "gemini-3.1-flash-live-preview" } }),
     );
-    const cost = estimateCost(input, estimateTokens(input));
+    const cost = estimateCost(input, estimateTokens(input), FALLBACK_PRICES);
 
-    expect(labels(cost.rows)).toEqual([
-      "Gemini Live: gemini-3.1-flash-live-preview",
-      "Voice Infra",
-    ]);
-    expect(cost.max).toBeCloseTo(0.0135 + 0.001, 6);
+    expect(labels(cost.rows)).toEqual(["Gemini Live: gemini-3.1-flash-live-preview"]);
+    expect(cost.max).toBeCloseTo(
+      llmDisplayCostPerMin("gemini-3.1-flash-live-preview", FALLBACK_PRICES),
+      6,
+    );
   });
 
   // Live ids are marker-matched, so an id newer than the rate card still lands
@@ -93,10 +96,14 @@ describe("flow agents price off the flow's own model", () => {
     const input = flowEstimateInput(
       flow({ model_choice: { model: "gemini-9.9-flash-live-preview" } }),
     );
-    const cost = estimateCost(input, estimateTokens(input));
+    const cost = estimateCost(input, estimateTokens(input), FALLBACK_PRICES);
 
-    expect(labels(cost.rows)).toEqual(["Gemini Live: gemini-9.9-flash-live-preview", "Voice Infra"]);
-    expect(cost.max).toBeCloseTo(0.0135 + 0.001, 6);
+    expect(labels(cost.rows)).toEqual(["Gemini Live: gemini-9.9-flash-live-preview"]);
+    // No rate for this id, so it must fall back to a Live rate, not text.
+    expect(cost.max).toBeCloseTo(
+      llmDisplayCostPerMin("gemini-3.1-flash-live-preview", FALLBACK_PRICES),
+      6,
+    );
   });
 
   test("a pipeline flow keeps Cartesia and prices its chosen model", () => {
@@ -107,15 +114,14 @@ describe("flow agents price off the flow's own model", () => {
       flow({ model_choice: { model: "gemini-2.5-pro" } }),
     );
 
-    expect(labels(estimateCost(cheap, estimateTokens(cheap)).rows)).toEqual([
+    expect(labels(estimateCost(cheap, estimateTokens(cheap), FALLBACK_PRICES).rows)).toEqual([
       "LLM: gemini-2.5-flash-lite",
       "STT: cartesia ink-whisper",
       "TTS: cartesia sonic-2",
-      "Voice Infra",
     ]);
     // The reported bug: switching the model changed nothing on screen.
-    expect(estimateCost(dear, estimateTokens(dear)).max).toBeGreaterThan(
-      estimateCost(cheap, estimateTokens(cheap)).max,
+    expect(estimateCost(dear, estimateTokens(dear), FALLBACK_PRICES).max).toBeGreaterThan(
+      estimateCost(cheap, estimateTokens(cheap), FALLBACK_PRICES).max,
     );
   });
 
@@ -264,9 +270,9 @@ describe("flow agents price off the flow's own model", () => {
 
   test("an attached knowledge base adds its rows", () => {
     const input = flowEstimateInput(flow({ knowledge_base_ids: ["kb_1"] }));
-    expect(labels(estimateCost(input, estimateTokens(input)).rows)).toContain(
-      "Knowledge Base",
-    );
+    expect(
+      labels(estimateCost(input, estimateTokens(input), FALLBACK_PRICES).rows),
+    ).toContain("Knowledge Base");
     expect(labels(estimateLatency(input).rows)).toContain("Knowledge Base");
     expect(labels(estimateTokens(input)!.rows)).toContain("Knowledge Base");
   });
@@ -275,11 +281,10 @@ describe("flow agents price off the flow's own model", () => {
 describe("single-prompt agents are unchanged", () => {
   test("a pipeline LLM keeps the STT -> LLM -> TTS card", () => {
     const input = llmEstimateInput(llm());
-    expect(labels(estimateCost(input, estimateTokens(input)).rows)).toEqual([
+    expect(labels(estimateCost(input, estimateTokens(input), FALLBACK_PRICES).rows)).toEqual([
       "LLM: gemini-2.5-flash",
       "STT: cartesia ink-whisper",
       "TTS: cartesia sonic-2",
-      "Voice Infra",
     ]);
     expect(labels(estimateTokens(input)!.rows)).toEqual([
       "System Prompt",
@@ -298,17 +303,65 @@ describe("single-prompt agents are unchanged", () => {
     const input = llmEstimateInput(
       llm({ model: "gemini-live-2.5-flash-native-audio" }),
     );
-    expect(labels(estimateCost(input, estimateTokens(input)).rows).join()).not.toContain(
-      "cartesia",
-    );
+    expect(
+      labels(estimateCost(input, estimateTokens(input), FALLBACK_PRICES).rows).join(),
+    ).not.toContain("cartesia");
   });
 
   test("a null config still yields the bare pipeline card", () => {
     expect(estimateTokens(null)).toBeNull();
-    expect(labels(estimateCost(null, null).rows)).toEqual([
+    expect(labels(estimateCost(null, null, FALLBACK_PRICES).rows)).toEqual([
       "STT: cartesia ink-whisper",
       "TTS: cartesia sonic-2",
-      "Voice Infra",
     ]);
+  });
+});
+
+const LIVE = "gemini-live-2.5-flash-native-audio";
+
+describe("price card", () => {
+  test("quotes above cost for every model in the fallback", () => {
+    // A stale fallback must never quote below cost — it is what renders when
+    // the pricing endpoint is unreachable.
+    const COSTS: Record<string, number> = {
+      "gemini-live-2.5-flash-native-audio": 0.0135,
+      "gemini-3.1-flash-live-preview": 0.0135,
+    };
+    for (const [model, cost] of Object.entries(COSTS)) {
+      expect(llmDisplayCostPerMin(model, FALLBACK_PRICES)).toBeGreaterThan(cost);
+    }
+  });
+
+  test("uses the supplied price card rather than the fallback", () => {
+    const doubled: typeof FALLBACK_PRICES = {
+      ...FALLBACK_PRICES,
+      models: FALLBACK_PRICES.models.map((m) => ({ ...m, per_minute: m.per_minute * 2 })),
+    };
+    expect(llmDisplayCostPerMin(LIVE, doubled)).toBeCloseTo(
+      llmDisplayCostPerMin(LIVE, FALLBACK_PRICES) * 2,
+    );
+  });
+
+  test("falls back for a model missing from the card", () => {
+    const empty = { ...FALLBACK_PRICES, models: [] };
+    expect(llmDisplayCostPerMin(LIVE, empty)).toBeGreaterThan(0);
+  });
+
+  test("breaks the headline down into rows that sum back to it", () => {
+    const input = llmEstimateInput({ llm_id: "llm_1", model: LIVE } as RawLlm);
+    const cost = estimateCost(input, estimateTokens(input), FALLBACK_PRICES);
+    expect(cost.max).toBeCloseTo(llmDisplayCostPerMin(LIVE, FALLBACK_PRICES), 6);
+  });
+
+  test("adds the fixed per-minute adder after the token math", () => {
+    const withAdder: typeof FALLBACK_PRICES = {
+      ...FALLBACK_PRICES,
+      models: FALLBACK_PRICES.models.map((m) =>
+        m.model_id === LIVE ? { ...m, per_minute_adder: 0.05 } : m,
+      ),
+    };
+    expect(llmDisplayCostPerMin(LIVE, withAdder)).toBeCloseTo(
+      llmDisplayCostPerMin(LIVE, FALLBACK_PRICES) + 0.05,
+    );
   });
 });

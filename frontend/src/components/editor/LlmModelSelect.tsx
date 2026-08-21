@@ -1,6 +1,6 @@
 "use client";
 
-import { formatUsdPerMin, llmDisplayCostPerMin } from "@/lib/estimates";
+import { FALLBACK_PRICES, formatUsdPerMin, llmDisplayCostPerMin } from "@/lib/estimates";
 import { isLiveModel, LLM_MODELS, type LlmModel } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronUp, Radio } from "lucide-react";
@@ -216,7 +216,8 @@ export default function LlmModelSelect({
                   {m.suggested && <Pill>Suggested</Pill>}
                   {live && <Pill tone="live">Live</Pill>}
                   <span className="ml-auto pl-2 text-[12px] tabular-nums text-faint">
-                    {formatUsdPerMin(llmDisplayCostPerMin(m.id))}
+                    {/* FALLBACK_PRICES until this component fetches the live price card. */}
+                    {formatUsdPerMin(llmDisplayCostPerMin(m.id, FALLBACK_PRICES))}
                   </span>
                 </button>
               );

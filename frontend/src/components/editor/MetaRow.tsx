@@ -9,6 +9,7 @@ import {
   estimateCost,
   estimateLatency,
   estimateTokens,
+  FALLBACK_PRICES,
   formatTokenValue,
   formatUsdPerMin,
   TOKEN_WARNING_THRESHOLD,
@@ -116,7 +117,8 @@ export default function MetaRow({
   stacked?: boolean;
 }) {
   const tokens = estimateTokens(input);
-  const cost = estimateCost(input, tokens);
+  // FALLBACK_PRICES until this component fetches the live price card.
+  const cost = estimateCost(input, tokens, FALLBACK_PRICES);
   const latency = estimateLatency(input);
   // Sum the rows as displayed (each rounded to $0.001) so the breakdown
   // always adds up to the total shown on screen.

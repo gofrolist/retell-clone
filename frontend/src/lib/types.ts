@@ -276,6 +276,32 @@ export interface ApiKey {
   secret?: string;
 }
 
+/** One catalog model's markup-applied price, as served by
+ *  GET /dashboard/pricing/models. */
+export interface PricedModel {
+  model_id: string;
+  is_audio: boolean;
+  input_per_1m: number;
+  output_per_1m: number;
+  per_minute: number;
+  /** A fixed per-minute charge that can't be expressed as a per-token rate. */
+  per_minute_adder: number;
+}
+
+/** The pricing endpoint's whole response: what the agent editor's cost
+ *  estimator needs, already marked up — never a raw cost. */
+export interface PriceCard {
+  assumptions: Record<string, number>;
+  models: PricedModel[];
+  /** Absent entirely when the backend has no usable global markup rule to
+   *  price the shared STT/TTS/KB legs with — callers must fall back rather
+   *  than treat a missing key, or one that reads as `{}`, as free. */
+  components?: Record<string, number>;
+  /** Catalog model ids the backend could not price; those ids are absent
+   *  from `models`, so a lookup for one of them must fall back too. */
+  unpriced: string[];
+}
+
 export interface WebhookDelivery {
   delivery_id: string;
   event: string;
