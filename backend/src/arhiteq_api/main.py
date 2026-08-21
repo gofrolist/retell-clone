@@ -37,6 +37,7 @@ from .security import (
 )
 from .services import simulation
 from .services.pricing_seed import seed_pricing_defaults
+from .services.pricing_view import apply_pricing_view
 
 logging.basicConfig(level=logging.INFO)
 
@@ -127,6 +128,7 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(_apply_column_backfills)
     async with session_factory()() as session:
         await seed_pricing_defaults(session)
+        await apply_pricing_view(session)
     yield
     # Simulation batches run detached from any request; cancel them (and mark
     # their rows finished, so the dashboard stops polling) before the engine

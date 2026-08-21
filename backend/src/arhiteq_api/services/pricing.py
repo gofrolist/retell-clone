@@ -54,7 +54,7 @@ async def load_assumptions(session: AsyncSession) -> dict[str, float]:
     return {key: float(value) for key, value in rows}
 
 
-def _current(model: Any, key_column: Any, at_ms: int) -> Any:
+def _current(model: Any, key_column: Any, at_ms: int | ColumnElement[Any]) -> Any:
     """The row in force at `at_ms` for each key.
 
     row_number() over a descending effective_from_ms, rather than a max()
@@ -81,7 +81,18 @@ def _current(model: Any, key_column: Any, at_ms: int) -> Any:
     return select(ranked).where(ranked.c.rn == 1).subquery()
 
 
-def model_price_select(assumptions: dict[str, float], at_ms: int) -> Select[Any]:
+def model_price_select(
+    assumptions: dict[str, float], at_ms: int | ColumnElement[Any]
+) -> Select[Any]:
+    """Build the cost -> price select.
+
+    `at_ms` is normally an int (a request's "as of" instant). The
+    pricing_view module instead passes a SQL expression — a Postgres now()
+    derivation — so that when this select is compiled into the
+    `pricing.model_price` view, the view re-evaluates "in force now" on every
+    query rather than freezing whichever rate happened to be current at
+    CREATE VIEW time.
+    """
     tokens_per_min = assumptions["audio_tokens_per_sec"] * 60.0
     talk = assumptions["agent_talk_ratio"]
     turns = assumptions["turns_per_min"]
