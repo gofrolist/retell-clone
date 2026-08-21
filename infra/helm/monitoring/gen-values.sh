@@ -43,6 +43,7 @@ set +a
 : "${GRAFANA_OAUTH_CLIENT_ID:?set it in infra/private/prod.env — see infra/README.md § Grafana access}"
 : "${GRAFANA_OAUTH_CLIENT_SECRET:?set it in infra/private/prod.env — see infra/README.md § Grafana access}"
 : "${GRAFANA_ADMIN_EMAILS:?set it in infra/private/prod.env — see infra/README.md § Grafana access}"
+: "${GRAFANA_DB_PASSWORD:?set it in infra/private/prod.env — see infra/README.md § Grafana database access}"
 # Optional: a deployment with no read-only operators is a normal one.
 : "${GRAFANA_VIEWER_EMAILS:=}"
 
@@ -69,6 +70,13 @@ kubectl -n monitoring create secret generic alertmanager-telegram \
 kubectl -n monitoring create secret generic grafana-google-oauth \
   --from-literal=client-id="$GRAFANA_OAUTH_CLIENT_ID" \
   --from-literal=client-secret="$GRAFANA_OAUTH_CLIENT_SECRET" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# Same pattern for the grafana_ro password the business-metrics datasource
+# uses: a Secret rather than a value, so it stays out of the Helm release.
+# infra/sql/grafana_ro.sql is what creates the role this authenticates as.
+kubectl -n monitoring create secret generic grafana-db \
+  --from-literal=password="$GRAFANA_DB_PASSWORD" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl -n monitoring create configmap arhiteq-dashboards \
@@ -157,9 +165,13 @@ subs = {
     "CHANGE_ME_GRAFANA_ROLE_ATTRIBUTE_PATH": json.dumps(role_path),
     # Not the credentials themselves — this annotation is world-readable to
     # anyone who can get the pod.
-    "CHANGE_ME_GRAFANA_OAUTH_CHECKSUM": hashlib.sha256(
+    "CHANGE_ME_GRAFANA_CREDENTIALS_CHECKSUM": hashlib.sha256(
         "\0".join(
-            (os.environ["GRAFANA_OAUTH_CLIENT_ID"], os.environ["GRAFANA_OAUTH_CLIENT_SECRET"])
+            (
+                os.environ["GRAFANA_OAUTH_CLIENT_ID"],
+                os.environ["GRAFANA_OAUTH_CLIENT_SECRET"],
+                os.environ["GRAFANA_DB_PASSWORD"],
+            )
         ).encode()
     ).hexdigest(),
     "TELEGRAM_CHAT_ID": chat_id,
