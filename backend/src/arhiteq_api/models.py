@@ -10,6 +10,7 @@ from sqlalchemy import (
     Index,
     Integer,
     LargeBinary,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -730,3 +731,75 @@ class TestCaseJob(Base):
     metric_results: Mapped[list[Any]] = mapped_column(JSON, default=list)
     creation_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms, index=True)
     user_modified_timestamp: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+
+
+# Exact decimal in Postgres; SQLite has no numeric type and SQLAlchemy warns
+# on every Decimal round-trip, so the test dialect gets a float. Prices are
+# summed across thousands of call rows and compared against provider invoices,
+# which is why prod stays exact.
+MONEY = Numeric(12, 6).with_variant(Float(), "sqlite")
+
+
+class ModelCostRate(Base):
+    """What one model's tokens cost us. Mirrors LLM_RATES in estimates.ts."""
+
+    __tablename__ = "model_cost_rates"
+    __table_args__ = (UniqueConstraint("model_id", "effective_from_ms"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    model_id: Mapped[str] = mapped_column(String(64), index=True)
+    input_per_1m_usd: Mapped[float] = mapped_column(MONEY)
+    output_per_1m_usd: Mapped[float] = mapped_column(MONEY)
+    # Live models bill audio tokens (25/sec), not text turns — a different cost
+    # formula entirely, not a different rate.
+    is_audio: Mapped[bool] = mapped_column(Boolean, default=False)
+    effective_from_ms: Mapped[int] = mapped_column(BigInteger, default=0)
+    note: Mapped[str | None] = mapped_column(String(255))
+
+
+class CostRate(Base):
+    """Costs not priced per token: STT, TTS, telephony, fixed infrastructure."""
+
+    __tablename__ = "cost_rates"
+    __table_args__ = (UniqueConstraint("component", "effective_from_ms"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    component: Mapped[str] = mapped_column(String(64), index=True)
+    unit: Mapped[str] = mapped_column(String(16))  # per_minute | per_call | per_month
+    unit_price_usd: Mapped[float] = mapped_column(MONEY)
+    effective_from_ms: Mapped[int] = mapped_column(BigInteger, default=0)
+    note: Mapped[str | None] = mapped_column(String(255))
+
+
+class PriceRule(Base):
+    """How a customer price is derived from a cost.
+
+    Evaluated explicit > per-model > global; see services/pricing.py, which is
+    the only place that ordering is implemented.
+    """
+
+    __tablename__ = "price_rules"
+    __table_args__ = (UniqueConstraint("scope", "effective_from_ms"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scope: Mapped[str] = mapped_column(String(64), index=True)  # model_id | "*"
+    explicit_per_minute_usd: Mapped[float | None] = mapped_column(MONEY)
+    markup_pct: Mapped[float | None] = mapped_column(MONEY)
+    fixed_per_minute_usd: Mapped[float | None] = mapped_column(MONEY)
+    effective_from_ms: Mapped[int] = mapped_column(BigInteger, default=0)
+    note: Mapped[str | None] = mapped_column(String(255))
+
+
+class PricingAssumption(Base):
+    """Constants the SQL price view and estimates.ts must agree on.
+
+    They live in a table because the alternative is a copy in Python and a copy
+    in TypeScript, which lets the model picker and the cost estimate disagree
+    while both look correct.
+    """
+
+    __tablename__ = "pricing_assumptions"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[float] = mapped_column(Float)
+    note: Mapped[str | None] = mapped_column(String(255))

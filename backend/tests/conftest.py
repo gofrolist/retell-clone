@@ -39,6 +39,7 @@ from arhiteq_api.auth import hash_key
 from arhiteq_api.main import app
 from arhiteq_api.models import Agent, ApiKey, Base, PhoneNumber, RetellLLM, Workspace
 from arhiteq_api.services import simulation, webhooks
+from arhiteq_api.services.pricing_seed import seed_pricing_defaults
 
 API_KEY = "key_test_0123456789abcdef0123456789abcdef"
 AGENT_ID = "agent_sales0000000000000000000001"
@@ -120,6 +121,10 @@ async def _fresh_db():
                 inbound_webhook_url=None,
             )
         )
+        # Mirrors what lifespan does in prod: ASGITransport does not run
+        # startup events, so without this the pricing catalog is empty in
+        # every test and prices silently read as missing.
+        await seed_pricing_defaults(session)
         await session.commit()
     yield
     # Drain fire-and-forget webhook/analysis tasks before tearing down, so a
