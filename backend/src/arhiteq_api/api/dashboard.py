@@ -7,6 +7,7 @@ changes the public Retell-compatible surface.
 """
 
 import asyncio
+import logging
 import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -38,6 +39,7 @@ from ..models import (
     Chat,
     Contact,
     ConversationFlow,
+    CostRate,
     KnowledgeBase,
     KnowledgeBaseFile,
     PhoneNumber,
@@ -56,12 +58,14 @@ from ..models import (
 from ..schemas import CompatModel, TestWebhookRequest
 from ..services import webhooks
 from ..services.gemini import build_genai_client, genai_credentials_available
+from ..services.pricing import load_assumptions, model_prices
 from ..sessions import email_from_authorization
 from ._deps import apply_patch, get_owned
 from .auth_google import _email_allowed
 from .concurrency import BASE_CONCURRENCY, CONCURRENCY_PURCHASE_LIMIT
 from .workspaces import WORKSPACE_TYPES
 
+log = logging.getLogger(__name__)
 router = APIRouter(tags=["dashboard"])
 
 # Everything a workspace owns, ordered children-first so DELETE /workspace holds
@@ -1721,3 +1725,82 @@ async def delete_workspace(
         )
     await session.delete(ws)
     await session.commit()
+
+
+# --------------------------------------------------------------- pricing
+# List prices for the agent editor. PRICES ONLY — the response model has no
+# field a cost could occupy, so leaking one would take a deliberate schema
+# change rather than a slip.
+
+_PRICED_COMPONENTS = ("cartesia_stt", "cartesia_tts", "kb_overhead")
+
+
+@router.get("/dashboard/pricing/models")
+async def pricing_models(
+    api_key: ApiKey = Depends(require_api_key),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Prices for the agent editor's model picker — never costs.
+
+    A model is omitted from `models` (and named in `unpriced` instead) when
+    either `price_per_min` is unknown — no rule resolves it — or
+    `effective_multiplier` is unknown, since without a multiplier the
+    per-token `input_per_1m`/`output_per_1m` fields cannot be derived without
+    fabricating a number. Either way, a $0.00 or blank price must never reach
+    a customer; the frontend falls back to its compiled-in price for a model
+    missing from this list, so omission degrades gracefully.
+
+    `components` (the shared STT/TTS/KB legs) is priced using the multiplier
+    of a model actually priced by the global rule — those components cannot
+    carry a per-model multiplier of their own — and the key is left off
+    entirely when no such model exists, rather than ever serialising the raw,
+    unmarked-up (i.e. cost) component rates.
+    """
+    assumptions = await load_assumptions(session)
+    prices = await model_prices(session)
+
+    priced = [
+        p for p in prices if p.price_per_min is not None and p.effective_multiplier is not None
+    ]
+    unpriced = [p.model_id for p in prices if p not in priced]
+    if unpriced:
+        log.warning("no usable price for models: %s", ", ".join(unpriced))
+
+    component_costs = {
+        row.component: float(row.unit_price_usd)
+        for row in (
+            await session.execute(
+                select(CostRate).where(CostRate.component.in_(_PRICED_COMPONENTS))
+            )
+        ).scalars()
+    }
+    global_priced = next(
+        (p for p in priced if p.rule_source == "global"),
+        None,
+    )
+
+    body: dict[str, Any] = {
+        "assumptions": assumptions,
+        "models": [
+            {
+                "model_id": p.model_id,
+                "is_audio": p.is_audio,
+                # Marked up so the estimator's existing token math operates on
+                # prices without changing shape.
+                "input_per_1m": p.input_per_1m_cost * p.effective_multiplier,
+                "output_per_1m": p.output_per_1m_cost * p.effective_multiplier,
+                "per_minute": p.price_per_min,
+                # A fixed adder cannot be folded into a per-token rate, so it
+                # rides separately and is added after the token math.
+                "per_minute_adder": 0.0,
+            }
+            for p in priced
+        ],
+        "unpriced": unpriced,
+    }
+    if global_priced is not None:
+        body["components"] = {
+            name: value * global_priced.effective_multiplier
+            for name, value in component_costs.items()
+        }
+    return body
