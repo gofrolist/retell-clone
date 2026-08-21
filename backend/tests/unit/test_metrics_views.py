@@ -8,13 +8,15 @@ and asserts what the numbers mean.
 import pytest
 
 from arhiteq_api.db import session_factory
-from arhiteq_api.models import Agent, AgentVersion, Call, Workspace, WorkspaceMember
+from arhiteq_api.models import Agent, AgentVersion, Call, RetellLLM, Workspace, WorkspaceMember
 from arhiteq_api.services.metrics_views import (
     apply_metrics_views,
+    call_cost_select,
     concurrency_hourly_select,
     tenancy_select,
     workspace_daily_select,
 )
+from arhiteq_api.services.pricing_seed import seed_pricing_defaults
 
 _MS_PER_DAY = 86_400_000
 
@@ -273,3 +275,153 @@ async def test_concurrency_ignores_a_call_that_never_ended(session):
     rows = (await session.execute(concurrency_hourly_select())).mappings().all()
 
     assert [r for r in rows if r["workspace_id"] == "ws_inflight"] == []
+
+
+async def test_call_cost_prices_a_call_from_the_version_that_ran(session):
+    """An agent re-pointed at a new model must not restate old calls."""
+    session.add(Workspace(id="ws_cost", name="Cost"))
+    session.add(
+        Agent(agent_id="ag_cost", workspace_id="ws_cost", response_engine={"llm_id": "llm_now"})
+    )
+    session.add(RetellLLM(llm_id="llm_now", workspace_id="ws_cost", model="gemini-2.5-flash"))
+    session.add(
+        AgentVersion(
+            agent_id="ag_cost",
+            version=3,
+            workspace_id="ws_cost",
+            is_published=True,
+            llm_snapshot={"model": "gemini-live-2.5-flash-native-audio"},
+        )
+    )
+    session.add(
+        Call(
+            call_id="call_versioned",
+            workspace_id="ws_cost",
+            agent_id="ag_cost",
+            agent_version=3,
+            call_type="phone_call",
+            direction="outbound",
+            start_timestamp=40 * _MS_PER_DAY,
+            end_timestamp=40 * _MS_PER_DAY + 60_000,
+            duration_ms=60_000,
+        )
+    )
+    await session.commit()
+
+    rows = (await session.execute(call_cost_select())).mappings().all()
+    row = next(r for r in rows if r["call_id"] == "call_versioned")
+
+    assert row["model_id"] == "gemini-live-2.5-flash-native-audio"
+    assert row["minutes"] == pytest.approx(1.0)
+
+
+async def test_call_cost_charges_the_trunk_only_for_phone_calls(session):
+    """A web call never touches the trunk; charging it overstates the cost of
+    the calls that are cheapest to serve."""
+    await seed_pricing_defaults(session)
+    session.add(Workspace(id="ws_trunk", name="Trunk"))
+    session.add(
+        Agent(agent_id="ag_trunk", workspace_id="ws_trunk", response_engine={"llm_id": "llm_trunk"})
+    )
+    session.add(RetellLLM(llm_id="llm_trunk", workspace_id="ws_trunk", model="gemini-2.5-flash"))
+    session.add_all(
+        [
+            Call(
+                call_id="call_web",
+                workspace_id="ws_trunk",
+                agent_id="ag_trunk",
+                call_type="web_call",
+                direction="inbound",
+                start_timestamp=41 * _MS_PER_DAY,
+                end_timestamp=41 * _MS_PER_DAY + 60_000,
+                duration_ms=60_000,
+            ),
+            Call(
+                call_id="call_phone",
+                workspace_id="ws_trunk",
+                agent_id="ag_trunk",
+                call_type="phone_call",
+                direction="inbound",
+                start_timestamp=41 * _MS_PER_DAY,
+                end_timestamp=41 * _MS_PER_DAY + 60_000,
+                duration_ms=60_000,
+            ),
+        ]
+    )
+    await session.commit()
+
+    rows = {
+        r["call_id"]: r
+        for r in (await session.execute(call_cost_select())).mappings().all()
+        if r["workspace_id"] == "ws_trunk"
+    }
+
+    assert rows["call_web"]["telephony_cost_usd"] == pytest.approx(0.0)
+    assert rows["call_phone"]["telephony_cost_usd"] > 0
+    # The trunk is the only difference between them.
+    assert rows["call_phone"]["total_cost_usd"] > rows["call_web"]["total_cost_usd"]
+    # The price rule reaches the outer layer: the seed carries a global markup,
+    # so a priced call must show a rule and a margin above its cost.
+    assert rows["call_phone"]["rule_source"] == "global"
+    assert rows["call_phone"]["implied_margin_usd"] > 0
+
+
+async def test_call_cost_is_null_for_a_call_whose_model_has_no_rate(session):
+    """Unknown stays unknown: a 0 would report an unpriced model as free."""
+    session.add(Workspace(id="ws_unpriced", name="Unpriced"))
+    session.add(
+        Agent(
+            agent_id="ag_unpriced",
+            workspace_id="ws_unpriced",
+            response_engine={"llm_id": "llm_unpriced"},
+        )
+    )
+    session.add(
+        RetellLLM(llm_id="llm_unpriced", workspace_id="ws_unpriced", model="model-with-no-rate")
+    )
+    session.add(
+        Call(
+            call_id="call_unpriced",
+            workspace_id="ws_unpriced",
+            agent_id="ag_unpriced",
+            call_type="phone_call",
+            direction="inbound",
+            start_timestamp=42 * _MS_PER_DAY,
+            end_timestamp=42 * _MS_PER_DAY + 60_000,
+            duration_ms=60_000,
+        )
+    )
+    await session.commit()
+
+    rows = (await session.execute(call_cost_select())).mappings().all()
+    row = next(r for r in rows if r["call_id"] == "call_unpriced")
+
+    assert row["total_cost_usd"] is None
+    assert row["implied_margin_usd"] is None
+
+
+async def test_call_cost_gives_an_unconnected_call_no_minutes(session):
+    await seed_pricing_defaults(session)
+    session.add(Workspace(id="ws_nodial", name="No dial"))
+    session.add(
+        Agent(agent_id="ag_nodial", workspace_id="ws_nodial", response_engine={"llm_id": "llm_nd"})
+    )
+    session.add(RetellLLM(llm_id="llm_nd", workspace_id="ws_nodial", model="gemini-2.5-flash"))
+    session.add(
+        Call(
+            call_id="call_nodial",
+            workspace_id="ws_nodial",
+            agent_id="ag_nodial",
+            call_type="phone_call",
+            direction="outbound",
+            start_timestamp=43 * _MS_PER_DAY,
+            duration_ms=0,
+        )
+    )
+    await session.commit()
+
+    rows = (await session.execute(call_cost_select())).mappings().all()
+    row = next(r for r in rows if r["call_id"] == "call_nodial")
+
+    assert row["minutes"] == pytest.approx(0.0)
+    assert row["telephony_cost_usd"] == pytest.approx(0.0)

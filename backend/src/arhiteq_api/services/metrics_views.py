@@ -37,7 +37,17 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import Agent, AgentVersion, Call, PhoneNumber, Workspace, WorkspaceMember
+from ..models import (
+    Agent,
+    AgentVersion,
+    Call,
+    ConversationFlow,
+    PhoneNumber,
+    RetellLLM,
+    Workspace,
+    WorkspaceMember,
+)
+from .pricing import cost_columns, price_from_cost, scalar_sources
 from .view_ddl import apply_views
 
 SCHEMA = "metrics"
@@ -193,9 +203,140 @@ def concurrency_hourly_select() -> Select[Any]:
     ).group_by(running.c.workspace_id, hour_ms)
 
 
+def call_cost_select() -> Select[Any]:
+    """One row per call: what it cost us and what it would have earned.
+
+    "Would have earned": nobody is billed, so `implied_price_usd` is this
+    call's minutes at the list price the pricing rule computes, not revenue.
+
+    Cost is duration x rate, not metered consumption. `calls.call_cost` exists
+    and has never been written, so a call that burned an unusual number of
+    tokens costs the same here as a quiet one of equal length. This view is the
+    seam where metered actuals replace the estimate later, with no panel
+    changing.
+    """
+    at_ms = func.coalesce(Call.start_timestamp, Call.created_at_ms)
+
+    # Which model ran, most authoritative first. A published version is an
+    # immutable snapshot of what actually ran, so it survives the agent being
+    # re-pointed at a different model later; the live rows are the fallback for
+    # a draft, whose content *is* the live row (docs/AGENT_VERSIONING.md).
+    version_llm = (
+        select(AgentVersion.llm_snapshot["model"].as_string())
+        .where(AgentVersion.agent_id == Call.agent_id, AgentVersion.version == Call.agent_version)
+        .correlate(Call)
+        .scalar_subquery()
+    )
+    version_flow = (
+        select(AgentVersion.flow_snapshot["model_choice"]["model"].as_string())
+        .where(AgentVersion.agent_id == Call.agent_id, AgentVersion.version == Call.agent_version)
+        .correlate(Call)
+        .scalar_subquery()
+    )
+    live_llm = (
+        select(RetellLLM.model)
+        .where(RetellLLM.llm_id == Agent.response_engine["llm_id"].as_string())
+        .correlate(Agent)
+        .scalar_subquery()
+    )
+    live_flow = (
+        select(ConversationFlow.model_choice["model"].as_string())
+        .where(
+            ConversationFlow.conversation_flow_id
+            == Agent.response_engine["conversation_flow_id"].as_string()
+        )
+        .correlate(Agent)
+        .scalar_subquery()
+    )
+    # NULL when nothing resolves, which makes the whole cost NULL rather than
+    # quietly pricing the call at some default model's rate.
+    model_id = func.coalesce(version_llm, version_flow, live_llm, live_flow)
+
+    # Resolve the model and the instant *once*, in their own layer, before any
+    # rate lookup references them. Inlining `model_id` directly into
+    # scalar_sources puts that four-way coalesce of subqueries inside every one
+    # of the ~20 rate lookups the price formula expands to: the compiled view
+    # came out at 168KB of SQL, which Postgres would re-parse and re-plan on
+    # every panel refresh. Through a subquery it is one column reference.
+    resolved = (
+        select(
+            Call.call_id.label("call_id"),
+            Call.workspace_id.label("workspace_id"),
+            Call.agent_id.label("agent_id"),
+            Call.call_type.label("call_type"),
+            Call.direction.label("direction"),
+            Call.duration_ms.label("duration_ms"),
+            at_ms.label("at_ms"),
+            model_id.label("model_id"),
+        )
+        .select_from(Call)
+        .outerjoin(Agent, Agent.agent_id == Call.agent_id)
+        .subquery("resolved")
+    )
+
+    sources = scalar_sources(resolved.c.model_id, resolved.c.at_ms)
+    cost = cost_columns(sources)
+
+    minutes = cast(
+        case(
+            (resolved.c.duration_ms > 0, resolved.c.duration_ms / _MS_PER_MINUTE),
+            else_=0.0,
+        ),
+        Float,
+    )
+    # 0.0 for a web call is a real zero, not an unknown: no trunk was used.
+    telephony_per_min = case(
+        (resolved.c.call_type != "phone_call", literal(0.0)),
+        (resolved.c.direction == "inbound", sources.component("telnyx_inbound")),
+        (resolved.c.direction == "outbound", sources.component("telnyx_outbound")),
+        else_=null(),
+    )
+
+    # Second layer, same reason as the first: the price rule references the
+    # cost four times over, and the cost is a stack of per-call rate lookups.
+    # Computing it here makes it a column the rule can point at.
+    costed = select(
+        resolved.c.call_id.label("call_id"),
+        resolved.c.workspace_id.label("workspace_id"),
+        resolved.c.agent_id.label("agent_id"),
+        resolved.c.at_ms.label("at_ms"),
+        resolved.c.call_type.label("call_type"),
+        resolved.c.direction.label("direction"),
+        resolved.c.model_id.label("model_id"),
+        minutes.label("minutes"),
+        cost.cost_per_min_stack.label("cost_per_min"),
+        (minutes * telephony_per_min).label("telephony_cost_usd"),
+    ).subquery("costed")
+
+    rule = price_from_cost(costed.c.cost_per_min, scalar_sources(costed.c.model_id, costed.c.at_ms))
+    variable_cost = costed.c.minutes * costed.c.cost_per_min
+    total_cost = variable_cost + costed.c.telephony_cost_usd
+    implied_price = costed.c.minutes * rule.price_per_min
+
+    return select(
+        costed.c.call_id.label("call_id"),
+        costed.c.workspace_id.label("workspace_id"),
+        costed.c.agent_id.label("agent_id"),
+        _bucket(costed.c.at_ms, _MS_PER_DAY).label("day_ms"),
+        costed.c.call_type.label("call_type"),
+        costed.c.direction.label("direction"),
+        costed.c.model_id.label("model_id"),
+        costed.c.minutes.label("minutes"),
+        costed.c.cost_per_min.label("cost_per_min"),
+        rule.price_per_min.label("price_per_min"),
+        rule.rule_source.label("rule_source"),
+        variable_cost.label("variable_cost_usd"),
+        costed.c.telephony_cost_usd.label("telephony_cost_usd"),
+        total_cost.label("total_cost_usd"),
+        implied_price.label("implied_price_usd"),
+        (implied_price - total_cost).label("implied_margin_usd"),
+    )
+
+
 VIEWS: tuple[tuple[str, Callable[[], Select[Any]]], ...] = (
     ("tenancy", tenancy_select),
     ("workspace_daily", workspace_daily_select),
+    ("call_cost", call_cost_select),
     ("concurrency_hourly", concurrency_hourly_select),
 )
 

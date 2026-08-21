@@ -133,8 +133,15 @@ class PriceColumns(NamedTuple):
     rule_source: ColumnElement[Any]
 
 
-def price_columns(sources: PriceSources) -> PriceColumns:
-    """The one cost -> price formula. See the module docstring."""
+class CostColumns(NamedTuple):
+    """Unlabeled cost expressions. Callers label them to suit their select."""
+
+    cost_per_min_model: ColumnElement[Any]
+    cost_per_min_stack: ColumnElement[Any]
+
+
+def cost_columns(sources: PriceSources) -> CostColumns:
+    """What a minute on this model costs us. See the module docstring."""
     tokens_per_min = assumption("audio_tokens_per_sec") * 60.0
     talk = assumption("agent_talk_ratio")
     turns = assumption("turns_per_min")
@@ -163,6 +170,25 @@ def price_columns(sources: PriceSources) -> PriceColumns:
     # Live replaces STT+LLM+TTS with one model, so it has no synthesis leg —
     # and so a missing STT/TTS rate leaves an audio model's cost known.
     cost_stack = case((sources.is_audio, cost_model), else_=cost_model + stt + tts)
+    return CostColumns(cost_model, cost_stack)
+
+
+class RuleColumns(NamedTuple):
+    """Unlabeled price expressions. Callers label them to suit their select."""
+
+    price_per_min: ColumnElement[Any]
+    rule_source: ColumnElement[Any]
+
+
+def price_from_cost(cost_stack: ColumnElement[Any], sources: PriceSources) -> RuleColumns:
+    """Apply the price rule to an already-computed cost.
+
+    Split from `cost_columns` so a caller can compute the cost once, in its own
+    subquery layer, and pass the resulting *column* in here. Inlining the cost
+    expression instead makes the price case re-expand it four times over, and
+    with per-call rate lookups at every leaf that is the difference between a
+    view Postgres re-plans cheaply and one it does not.
+    """
 
     def marked_up(markup: ColumnElement[Any], fixed: ColumnElement[Any]) -> ColumnElement[Any]:
         return cost_stack * (1.0 + func.coalesce(markup, 0.0) / 100.0) + func.coalesce(fixed, 0.0)
@@ -201,7 +227,23 @@ def price_columns(sources: PriceSources) -> PriceColumns:
         (global_has_derived, literal("global")),
         else_=literal("none"),
     )
-    return PriceColumns(cost_model, cost_stack, price, rule_source)
+    return RuleColumns(price, rule_source)
+
+
+def price_columns(sources: PriceSources) -> PriceColumns:
+    """Cost and price together, evaluated as one expression.
+
+    What `pricing.model_price` wants: its rate card is already one row per
+    model, so re-expanding the cost inside the price case costs nothing there.
+    """
+    cost = cost_columns(sources)
+    rule = price_from_cost(cost.cost_per_min_stack, sources)
+    return PriceColumns(
+        cost.cost_per_min_model,
+        cost.cost_per_min_stack,
+        rule.price_per_min,
+        rule.rule_source,
+    )
 
 
 def relation_sources(rates: Any, rules: Any, components: Any) -> PriceSources:
