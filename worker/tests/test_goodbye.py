@@ -9,9 +9,11 @@ tuned to real sign-offs, not any polite phrase.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
-from arhiteq_worker.goodbye import looks_like_goodbye
+from arhiteq_worker.goodbye import hang_up_after_goodbye, looks_like_goodbye
 
 
 @pytest.mark.parametrize(
@@ -67,3 +69,86 @@ def test_ignores_non_closing_lines(text: str) -> None:
 
 def test_none_is_safe() -> None:
     assert looks_like_goodbye(None) is False
+
+
+class _Agent:
+    """A session's agent_state and hangup, as the net reaches them."""
+
+    def __init__(self) -> None:
+        self.busy = False
+        self.hangups = 0
+
+    async def hang_up(self) -> None:
+        self.hangups += 1
+
+    async def resume_after(self, delay: float) -> None:
+        await asyncio.sleep(delay)
+        self.busy = True
+
+
+def _wait(agent: _Agent, *, grace: float = 0.02, settle: float = 0.02):
+    return hang_up_after_goodbye(
+        grace_s=grace,
+        settle_s=settle,
+        agent_busy=lambda: agent.busy,
+        hang_up=agent.hang_up,
+    )
+
+
+def test_hangs_up_on_dead_air() -> None:
+    agent = _Agent()
+    assert asyncio.run(_wait(agent)) is True
+    assert agent.hangups == 1
+
+
+def test_stands_down_when_the_agent_resumed_during_the_grace() -> None:
+    agent = _Agent()
+
+    async def run() -> bool:
+        resumer = asyncio.ensure_future(agent.resume_after(0.01))
+        hung_up = await _wait(agent)
+        await resumer
+        return hung_up
+
+    assert asyncio.run(run()) is False
+    assert agent.hangups == 0
+
+
+def test_stands_down_when_the_turn_starts_inside_the_settle_window() -> None:
+    """The production shape: goodbye voiced, model still working.
+
+    ``log_outcome`` and the line the model speaks on its result land in the
+    wait, so the turn's first audio can arrive after the grace has already
+    expired. The net proposed the hangup before that turn existed; it must not
+    carry it out over the top of it.
+    """
+    agent = _Agent()
+
+    async def run() -> bool:
+        resumer = asyncio.ensure_future(agent.resume_after(0.03))
+        hung_up = await _wait(agent)
+        await resumer
+        return hung_up
+
+    assert asyncio.run(run()) is False
+    assert agent.hangups == 0
+
+
+def test_stays_cancellable_until_it_has_hung_up() -> None:
+    """The regression: the last stretch of the wait used to be unstoppable.
+
+    main.py cancels the armed task when the agent starts speaking again, and
+    that cancel reaches nothing once the wait has committed to the teardown. So
+    the whole coroutine — not just its first sleep — has to stay interruptible.
+    """
+    agent = _Agent()
+
+    async def run() -> None:
+        task = asyncio.ensure_future(_wait(agent, grace=0.01, settle=0.5))
+        await asyncio.sleep(0.05)  # past the grace, deep inside the settle window
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert agent.hangups == 0

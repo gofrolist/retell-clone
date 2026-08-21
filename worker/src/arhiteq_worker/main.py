@@ -63,7 +63,7 @@ from arhiteq_worker.flow import (
     transition_tool_schema,
 )
 from arhiteq_worker.flow_runtime import FlowRuntime
-from arhiteq_worker.goodbye import looks_like_goodbye
+from arhiteq_worker.goodbye import hang_up_after_goodbye, looks_like_goodbye
 from arhiteq_worker.internal_api import InternalAPI, InternalAPIError
 from arhiteq_worker.live_speech import (
     live_handoff_instructions,
@@ -1233,14 +1233,44 @@ def _wire_session_events(
         if task is not None and not task.done():
             task.cancel()
 
+    def _agent_busy() -> bool:
+        # "listening" is the only state that means dead air. A model composing
+        # its next turn sits in "thinking" (a tool of that turn is running) or
+        # "speaking", and neither is a call waiting to be ended.
+        return getattr(session, "agent_state", None) in ("thinking", "speaking")
+
     async def _goodbye_hangup() -> None:
-        # Armed after the agent voiced a closing line; the user has now stayed
-        # silent for the whole grace, so end the call the model was slow to end
-        # itself. flush_grace keeps the goodbye's SIP tail from clipping.
-        await asyncio.sleep(LIVE_GOODBYE_HANGUP_GRACE_S)
-        _goodbye_timer["task"] = None
-        logger.info("live goodbye safety net: hanging up %s", state.call_id)
-        await runtime.end_call("agent_hangup", flush_grace=True)
+        # Armed after the agent voiced a closing line; if the user AND the agent
+        # both stay quiet for the whole wait, end the call the model was slow to
+        # end itself.
+        #
+        # No flush_grace: `hang_up_after_goodbye` spends that same second
+        # watching instead, because by then the goodbye's SIP tail is seconds
+        # old and what actually lands in the window is the model's next turn.
+        # That is what clipped closings in production — the model had voiced the
+        # goodbye but was still mid-log_outcome round-trip, and its real last
+        # line began a word or two before delete_room.
+        #
+        # The task reference is held until this returns, so a turn that starts
+        # anywhere in the wait can still cancel the teardown.
+        try:
+            if await hang_up_after_goodbye(
+                grace_s=LIVE_GOODBYE_HANGUP_GRACE_S,
+                settle_s=HANGUP_FLUSH_GRACE_S,
+                agent_busy=_agent_busy,
+                hang_up=lambda: runtime.end_call("agent_hangup"),
+            ):
+                logger.info("live goodbye safety net: hung up %s", state.call_id)
+            else:
+                logger.info(
+                    "live goodbye safety net: stood down on %s, the agent is talking again",
+                    state.call_id,
+                )
+        finally:
+            # Only if we are still the armed timer: a cancel that re-armed in the
+            # same breath must keep ITS task cancellable.
+            if _goodbye_timer["task"] is asyncio.current_task():
+                _goodbye_timer["task"] = None
 
     def _arm_goodbye_hangup() -> None:
         if not _live_goodbye or not looks_like_goodbye(_last_agent_text["text"]):

@@ -4,7 +4,8 @@ On a native-audio Gemini Live session the model voices its goodbye and then
 *defers* the ``end_call`` tool call to its next turn — which only fires when
 fresh user input arrives. That leaves several seconds of dead air before the
 call tears down. main.py arms a short silence timer once the agent voices a
-closing line and this module decides what counts as one.
+closing line; this module decides what counts as one (`looks_like_goodbye`)
+and what the timer is allowed to do when it expires (`hang_up_after_goodbye`).
 
 Kept livekit-free so it's unit-testable in the dev-only test group (which does
 not install the heavy livekit-agents stack).
@@ -12,7 +13,9 @@ not install the heavy livekit-agents stack).
 
 from __future__ import annotations
 
+import asyncio
 import re
+from collections.abc import Awaitable, Callable
 
 # Unambiguous closing tokens — safe to match anywhere in the line, since they
 # essentially never occur non-terminally in agent speech.
@@ -58,3 +61,41 @@ def looks_like_goodbye(text: str | None) -> bool:
     if not text:
         return False
     return _GOODBYE_RE.search(text) is not None
+
+
+async def hang_up_after_goodbye(
+    *,
+    grace_s: float,
+    settle_s: float,
+    agent_busy: Callable[[], bool],
+    hang_up: Callable[[], Awaitable[None]],
+) -> bool:
+    """Wait out the silence after a closing line, then hang up. True if it did.
+
+    The wait is not the whole guard. The net exists because Live defers the
+    ``end_call`` tool, but "deferred" and "slow" look identical from here: a
+    model that has not ended the call yet is just as often still *composing*
+    the turn that ends it — a ``log_outcome`` round-trip and the line the model
+    speaks on its result sit in exactly this window. A net that fires on the
+    timer alone hangs up over the top of that turn, and the caller hears the
+    closing cut a word or two in.
+
+    So the timer only proposes; ``agent_busy`` decides. If the agent picked the
+    call back up while we waited, this is not dead air and there is nothing to
+    rescue: stand down and let the caller re-arm when that turn ends.
+
+    ``settle_s`` buys the same check once more, immediately before the hangup.
+    It replaces the flush grace ``hang_up`` would otherwise hold for the
+    goodbye's SIP tail — by now that tail is ``grace_s`` old and long gone,
+    while a turn starting inside an unwatched flush is clipped exactly like one
+    starting inside the grace. Same wall-clock wait, one more look.
+    """
+    await asyncio.sleep(grace_s)
+    if agent_busy():
+        return False
+    if settle_s > 0:
+        await asyncio.sleep(settle_s)
+        if agent_busy():
+            return False
+    await hang_up()
+    return True
