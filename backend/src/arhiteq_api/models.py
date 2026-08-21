@@ -5,6 +5,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Float,
     ForeignKey,
     Index,
@@ -776,10 +777,29 @@ class PriceRule(Base):
 
     Evaluated explicit > per-model > global; see services/pricing.py, which is
     the only place that ordering is implemented.
+
+    The CHECK constraints are what keep a rule from pricing at or below cost.
+    infra/README.md tells an operator to set the markup with a raw INSERT, and
+    an operator who means "30% margin" writes `markup_pct = 0.3` — which is a
+    0.3% markup, not 30%, and lands the price a rounding error above cost. A
+    negative markup or adder is worse still: a structurally valid rule that
+    sells every minute below cost with `rule_source = "model"`, indistinguishable
+    from a deliberate price. The database refuses those outright; the endpoint
+    (api/dashboard.py) additionally refuses to serve any price that does not
+    clear its own cost, since 0 <= markup <= tiny is still a bad price and no
+    constraint can know a model's cost.
+
+    NULL passes a CHECK by design: an unset knob means "this rule does not use
+    this lever", which services/pricing.py already reads as not-a-price.
     """
 
     __tablename__ = "price_rules"
-    __table_args__ = (UniqueConstraint("scope", "effective_from_ms"),)
+    __table_args__ = (
+        UniqueConstraint("scope", "effective_from_ms"),
+        CheckConstraint("markup_pct >= 0", name="ck_price_rules_markup_non_negative"),
+        CheckConstraint("fixed_per_minute_usd >= 0", name="ck_price_rules_fixed_non_negative"),
+        CheckConstraint("explicit_per_minute_usd > 0", name="ck_price_rules_explicit_positive"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     scope: Mapped[str] = mapped_column(String(64), index=True)  # model_id | "*"

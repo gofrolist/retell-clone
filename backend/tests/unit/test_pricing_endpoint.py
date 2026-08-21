@@ -1,6 +1,8 @@
 import logging
 
+import pytest
 from sqlalchemy import delete
+from sqlalchemy.exc import IntegrityError
 
 from arhiteq_api.db import session_factory
 from arhiteq_api.models import CostRate, PriceRule
@@ -135,3 +137,71 @@ async def test_components_key_is_omitted_when_no_globally_priced_model_exists(cl
     assert body["models"] == []
     assert set(body["unpriced"]) == ALL_MODEL_IDS
     assert "components" not in body
+
+
+@pytest.mark.parametrize(
+    ("rule", "label"),
+    [
+        # An operator zeroing the rule out rather than deleting the row: a
+        # price exactly equal to cost, carrying rule_source "model".
+        ({"markup_pct": 0.0}, "a zero markup prices at cost"),
+        # A flat price set below what the minute costs to serve — nothing in
+        # the rule tables can know that, since it never looks at a cost.
+        ({"explicit_per_minute_usd": 0.001}, "an explicit price under cost"),
+    ],
+)
+async def test_a_rule_that_prices_at_or_below_cost_is_refused(client, caplog, rule, label):
+    """The invariant no rule table can enforce on its own.
+
+    `test_prices_are_marked_up_above_the_seeded_cost` only ever proved the
+    SEED data is marked up; with a per-model rule in play the price is
+    whatever an operator inserted. A price at or under cost is not a price —
+    it must be omitted and named in `unpriced`, exactly like a price no rule
+    resolved, so the frontend falls back to its compiled-in card instead of
+    quoting a zero-margin minute.
+    """
+    async with session_factory()() as session:
+        session.add(PriceRule(scope=LIVE, note=label, **rule))
+        await session.commit()
+
+    with caplog.at_level(logging.WARNING):
+        body = (await client.get("/dashboard/pricing/models", headers=AUTH_HEADERS)).json()
+
+    assert LIVE not in {m["model_id"] for m in body["models"]}, label
+    assert LIVE in body["unpriced"], label
+    # The log has to carry the numbers, or an operator sees a model vanish
+    # from the picker with nothing to explain why.
+    assert "at or below cost" in caplog.text
+    assert "0.013500" in caplog.text  # the Live stack cost the rule failed to clear
+    # Every other model still resolves through the untouched global rule: the
+    # guard drops one bad price, it does not blank the whole card.
+    assert {m["model_id"] for m in body["models"]} == ALL_MODEL_IDS - {LIVE}
+
+
+async def test_the_database_rejects_a_rule_that_can_only_price_below_cost(client):
+    """A negative markup or adder can never yield a price above cost, so it is
+    refused at the table rather than left for the endpoint to filter. (SQLite
+    enforces CHECK constraints, so this covers the real production DDL.)"""
+    for kwargs in (
+        {"markup_pct": -10.0},
+        {"fixed_per_minute_usd": -0.05},
+        {"explicit_per_minute_usd": 0.0},
+        {"explicit_per_minute_usd": -0.01},
+    ):
+        async with session_factory()() as session:
+            session.add(PriceRule(scope=LIVE, note="bad", **kwargs))
+            with pytest.raises(IntegrityError):
+                await session.commit()
+            await session.rollback()
+
+
+async def test_a_rule_that_leaves_a_lever_unset_is_still_accepted(client):
+    """NULL is "this rule does not use this lever", not a violated CHECK — the
+    constraints above must not break the shape services/pricing.py relies on."""
+    async with session_factory()() as session:
+        session.add(PriceRule(scope=LIVE, markup_pct=500.0, note="no adder, no explicit"))
+        await session.commit()
+
+    body = (await client.get("/dashboard/pricing/models", headers=AUTH_HEADERS)).json()
+    live = next(m for m in body["models"] if m["model_id"] == LIVE)
+    assert live["per_minute"] == pytest.approx(0.0135 * 6.0)

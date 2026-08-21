@@ -58,7 +58,7 @@ from ..models import (
 from ..schemas import CompatModel, TestWebhookRequest
 from ..services import webhooks
 from ..services.gemini import build_genai_client, genai_credentials_available
-from ..services.pricing import load_assumptions, model_prices
+from ..services.pricing import ModelPrice, load_assumptions, model_prices
 from ..sessions import email_from_authorization
 from ._deps import apply_patch, get_owned
 from .auth_google import _email_allowed
@@ -1743,12 +1743,12 @@ async def pricing_models(
     """Prices for the agent editor's model picker — never costs.
 
     A model is omitted from `models` (and named in `unpriced` instead) when
-    either `price_per_min` is unknown — no rule resolves it — or
-    `effective_multiplier` is unknown, since without a multiplier the
-    per-token `input_per_1m`/`output_per_1m` fields cannot be derived without
-    fabricating a number. Either way, a $0.00 or blank price must never reach
-    a customer; the frontend falls back to its compiled-in price for a model
-    missing from this list, so omission degrades gracefully.
+    `price_per_min` is unknown — no rule resolves it — when
+    `effective_multiplier` is unknown (nothing to scale, or nothing to scale
+    to), or when the resolved price fails to clear the model's own cost. A
+    $0.00, blank, or zero-margin price must never reach a customer; the
+    frontend falls back to its compiled-in price for a model missing from
+    this list, so omission degrades gracefully.
 
     `components` (the shared STT/TTS/KB legs) is priced using the multiplier
     of a model actually priced by the global rule — those components cannot
@@ -1759,10 +1759,30 @@ async def pricing_models(
     assumptions = await load_assumptions(session)
     prices = await model_prices(session)
 
-    priced = [
-        p for p in prices if p.price_per_min is not None and p.effective_multiplier is not None
-    ]
-    unpriced = [p.model_id for p in prices if p not in priced]
+    priced: list[ModelPrice] = []
+    unpriced: list[str] = []
+    for p in prices:
+        if p.price_per_min is None or p.effective_multiplier is None:
+            unpriced.append(p.model_id)
+            continue
+        # A price that does not clear its own cost is not a price. The rule
+        # tables cannot catch this on their own: `markup_pct = 0.3` (an
+        # operator who meant 30%) is a valid non-negative markup that resolves
+        # to cost + 0.3%, and only the cost this model actually carries says
+        # whether that clears. Treated exactly like an unresolved price —
+        # omitted and named in `unpriced` — so the frontend falls back to its
+        # compiled-in price instead of quoting a zero-margin minute.
+        if p.cost_per_min_stack is not None and p.price_per_min <= p.cost_per_min_stack:
+            log.warning(
+                "refusing to serve %s at or below cost: price %.6f <= cost %.6f (rule_source=%s)",
+                p.model_id,
+                p.price_per_min,
+                p.cost_per_min_stack,
+                p.rule_source,
+            )
+            unpriced.append(p.model_id)
+            continue
+        priced.append(p)
     if unpriced:
         log.warning("no usable price for models: %s", ", ".join(unpriced))
 
