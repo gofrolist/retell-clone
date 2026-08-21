@@ -43,6 +43,8 @@ set +a
 : "${GRAFANA_OAUTH_CLIENT_ID:?set it in infra/private/prod.env — see infra/README.md § Grafana access}"
 : "${GRAFANA_OAUTH_CLIENT_SECRET:?set it in infra/private/prod.env — see infra/README.md § Grafana access}"
 : "${GRAFANA_ADMIN_EMAILS:?set it in infra/private/prod.env — see infra/README.md § Grafana access}"
+: "${GRAFANA_DB_PASSWORD:?set it in infra/private/prod.env — see infra/README.md § Grafana database access}"
+: "${ARHITEQ_DB_HOST:?set it in infra/private/prod.env to the Cloud SQL private IP — terraform output -raw db_private_ip}"
 # Optional: a deployment with no read-only operators is a normal one.
 : "${GRAFANA_VIEWER_EMAILS:=}"
 
@@ -69,6 +71,13 @@ kubectl -n monitoring create secret generic alertmanager-telegram \
 kubectl -n monitoring create secret generic grafana-google-oauth \
   --from-literal=client-id="$GRAFANA_OAUTH_CLIENT_ID" \
   --from-literal=client-secret="$GRAFANA_OAUTH_CLIENT_SECRET" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# Same pattern for the grafana_ro password the business-metrics datasource
+# uses: a Secret rather than a value, so it stays out of the Helm release.
+# infra/sql/grafana_ro.sql is what creates the role this authenticates as.
+kubectl -n monitoring create secret generic grafana-db \
+  --from-literal=password="$GRAFANA_DB_PASSWORD" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl -n monitoring create configmap arhiteq-dashboards \
@@ -110,6 +119,16 @@ except ValueError:
 host = os.environ["GRAFANA_HOST"].strip()
 if not re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+", host):
     raise SystemExit(f"GRAFANA_HOST must be a bare hostname like grafana.example.com, got {host!r}")
+
+# The datasource url is `<this>:5432`, so a value carrying its own port or
+# scheme yields a url Grafana cannot parse and a dashboard that fails on every
+# panel — with the cause an operator only sees by reading the rendered file.
+db_host = os.environ["ARHITEQ_DB_HOST"].strip()
+if not re.fullmatch(r"[a-z0-9]([a-z0-9.-]*[a-z0-9])?", db_host):
+    raise SystemExit(
+        "ARHITEQ_DB_HOST must be a bare host with no port or scheme "
+        f"(terraform output -raw db_private_ip), got {db_host!r}"
+    )
 
 # Space- or comma-separated in prod.env; JMESPath list literals here. A single
 # quote in an address would close the literal early and rewrite the rest of the
@@ -153,13 +172,21 @@ subs = {
     # characters that would otherwise alter the value or break the parse.
     "CHANGE_ME_GRAFANA_ADMIN": json.dumps(os.environ["GRAFANA_ADMIN_PASSWORD"]),
     "CHANGE_ME_GRAFANA_HOST": json.dumps(host),
+    # Bare, not json.dumps'd: it is spliced into `<host>:5432`, and a quote
+    # mid-scalar is a YAML parse error rather than an escape. The regex above
+    # is what makes that safe.
+    "CHANGE_ME_ARHITEQ_DB_HOST": db_host,
     "CHANGE_ME_GRAFANA_ROOT_URL": json.dumps(f"https://{host}/"),
     "CHANGE_ME_GRAFANA_ROLE_ATTRIBUTE_PATH": json.dumps(role_path),
     # Not the credentials themselves — this annotation is world-readable to
     # anyone who can get the pod.
-    "CHANGE_ME_GRAFANA_OAUTH_CHECKSUM": hashlib.sha256(
+    "CHANGE_ME_GRAFANA_CREDENTIALS_CHECKSUM": hashlib.sha256(
         "\0".join(
-            (os.environ["GRAFANA_OAUTH_CLIENT_ID"], os.environ["GRAFANA_OAUTH_CLIENT_SECRET"])
+            (
+                os.environ["GRAFANA_OAUTH_CLIENT_ID"],
+                os.environ["GRAFANA_OAUTH_CLIENT_SECRET"],
+                os.environ["GRAFANA_DB_PASSWORD"],
+            )
         ).encode()
     ).hexdigest(),
     "TELEGRAM_CHAT_ID": chat_id,

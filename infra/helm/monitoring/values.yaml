@@ -102,12 +102,13 @@ grafana:
           - CHANGE_ME_GRAFANA_HOST
 
   podAnnotations:
-    # Rolls Grafana when the OAuth client changes. The id and secret arrive as
-    # env vars from a Secret this chart does not own, so Helm sees nothing to
-    # checksum: replacing the Secret on its own leaves the running process
-    # holding the credentials it started with, and the only symptom is that
-    # sign-in keeps failing against a client that looks correct in the cluster.
-    arhiteq.com/oauth-client-checksum: CHANGE_ME_GRAFANA_OAUTH_CHECKSUM
+    # Rolls Grafana when any injected credential changes -- the OAuth client or
+    # the grafana_ro database password. They arrive as env vars from Secrets
+    # this chart does not own, so Helm sees nothing to checksum: replacing a
+    # Secret on its own leaves the running process holding what it started
+    # with, and the only symptom is sign-in (or a datasource) failing against
+    # a credential that looks correct in the cluster.
+    arhiteq.com/credentials-checksum: CHANGE_ME_GRAFANA_CREDENTIALS_CHECKSUM
 
   # The OAuth client id and secret are injected from the k8s Secret
   # `grafana-google-oauth` (gen-values.sh creates it from prod.env) rather
@@ -123,6 +124,46 @@ grafana:
       secretKeyRef:
         name: grafana-google-oauth
         key: client-secret
+    # Same reasoning for the datasource password below, which reads this by
+    # name: a password in `secureJsonData` written literally would be stored in
+    # the Helm release and printed by `helm get values`.
+    GRAFANA_DB_PASSWORD:
+      secretKeyRef:
+        name: grafana-db
+        key: password
+
+  # Business metrics are database facts (how many agents exist, what a call
+  # cost), not time series, so they are read from Cloud SQL rather than
+  # Prometheus -- which keeps 15 days and would need a workspace_id label whose
+  # cardinality grows with the customer count. No exporter and no proxy: the
+  # Grafana pod already sits in the VPC that reaches the private IP, and the
+  # cluster has no NetworkPolicies to traverse. See
+  # docs/superpowers/specs/2026-08-20-business-metrics-dashboard-design.md.
+  additionalDataSources:
+    - name: Arhiteq DB
+      # Pinned, because the dashboard references it by uid: file provisioning
+      # never resolves a ${DS_*} placeholder, so a generated uid would make
+      # every business panel read "Datasource not found".
+      uid: arhiteq-db
+      type: postgres
+      # The Cloud SQL private IP, from `terraform output -raw db_private_ip` --
+      # not pinned here, because a recreated instance gets a new one and every
+      # other consumer already reads it from Terraform. Hardcoded, the API
+      # would reconnect on the next apply and the dashboard would fail with a
+      # connection error on every panel and no deploy in the blast radius.
+      url: CHANGE_ME_ARHITEQ_DB_HOST:5432
+      database: arhiteq
+      # Reads the metrics views and pricing.model_price and nothing else; it
+      # holds no grant on any base table, so transcripts are unreachable rather
+      # than merely unselected. infra/sql/grafana_ro.sql creates it.
+      user: grafana_ro
+      jsonData:
+        sslmode: require
+        postgresVersion: 1600
+      secureJsonData:
+        # Expanded from the env var above by Grafana's provisioning, so the
+        # password itself never enters this file.
+        password: $GRAFANA_DB_PASSWORD
 
   grafana.ini:
     server:

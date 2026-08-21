@@ -36,10 +36,12 @@ from .security import (
     UnhandledErrorMiddleware,
 )
 from .services import simulation
+from .services.metrics_views import apply_metrics_views
 from .services.pricing_seed import seed_pricing_defaults
 from .services.pricing_view import apply_pricing_view
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 # (table, column, DDL type) for columns added after their table shipped.
@@ -93,6 +95,18 @@ _COLUMN_BACKFILLS: tuple[tuple[str, str, str], ...] = (
 # its own, so these run unconditionally.
 _BACKFILL_INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS ix_agents_folder_id ON agents (folder_id)",
+    # Every economics panel filters metrics.call_cost on `day_ms`, which is
+    # this expression -- no index on `created_at_ms` can serve it, because the
+    # coalesce and the bucket arithmetic sit between the column and the
+    # predicate. Written to match services/metrics_views.py `_bucket` exactly,
+    # since the planner matches an expression index by the expression. It buys
+    # the seq scan back; the ~20 correlated rate lookups the view evaluates per
+    # surviving row are the remaining scaling limit, and only materializing the
+    # view would remove those.
+    (
+        "CREATE INDEX IF NOT EXISTS ix_calls_day_ms ON calls "
+        "(((coalesce(start_timestamp, created_at_ms) / 86400000) * 86400000))"
+    ),
 )
 
 
@@ -128,7 +142,22 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(_apply_column_backfills)
     async with session_factory()() as session:
         await seed_pricing_defaults(session)
-        await apply_pricing_view(session)
+        # Nothing the API serves reads these views -- the pricing endpoint
+        # compiles the same select itself, and every other route goes to the
+        # base tables. They exist for Grafana. So a SQL error in one is a
+        # broken dashboard, not a reason for no replica to reach ready and the
+        # whole voice control plane to stay down: log it and serve. The suite
+        # executes these selects against SQLite only, which is exactly why a
+        # Postgres-only failure has to degrade rather than crash.
+        try:
+            await apply_pricing_view(session)
+            # After the pricing view, not before: metrics.call_cost prices each
+            # call through the same rule, and the dashboard's economics panels
+            # read both schemas as one picture.
+            await apply_metrics_views(session)
+        except Exception:
+            logger.exception("read-model views failed to install; the dashboard will be stale")
+            await session.rollback()
     yield
     # Simulation batches run detached from any request; cancel them (and mark
     # their rows finished, so the dashboard stops polling) before the engine
