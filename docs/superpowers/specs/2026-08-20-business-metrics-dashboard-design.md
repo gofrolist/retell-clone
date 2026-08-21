@@ -37,12 +37,14 @@ on their face.
 
 ## Non-goals
 
-- **Billing.** There is no revenue: no rate card per customer, no invoices, no
-  subscription. `api/concurrency.py` states it outright. This dashboard reports
-  cost-to-serve; it does not bill anyone.
-- **Profit as a rendered number.** Pre-revenue, every workspace shows a loss,
-  and a red negative margin column teaches nothing. The decision-useful figure
-  is cost per call-minute and the break-even price it implies.
+- **Billing.** No invoices, no payment, no per-customer contract rate.
+  `api/concurrency.py` says it outright: there is no billing system. This
+  dashboard reports cost, list price and the gap between them.
+- **Owning prices.** The rate card, the markup rule and the price view belong
+  to the pricing domain spec. This one reads them.
+- **Realised revenue.** Nobody is billed, so margin here is *implied* — what
+  these calls would have earned at the list price the pricing domain computes.
+  A column claiming earned revenue would be fiction.
 - **Metering real consumption.** Actual audio seconds, output tokens and TTS
   characters are not captured anywhere and are not added here. See
   "Where this goes next".
@@ -119,91 +121,21 @@ new deploy mechanism.
 view change that is not purely additive ships as `DROP VIEW IF EXISTS` followed
 by `CREATE VIEW`, in that order, in the same tuple.
 
-### `cost_rates`
+### Cost and price tables
 
-A real SQLAlchemy model, so `create_all` builds it:
+`cost_rates`, `model_cost_rates`, `price_rules`, `pricing_assumptions` and the
+`pricing.model_price` view are **not defined here** — they belong to the
+pricing domain (`2026-08-20-pricing-domain-design.md`), which owns what a call
+costs, what it is priced at, and the rule connecting the two. This dashboard is
+a reader of them.
 
-| column | type | note |
-| --- | --- | --- |
-| `id` | int pk | |
-| `component` | str(64) | see the seeded rate card below |
-| `unit` | str(16) | `per_minute`, `per_call` or `per_month` |
-| `unit_price_usd` | Numeric(12, 6) | |
-| `effective_from_ms` | bigint | |
-| `note` | str(255) | where the figure came from |
+The split matters because the same rate card also feeds the customer-facing
+model picker. Two copies, one internal and one product-facing, would disagree
+the first time a provider reprices — and the dashboard would then report margin
+against prices no customer was ever quoted.
 
-Effective-dated on purpose. When a provider changes its price you insert a new
-row; a call is costed with the rate in force at its `start_timestamp`, so last
-quarter's costs keep the price that was actually paid instead of being
-silently restated by today's number.
-
-`Numeric`, not float: these values are summed across thousands of rows and
-compared against provider invoices.
-
-**Seeded from published prices, sourced in the `note` column.** Rows are
-inserted only when the table is empty, the way `seed.py` handles first-boot
-data — so an operator edit is never overwritten by a redeploy. Every row's
-`note` carries its source and the date it was read, because a price with no
-provenance cannot be re-checked and quietly rots.
-
-Components with no rate row still report as unknown rather than free — see the
-NULL rule below. That path stays live: it covers a component nobody has priced
-yet, such as recording storage.
-
-### Seeded rate card (read 2026-08-20)
-
-Prices come from the GCP Cloud Billing catalog API for Google infrastructure
-(authoritative SKU data rather than a marketing page) and vendor pricing pages
-for the rest.
-
-| component | unit | USD | derivation |
-| --- | --- | --- | --- |
-| `gemini_live_audio` | per_minute | 0.013500 | audio in $3.00/1M + audio out $12.00/1M at 25 tokens/sec; input runs the whole call, output assumed 50% agent talk time |
-| `gemini_live_session` | per_call | 0.003300 | system prompt ≈6.5k text tokens once per session @ $0.50/1M |
-| `pipeline_llm_text` | per_minute | 0.004000 | gemini-3.1-flash-lite $0.25/1M in, $1.50/1M out; ≈12k in + 600 out per minute |
-| `cartesia_tts` | per_minute | 0.015000 | $0.0294/min of generated speech (Startup tier, $49 ÷ 1,667 min), at 50% agent talk time |
-| `cartesia_stt` | per_minute | 0.009000 | $5 ÷ 9h16m included STT on the Pro tier |
-| `telnyx_outbound` | per_minute | 0.005000 | Elastic SIP, US local outbound |
-| `telnyx_inbound` | per_minute | 0.003200 | Elastic SIP, US local inbound |
-| `telnyx_did` | per_month | 2.000000 | 2 numbers × $1.00 |
-| `infra_fixed_monthly` | per_month | 1500.000000 | inventory below |
-
-**Three of these rest on a 50% agent-talk-time assumption** — Live audio out,
-Cartesia TTS, and implicitly the pipeline token estimate. Nothing measures how
-long the agent actually speaks. The assumption is written into each `note` so
-it can be challenged, and it is precisely what the metering spec would replace
-with a measurement.
-
-### Infrastructure inventory
-
-| item | quantity | rate | USD/mo |
-| --- | --- | --- | --- |
-| GKE regional cluster fee | 1 | $0.10/hr | 73 |
-| default pool `e2-standard-4` | 1 | $0.02181/vCPU-hr + $0.00292/GiB-hr | 98 |
-| voice pool `c2-standard-8` | 3 | $0.03398/vCPU-hr + $0.00456/GiB-hr | 915 |
-| Cloud SQL regional 2 vCPU / 7.5 GiB | 1 | $0.0826/vCPU-hr + $0.014/GiB-hr | 197 |
-| Cloud SQL storage, regional SSD | 20 GB | $0.17/GB-mo ×2 | 7 |
-| Memorystore Redis Basic M1 | 1 GiB | $0.049/GiB-hr | 36 |
-| load balancer forwarding rules | 4 | $0.025/hr | 73 |
-| static IPs | 4 | $0.010/hr | 29 |
-| node boot disks, egress | — | approximate | ~70 |
-| **total** | | | **~1,500** |
-
-**The voice pool is 61% of the bill**, and the pending Terraform drift would
-move it to `c2d-standard-4` — roughly half the cost. The dashboard makes that
-saving visible instead of theoretical.
-
-### What the seeded numbers already say
-
-Marginal cost of a Live phone-call minute is about **$0.018** (audio $0.0135 +
-outbound trunk $0.005). Fixed infrastructure is about **$1,500/month**. At the
-current 110 minutes/month, allocated infrastructure works out to roughly
-**$13.60 per minute** — about 750× the marginal cost.
-
-That ratio is the finding, and it is why the design keeps fixed cost in its own
-column. This platform is not expensive per call; it is under-utilised. No
-pricing decision follows from cost-per-minute until volume moves, which is
-exactly what the load panels are for.
+This spec therefore depends on the pricing domain landing first. Until it does,
+the economics row renders unknown, which the NULL rule below already handles.
 
 ### Views
 
@@ -213,8 +145,8 @@ All four live in schema `metrics`.
 minutes, inbound/outbound split, failures, and LLM turns from
 `sum((latency->'e2e'->>'num')::int)`.
 
-**`call_cost`** — one row per call: minutes, the `cost_rates` row in force at
-`start_timestamp`, and the estimated cost.
+**`call_cost`** — one row per call: minutes, the model it ran on, and its cost
+and list price joined from `pricing.model_price` at `start_timestamp`.
 
 **`tenancy`** — current counts and creation timestamps for workspaces,
 members, agents and phone numbers, so adoption can be drawn over time rather
@@ -225,33 +157,30 @@ than only as a total.
 structurally cannot give: it keeps 15 days, and the calls table keeps
 everything.
 
-## Cost model
+## Cost and margin
 
-Per call, priced at the rates in force when the call started:
+Per call: `minutes × pricing.model_price.cost_per_min` for the model the call
+ran on, plus `telnyx_inbound`/`telnyx_outbound` by direction — charged only
+when `call_type = 'phone_call'`, since a web call never touches the trunk and
+pricing one as though it did overstates the cost of the calls that are cheapest
+to serve.
 
-- **stack**, chosen by the agent's model: a Live agent charges
-  `gemini_live_audio` per minute plus a one-off `gemini_live_session`; a
-  pipeline agent charges `pipeline_llm_text + cartesia_tts + cartesia_stt` per
-  minute. Both stacks are in production today — 90 of the 101 connected
-  minutes ran on Live, 11 on `gemini-3.1-flash-lite` — so costing only one of
-  them would silently under-report the other.
-- **telephony**: `telnyx_inbound` or `telnyx_outbound` per minute by direction.
+Which model a call used is resolved by joining `calls → agents →
+retell_llms.model`, in the view rather than in a panel, so every panel agrees
+on it. Both stacks are in production — 90 of the 101 connected minutes ran on
+`gemini-live-2.5-flash-native-audio`, 11 on a `gemini-3.1-flash-lite` pipeline
+— so costing only one of them would silently under-report the other.
 
-Which stack a call used is resolved by joining `calls → agents →
-retell_llms.model` and testing it the same way the worker does (`-live-`,
-`native-audio` and friends mark a realtime model). That join is in the view,
-not in a panel, so every panel agrees on it.
+Margin comes from the same view: `price_per_min - cost_per_min`. Pre-revenue,
+nobody is billed at that price, so the dashboard labels the column **implied**
+margin — what these calls would have earned at list price. That framing is the
+honest one and it is also the useful one: it turns the markup rule into
+something you can watch against real traffic before charging anyone.
 
-The telephony leg is charged on `call_type = 'phone_call'` only. A web call
-carries no Telnyx cost — it never touches the trunk — and pricing one as though
-it did would overstate the cost of exactly the calls that are cheapest to
-serve.
-
-Fixed infrastructure — GKE, Cloud SQL, Redis, the LiveKit deployment — is a
-monthly figure allocated across workspaces by their share of minutes, and
-presented as **its own column**, never folded into the per-call number. Mixing
-a fixed cost into a variable one produces a per-minute figure that falls as
-volume rises and looks like an efficiency gain that is really just division.
+Fixed infrastructure is allocated across workspaces by minute share and shown
+in **its own column**, never folded into a per-call number. Mixing a fixed cost
+into a variable one produces a per-minute figure that falls as volume rises and
+looks like an efficiency gain that is really just division.
 
 ## Panels
 
@@ -262,9 +191,12 @@ Four rows, each panel titled with the question it answers:
 2. **Load** — calls/day (stacked inbound/outbound), minutes/day, peak
    concurrency, failure ratio.
 3. **Model usage** — turns/day, turns per call, average call duration.
-4. **Economics** — cost/day, **cost per minute** as the headline stat, a
-   per-workspace table (calls, minutes, variable cost, allocated infra,
-   cost/min), and break-even price at a target-margin dashboard variable.
+4. **Economics** — cost/day, **cost per minute** as the headline stat, implied
+   margin per day, and a per-workspace table (calls, minutes, variable cost,
+   allocated infra, cost/min, implied margin). A companion panel breaks the
+   spread down by model, reading `rule_source` so an oddly-priced model shows
+   *which* rule produced it rather than leaving you to reconstruct it from
+   three tables.
 
 Panels are exported without an `__inputs` block and with the datasource uid
 pinned, for the reason recorded in `infra/README.md`: file provisioning never
@@ -306,8 +238,8 @@ validated.
 
 ## Rollout
 
-1. Merge the API change (model, `_METRICS_VIEWS`); boot creates schema, views
-   and `cost_rates`.
+0. Land the pricing domain first — this dashboard reads its tables and view.
+1. Merge the API change (`_METRICS_VIEWS`); boot creates the schema and views.
 2. Operator: create the `grafana_ro` role, grant it, set its `statement_timeout`.
 3. Operator: add `GRAFANA_DB_PASSWORD` to `prod.env`; add the business partner
    to `GRAFANA_ALLOWED_EMAILS`.
@@ -318,6 +250,10 @@ validated.
 
 Steps 2, 3 and 5 are manual by design: each needs either a privilege the
 platform should not hold or a judgement only a human can make.
+
+`grafana_ro` needs `SELECT` on the pricing view as well as the `metrics` views.
+It gets that grant on `pricing.model_price` only — the cost and rule tables
+underneath it stay unreachable, the same way transcripts do.
 
 ## Where this goes next
 
