@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.28.0](https://github.com/gofrolist/retell-clone/compare/v0.27.4...v0.28.0) (2026-08-21)
+
+
+### Features
+
+* **infra:** give Grafana a read-only role ([#285](https://github.com/gofrolist/retell-clone/issues/285)) ([fe352cc](https://github.com/gofrolist/retell-clone/commit/fe352ccd48bb27b12f94742a73c1195b5156e3cf))
+* **infra:** publish Grafana behind Google-only SSO ([#283](https://github.com/gofrolist/retell-clone/issues/283)) ([d9dce03](https://github.com/gofrolist/retell-clone/commit/d9dce0352d15079294ad988b5c716b9f224f4414))
+* **infra:** scrape LiveKit, alert to Telegram, implement worker active-jobs gauge ([#281](https://github.com/gofrolist/retell-clone/issues/281)) ([cc50098](https://github.com/gofrolist/retell-clone/commit/cc50098d6ee500f8e4534a8a67481c3756d94683))
+* **pricing:** separate cost from price and stop quoting at cost ([#284](https://github.com/gofrolist/retell-clone/issues/284)) ([f1d3c29](https://github.com/gofrolist/retell-clone/commit/f1d3c298c5885fc5ae27b05b2f6024a54084f2e7))
+
+
+### Bug Fixes
+
+* **worker:** stop the goodbye net hanging up over the turn it was waiting for ([#280](https://github.com/gofrolist/retell-clone/issues/280)) ([710df07](https://github.com/gofrolist/retell-clone/commit/710df073fb788bb2c23e20ae5b5f77d00c0d2400))
+
 ## [0.27.4](https://github.com/gofrolist/retell-clone/compare/v0.27.3...v0.27.4) (2026-08-13)
 
 
