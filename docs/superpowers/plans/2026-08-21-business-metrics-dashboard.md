@@ -1971,3 +1971,62 @@ The figures in `services/pricing_seed.py` were read on 2026-08-20 and provider p
 **Deviations, all deliberate and marked in place:** (1) `tenancy` dates agents from their first version and leaves phone numbers NULL, because `agents` and `phone_numbers` record no creation time; (2) `call_cost` resolves the model from the version that ran and handles flow-backed agents, not from the agent's current config; (3) the price is evaluated at each call's start through a shared formula rather than joined from `pricing.model_price`, which has no time dimension.
 
 **One gap the spec did not anticipate,** covered in Task 7: boot recreates every view, which drops its grants, so the security model needs `ALTER DEFAULT PRIVILEGES` or the dashboard breaks on the deploy after setup.
+
+
+---
+
+## What the build changed about this plan
+
+Recorded after execution, because a plan that does not match what shipped is
+worse than no plan.
+
+1. **A fifth view, `metrics.fixed_cost`.** The per-workspace panel read
+   `cost_rates` directly for the infra allocation — a table `grafana_ro` holds
+   no grant on, and must not, since it also carries the per-minute rates the
+   margin is derived from. Caught by running the panels *as `grafana_ro`*
+   against a real Postgres; the panel now reads the view.
+
+2. **`::bigint` on every `$__unixEpoch*()` macro.** Grafana substitutes them as
+   bare numeric literals, which Postgres types as `int4`; `epoch_seconds *
+   1000` overflows it and every panel dies with "integer out of range". Not
+   reachable from the SQLite suite — only from executing the panel SQL.
+
+3. **`_bucket` uses floor division (`//`), not `/`.** SQLAlchemy 2.0 renders
+   `/` as true division, so `ts / 86400000 * 86400000` came back a hair under
+   the boundary (`863999999.9999999`) and every bucket edge became its own
+   group.
+
+4. **`call_cost` is built in three layers.** Inlining the resolved model into
+   `scalar_sources` put a four-way coalesce of subqueries inside all ~20 rate
+   lookups the price formula expands to: the compiled view was **168KB** of
+   SQL. Resolving the model in one layer and the cost in another brought it to
+   **17KB**, and `price_columns` was split into `cost_columns` +
+   `price_from_cost` so the second layer could pass a column where the formula
+   wanted an expression.
+
+5. **`apply_views` takes Selects, not SQL strings.** Rendering before the
+   dialect check made every SQLite boot in the suite compile four views and
+   throw them away.
+
+6. **The DDL-behaviour tests moved** from `test_pricing_view.py` to
+   `test_view_ddl.py`, following the code they cover; `test_pricing_view.py`
+   keeps the rendering tests and gains one that pins which view goes in which
+   schema.
+
+## Verified before merge
+
+Against a throwaway `postgres:16` container, since neither the SQLite suite nor
+CI can reach any of this:
+
+- All five views install through the real boot path, and again on a simulated
+  second boot.
+- Every panel's SQL executes as `grafana_ro` with zero errors, and the numbers
+  reconcile by hand: a 2-minute Live call costs `2 x $0.0135` plus `2 x
+  $0.0032` inbound trunk, prices at 4x cost under the seeded 300% markup, and
+  a web call of equal length pays no trunk at all.
+- `grafana_ro` is refused on `calls`, `workspaces`, `cost_rates` and
+  `price_rules`, and carries `statement_timeout = 30s`.
+- **The grant survives a view recreate:** `metrics.fixed_cost` was created
+  *after* `grafana_ro.sql` ran and never received an explicit `GRANT`, and
+  `grafana_ro` reads it — which is `ALTER DEFAULT PRIVILEGES` doing the job the
+  spec's plain `GRANT` would have failed at on the first deploy.
