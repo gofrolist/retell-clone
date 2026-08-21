@@ -8,8 +8,12 @@ and asserts what the numbers mean.
 import pytest
 
 from arhiteq_api.db import session_factory
-from arhiteq_api.models import Agent, AgentVersion, Workspace, WorkspaceMember
-from arhiteq_api.services.metrics_views import apply_metrics_views, tenancy_select
+from arhiteq_api.models import Agent, AgentVersion, Call, Workspace, WorkspaceMember
+from arhiteq_api.services.metrics_views import (
+    apply_metrics_views,
+    tenancy_select,
+    workspace_daily_select,
+)
 
 _MS_PER_DAY = 86_400_000
 
@@ -64,3 +68,114 @@ async def test_tenancy_dates_an_agent_from_its_first_version(session):
 async def test_apply_metrics_views_is_skipped_on_sqlite(session):
     """SQLite has no schemas; the suite must not need a Postgres to run."""
     assert await apply_metrics_views(session) is False
+
+
+async def test_workspace_daily_excludes_zero_duration_calls_from_minutes(session):
+    """A failed dial consumed no audio, but it is still a call that happened.
+
+    The gap between `calls` and `minutes` is the thing an operator must be
+    able to see; dropping the row would hide it.
+    """
+    session.add(Workspace(id="ws_dur", name="Duration"))
+    session.add_all(
+        [
+            Call(
+                call_id="call_connected",
+                workspace_id="ws_dur",
+                agent_id="ag",
+                direction="outbound",
+                start_timestamp=_MS_PER_DAY,
+                duration_ms=120_000,
+            ),
+            Call(
+                call_id="call_never_answered",
+                workspace_id="ws_dur",
+                agent_id="ag",
+                direction="outbound",
+                start_timestamp=_MS_PER_DAY,
+                duration_ms=0,
+            ),
+        ]
+    )
+    await session.commit()
+
+    rows = (await session.execute(workspace_daily_select())).mappings().all()
+    row = next(r for r in rows if r["workspace_id"] == "ws_dur")
+
+    assert row["calls"] == 2
+    assert row["connected_calls"] == 1
+    assert row["unconnected_calls"] == 1
+    assert row["minutes"] == pytest.approx(2.0)
+
+
+async def test_workspace_daily_buckets_by_utc_day_of_the_call(session):
+    """Two calls 25 hours apart are two days, whatever `created_at_ms` says."""
+    session.add(Workspace(id="ws_days", name="Days"))
+    session.add_all(
+        [
+            Call(
+                call_id="call_day_one",
+                workspace_id="ws_days",
+                agent_id="ag",
+                direction="inbound",
+                start_timestamp=10 * _MS_PER_DAY + 1,
+                duration_ms=60_000,
+            ),
+            Call(
+                call_id="call_day_two",
+                workspace_id="ws_days",
+                agent_id="ag",
+                direction="inbound",
+                start_timestamp=11 * _MS_PER_DAY + 1,
+                duration_ms=60_000,
+            ),
+        ]
+    )
+    await session.commit()
+
+    rows = [
+        r
+        for r in (await session.execute(workspace_daily_select())).mappings().all()
+        if r["workspace_id"] == "ws_days"
+    ]
+
+    assert sorted(r["day_ms"] for r in rows) == [10 * _MS_PER_DAY, 11 * _MS_PER_DAY]
+
+
+async def test_workspace_daily_counts_turns_only_where_latency_was_recorded(session):
+    """Turn data starts partway through history, so coverage is reported too.
+
+    `calls_with_turns` vs `calls` is what lets a panel say "N of M calls"
+    instead of implying the platform went quiet before #261.
+    """
+    session.add(Workspace(id="ws_turns", name="Turns"))
+    session.add_all(
+        [
+            Call(
+                call_id="call_with_latency",
+                workspace_id="ws_turns",
+                agent_id="ag",
+                direction="inbound",
+                start_timestamp=20 * _MS_PER_DAY,
+                duration_ms=60_000,
+                latency={"e2e": {"p50": 900.0, "p95": 1200.0, "max": 1500.0, "num": 7}},
+            ),
+            Call(
+                call_id="call_without_latency",
+                workspace_id="ws_turns",
+                agent_id="ag",
+                direction="inbound",
+                start_timestamp=20 * _MS_PER_DAY,
+                duration_ms=60_000,
+                latency=None,
+            ),
+        ]
+    )
+    await session.commit()
+
+    rows = (await session.execute(workspace_daily_select())).mappings().all()
+    row = next(r for r in rows if r["workspace_id"] == "ws_turns")
+
+    assert row["calls"] == 2
+    assert row["calls_with_turns"] == 1
+    assert row["llm_turns"] == 7

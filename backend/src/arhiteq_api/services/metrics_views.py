@@ -21,10 +21,22 @@ to_timestamp does not exist in SQLite.
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy import BigInteger, Select, String, cast, func, literal, null, select, union_all
+from sqlalchemy import (
+    BigInteger,
+    Float,
+    Select,
+    String,
+    case,
+    cast,
+    func,
+    literal,
+    null,
+    select,
+    union_all,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import Agent, AgentVersion, PhoneNumber, Workspace, WorkspaceMember
+from ..models import Agent, AgentVersion, Call, PhoneNumber, Workspace, WorkspaceMember
 from .view_ddl import apply_views, render_view_sql
 
 SCHEMA = "metrics"
@@ -37,12 +49,16 @@ _MS_PER_MINUTE = 60_000.0
 def _bucket(column: Any, size: int) -> Any:
     """Epoch-ms truncated down to a bucket boundary.
 
-    Integer division, which both Postgres and SQLite truncate toward zero.
-    Every timestamp here is positive, so truncation is floor. date_trunc would
-    be clearer and does not exist in SQLite; float division would introduce a
-    rounding question at bucket edges that integers do not have.
+    Floor division (`//`), not `/`: SQLAlchemy 2.0 renders `/` as *true*
+    division, so `ts / 86400000 * 86400000` comes back as a float that is a
+    hair under the boundary it is supposed to land on -- day 10 renders as
+    863999999.9999999, and every bucket edge becomes its own group. `//`
+    renders the dialect's floor division instead and lands exactly.
+
+    date_trunc would be clearer and does not exist in SQLite, which is what
+    lets these selects be tested at all.
     """
-    return (column / size) * size
+    return (column // size) * size
 
 
 def tenancy_select() -> Select[Any]:
@@ -91,7 +107,42 @@ def tenancy_select() -> Select[Any]:
     return union_all(workspaces, members, agents, phone_numbers)
 
 
-VIEWS: tuple[tuple[str, Callable[[], Select[Any]]], ...] = (("tenancy", tenancy_select),)
+def workspace_daily_select() -> Select[Any]:
+    """One row per workspace per UTC day.
+
+    Bucketed on when the call happened, not when its row was written:
+    `created_at_ms` is set at registration, which for an outbound batch can be
+    a different day than the dial.
+    """
+    at_ms = func.coalesce(Call.start_timestamp, Call.created_at_ms)
+    day_ms = _bucket(at_ms, _MS_PER_DAY).label("day_ms")
+    # CONTRACT (worker/state.py): duration_ms is answer->hangup talk time and
+    # is 0 for a call that never connected, never NULL.
+    connected = Call.duration_ms > 0
+    # latency.e2e.num is the LLM turn count. NULL on every call before #261,
+    # which is why the coverage counter next to it exists.
+    turns = Call.latency["e2e"]["num"].as_integer()
+    return select(
+        Call.workspace_id.label("workspace_id"),
+        day_ms,
+        func.count().label("calls"),
+        func.sum(case((connected, 1), else_=0)).label("connected_calls"),
+        func.sum(case((connected, 0), else_=1)).label("unconnected_calls"),
+        func.sum(case((Call.direction == "inbound", 1), else_=0)).label("inbound_calls"),
+        func.sum(case((Call.direction == "outbound", 1), else_=0)).label("outbound_calls"),
+        func.sum(case((Call.call_status == "error", 1), else_=0)).label("error_calls"),
+        cast(func.sum(case((connected, Call.duration_ms), else_=0)) / _MS_PER_MINUTE, Float).label(
+            "minutes"
+        ),
+        func.sum(turns).label("llm_turns"),
+        func.sum(case((turns.isnot(None), 1), else_=0)).label("calls_with_turns"),
+    ).group_by(Call.workspace_id, day_ms)
+
+
+VIEWS: tuple[tuple[str, Callable[[], Select[Any]]], ...] = (
+    ("tenancy", tenancy_select),
+    ("workspace_daily", workspace_daily_select),
+)
 
 
 async def apply_metrics_views(session: AsyncSession) -> bool:
