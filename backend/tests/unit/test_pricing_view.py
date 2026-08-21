@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 from sqlalchemy.exc import DBAPIError
 
@@ -70,13 +72,14 @@ class _FakeBind:
 
 # The DDL apply_pricing_view issues, in order. The 1-based index of each is
 # what `_FakeSession` fails on, so a race test can pick which statement loses.
-SCHEMA_CALL, DROP_CALL, CREATE_CALL = 1, 2, 3
+LOCK_CALL, SCHEMA_CALL, DROP_CALL, CREATE_CALL = 1, 2, 3, 4
 
 
 class _FakeSession:
-    """Just enough of AsyncSession's surface for apply_pricing_view: three
-    session.execute() calls (CREATE SCHEMA, DROP VIEW, CREATE VIEW), then
-    commit() on success or rollback() on a caught race.
+    """Just enough of AsyncSession's surface for apply_pricing_view: four
+    session.execute() calls (SET LOCAL lock_timeout, CREATE SCHEMA, DROP VIEW,
+    CREATE VIEW), then commit() on success or rollback() on a caught race or
+    lock timeout.
 
     SQLite -- what the rest of this suite runs on -- has no schemas, no
     Postgres SQLSTATEs, and (per test_skipped_on_sqlite) apply_pricing_view
@@ -143,7 +146,8 @@ async def test_apply_drops_the_view_before_creating_it(_stub_render):
     assert await apply_pricing_view(session) is True
 
     assert session.committed is True
-    assert len(session.calls) == 3
+    assert len(session.calls) == 4
+    assert session.calls[LOCK_CALL - 1] == pricing_view._SET_LOCK_TIMEOUT_SQL
     assert session.calls[SCHEMA_CALL - 1] == "CREATE SCHEMA IF NOT EXISTS pricing"
     assert session.calls[DROP_CALL - 1] == "DROP VIEW IF EXISTS pricing.model_price"
     assert session.calls[CREATE_CALL - 1].startswith("CREATE VIEW pricing.model_price")
@@ -170,7 +174,43 @@ async def test_apply_swallows_a_known_concurrent_ddl_race(_stub_render, sqlstate
     assert session.committed is False
 
 
-@pytest.mark.parametrize("fail_on", [SCHEMA_CALL, DROP_CALL, CREATE_CALL])
+async def test_apply_sets_a_short_lock_timeout_before_the_ddl(_stub_render):
+    """Without a bound, a Grafana query holding an ACCESS SHARE lock on the
+    view blocks DROP VIEW indefinitely -- and with it the FastAPI lifespan,
+    so the pod never becomes ready. SET LOCAL scopes the timeout to this
+    transaction only, so it cannot leak onto a pooled connection's later,
+    unrelated queries.
+    """
+    session = _FakeSession()
+    assert await apply_pricing_view(session) is True
+
+    assert session.calls[LOCK_CALL - 1] == "SET LOCAL lock_timeout = '5000ms'"
+    # It must run before any of the DDL it is meant to bound.
+    assert session.calls[LOCK_CALL - 1] == session.calls[0]
+
+
+@pytest.mark.parametrize("fail_on", [LOCK_CALL, SCHEMA_CALL, DROP_CALL, CREATE_CALL])
+async def test_apply_swallows_a_lock_timeout_and_keeps_the_previous_view(
+    _stub_render, fail_on, caplog
+):
+    """A losing wait for that lock_timeout (55P03 lock_not_available) must not
+    fail the lifespan: the view already exists from a previous boot and is
+    still serving Grafana, so a blocked refresh is logged and treated as
+    success rather than propagated -- unlike a genuine SQL error below, which
+    still must fail loudly. Parametrised over every statement in the
+    transaction, because any of them can be the one waiting on the lock.
+    """
+    session = _FakeSession(_fake_dbapi_error(pricing_view._LOCK_TIMEOUT_SQLSTATE), fail_on=fail_on)
+    with caplog.at_level(logging.WARNING):
+        assert await apply_pricing_view(session) is True
+
+    assert session.rolled_back is True, "a caught timeout must roll back the poisoned transaction"
+    assert session.committed is False
+    assert "lock" in caplog.text.lower()
+    assert "pricing.model_price" in caplog.text
+
+
+@pytest.mark.parametrize("fail_on", [LOCK_CALL, SCHEMA_CALL, DROP_CALL, CREATE_CALL])
 async def test_apply_re_raises_a_genuine_ddl_error(_stub_render, fail_on):
     """A real bug in the generated SQL -- a syntax error (42601 syntax_error)
     is the archetype now that a column-shape change can no longer produce

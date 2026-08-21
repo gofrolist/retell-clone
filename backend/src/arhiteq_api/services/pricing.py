@@ -30,17 +30,21 @@ from ..models import CostRate, ModelCostRate, PriceRule, PricingAssumption, now_
 class ModelPrice(NamedTuple):
     """One model's cost and price per minute.
 
-    `cost_per_min_stack`, `price_per_min` and `effective_multiplier` are None
-    when the answer is unknown: a component rate is missing, or no price rule
-    resolves, or the stack costs nothing so no ratio can express the price.
-    A consumer that reads `effective_multiplier is None` must use
+    `cost_per_min_model`, `cost_per_min_stack`, `price_per_min` and
+    `effective_multiplier` are None when the answer is unknown: a
+    `pricing_assumptions` row or a component rate is missing, or no price
+    rule resolves, or the stack costs nothing so no ratio can express the
+    price. `cost_per_min_model` is the one that goes first — every other
+    unknown cost or price is downstream of it, propagating exactly like a
+    missing component rate already does (see the module docstring). A
+    consumer that reads `effective_multiplier is None` must use
     `price_per_min` directly instead of scaling the cost breakdown by it —
     there is no multiplier that turns a zero stack into a non-zero price.
     """
 
     model_id: str
     is_audio: bool
-    cost_per_min_model: float
+    cost_per_min_model: float | None
     cost_per_min_stack: float | None
     price_per_min: float | None
     rule_source: str
@@ -223,13 +227,21 @@ async def model_prices(session: AsyncSession, at_ms: int | None = None) -> list[
     rows = (await session.execute(model_price_select(at))).all()
     out: list[ModelPrice] = []
     for row in rows:
+        # A missing pricing_assumptions row makes the arithmetic in
+        # model_price_select() (tokens_per_min, talk, turns, ...) NULL, which
+        # makes cost_per_min_model itself NULL — not just the stack or the
+        # price built on top of it. float(None) would raise TypeError here
+        # and turn a deleted assumption into a 500 from the whole pricing
+        # endpoint instead of the "unknown, never free" degrade every other
+        # missing input in this module already gets.
+        model_cost = None if row.cost_per_min_model is None else float(row.cost_per_min_model)
         stack = None if row.cost_per_min_stack is None else float(row.cost_per_min_stack)
         price = None if row.price_per_min is None else float(row.price_per_min)
         out.append(
             ModelPrice(
                 model_id=row.model_id,
                 is_audio=bool(row.is_audio),
-                cost_per_min_model=float(row.cost_per_min_model),
+                cost_per_min_model=model_cost,
                 cost_per_min_stack=stack,
                 price_per_min=price,
                 rule_source=row.rule_source,

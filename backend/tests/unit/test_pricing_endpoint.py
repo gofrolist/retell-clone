@@ -5,7 +5,7 @@ from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
 
 from arhiteq_api.db import session_factory
-from arhiteq_api.models import CostRate, PriceRule, now_ms
+from arhiteq_api.models import CostRate, PriceRule, PricingAssumption, now_ms
 from arhiteq_api.services.pricing import model_prices
 from tests.conftest import AUTH_HEADERS
 
@@ -113,6 +113,37 @@ async def test_a_model_with_no_usable_rule_is_omitted_and_named_unpriced(client,
     with caplog.at_level(logging.WARNING):
         body = (await client.get("/dashboard/pricing/models", headers=AUTH_HEADERS)).json()
 
+    returned_ids = {m["model_id"] for m in body["models"]}
+    assert returned_ids == ALL_MODEL_IDS - TEXT_MODEL_IDS
+    assert set(body["unpriced"]) == TEXT_MODEL_IDS
+    for model_id in TEXT_MODEL_IDS:
+        assert model_id in caplog.text
+
+
+async def test_a_missing_pricing_assumption_is_omitted_and_named_unpriced(client, caplog):
+    """A deleted assumption must blank the affected models' price, not 500 the
+    whole endpoint.
+
+    `turns_per_min` only enters the TEXT cost formula (`text_cost = turns *
+    (...)`); the audio formula never reads it. Deleting the row makes
+    `cost_per_min_model` — and so the whole stack and price — NULL for every
+    TEXT model, exactly like a missing component rate already does, while
+    Live (which uses a different assumption) is unaffected. The module
+    docstring for `assumption()` already promises this: "A missing key reads
+    as NULL and propagates" — the fix is making the code honour that instead
+    of raising `TypeError` out of `float(None)`.
+    """
+    async with session_factory()() as session:
+        await session.execute(
+            delete(PricingAssumption).where(PricingAssumption.key == "turns_per_min")
+        )
+        await session.commit()
+
+    with caplog.at_level(logging.WARNING):
+        response = await client.get("/dashboard/pricing/models", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
     returned_ids = {m["model_id"] for m in body["models"]}
     assert returned_ids == ALL_MODEL_IDS - TEXT_MODEL_IDS
     assert set(body["unpriced"]) == TEXT_MODEL_IDS
